@@ -1,0 +1,42 @@
+[package]
+name = "gb-data"
+version = "0.1.0"
+edition = "2021"
+description = "Data ingestion and management for GlowBack"
+
+[dependencies]
+gb-types = { path = "../gb-types" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
+rust_decimal = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+rayon = { workspace = true }
+
+# DuckDB integration (temporarily disabled due to arrow version conflicts)
+# duckdb = { version = "0.10", features = ["bundled"] }
+
+# CSV and data format support
+csv = "1.3"
+# polars = { version = "0.49", features = ["lazy", "csv"] }
+
+# HTTP client for data sources
+reqwest = { version = "0.11", features = ["json"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# Local storage
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4" 
