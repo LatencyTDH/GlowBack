@@ -174,3 +174,70 @@ def session_state_summary() -> Dict[str, Any]:
         "backtest_running": st.session_state.get('backtest_running', False),
         "session_keys": list(st.session_state.keys())
     } 
+
+def validate_alpha_vantage_date_range(start_date, end_date) -> tuple[bool, str]:
+    """Validate date range for Alpha Vantage API calls"""
+    if not start_date or not end_date:
+        return False, "Both start and end dates are required"
+    
+    if start_date >= end_date:
+        return False, "Start date must be before end date"
+    
+    # Check if date range is reasonable
+    date_range_days = (end_date - start_date).days
+    
+    if date_range_days > 3650:  # More than 10 years
+        return False, "Date range cannot exceed 10 years"
+    
+    if date_range_days < 1:
+        return False, "Date range must be at least 1 day"
+    
+    # Check if end date is not in the future
+    if end_date > datetime.now().date():
+        return False, "End date cannot be in the future"
+    
+    return True, f"Valid date range: {date_range_days} days"
+
+def format_alpha_vantage_date_range_info(start_date, end_date) -> dict:
+    """Format date range information for Alpha Vantage API"""
+    if not start_date or not end_date:
+        return {"valid": False, "message": "Invalid date range"}
+    
+    date_range_days = (end_date - start_date).days
+    
+    info = {
+        "valid": True,
+        "days": date_range_days,
+        "start": start_date,
+        "end": end_date,
+        "message": f"Fetching {date_range_days} days of data"
+    }
+    
+    if date_range_days > 100:  # More than 100 days
+        info["output_size"] = "full"
+        info["note"] = "Will use 'full' output size for complete data"
+    elif date_range_days > 730:  # More than 2 years
+        info["warning"] = "Large date range may use more API calls"
+        info["output_size"] = "full"
+    elif date_range_days > 365:  # More than 1 year
+        info["info"] = "Fetching over 1 year of data"
+        info["output_size"] = "full"
+    else:
+        info["output_size"] = "compact"
+    
+    return info
+
+def get_alpha_vantage_rate_limit_info() -> dict:
+    """Get Alpha Vantage API rate limit information"""
+    return {
+        "free_tier": {
+            "calls_per_minute": 5,
+            "calls_per_day": 500,
+            "data_points_per_call": "full"  # or "compact" for last 100 points
+        },
+        "premium_tier": {
+            "calls_per_minute": 1200,
+            "calls_per_day": 50000,
+            "data_points_per_call": "full"
+        }
+    } 

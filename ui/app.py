@@ -139,7 +139,7 @@ def main():
         """
         <div style='text-align: center; color: #666; font-size: 0.9rem;'>
             🌟 GlowBack Platform v0.1.0 | Built with Streamlit & Rust | 
-            <a href="https://github.com/yourorg/glowback" target="_blank">GitHub</a>
+            <a href="https://github.com/LatencyTDH/glowback" target="_blank">GitHub</a>
         </div>
         """, 
         unsafe_allow_html=True

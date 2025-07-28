@@ -6,9 +6,6 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import tempfile
-import os
-from pathlib import Path
 
 def show():
     """Main data loader page"""
@@ -210,6 +207,26 @@ def load_alpha_vantage_data():
     """Load data from Alpha Vantage API"""
     st.subheader("🌐 Alpha Vantage API")
     
+    # Show rate limit information
+    with st.expander("ℹ️ API Rate Limits", expanded=False):
+        from utils import get_alpha_vantage_rate_limit_info
+        rate_info = get_alpha_vantage_rate_limit_info()
+        
+        st.markdown("**Free Tier Limits:**")
+        st.markdown(f"- {rate_info['free_tier']['calls_per_minute']} calls per minute")
+        st.markdown(f"- {rate_info['free_tier']['calls_per_day']} calls per day")
+        st.markdown(f"- Data: {rate_info['free_tier']['data_points_per_call']} history")
+        
+        st.markdown("**Premium Tier Limits:**")
+        st.markdown(f"- {rate_info['premium_tier']['calls_per_minute']} calls per minute")
+        st.markdown(f"- {rate_info['premium_tier']['calls_per_day']} calls per day")
+        st.markdown(f"- Data: {rate_info['premium_tier']['data_points_per_call']} history")
+        
+        st.markdown("**💡 Tips:**")
+        st.markdown("- Use 'full' output size for date ranges > 100 days")
+        st.markdown("- Alpha Vantage free tier has limited historical data")
+        st.markdown("- Consider premium tier for extensive historical data")
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -222,19 +239,85 @@ def load_alpha_vantage_data():
             ["TIME_SERIES_DAILY", "TIME_SERIES_WEEKLY", "TIME_SERIES_MONTHLY"],
             help="Type of time series data to fetch"
         )
-        output_size = st.selectbox("Output Size", ["compact", "full"], help="Compact = last 100 points, Full = all available")
+    
+    # Date range selection
+    st.subheader("📅 Date Range")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Default to last 2 years for start date
+        default_start = datetime.now() - timedelta(days=730)
+        start_date = st.date_input(
+            "Start Date",
+            value=default_start,
+            max_value=datetime.now().date(),
+            help="Start date for data fetching"
+        )
+    
+    with col2:
+        end_date = st.date_input(
+            "End Date",
+            value=datetime.now().date(),
+            max_value=datetime.now().date(),
+            help="End date for data fetching"
+        )
+    
+    # Output size selection based on date range
+    if start_date and end_date:
+        date_range_days = (end_date - start_date).days
+        if date_range_days > 100:
+            st.info("📊 Large date range detected - will use 'full' output size")
+            output_size = "full"
+        else:
+            output_size = st.selectbox("Output Size", ["compact", "full"], 
+                help="Compact = last 100 points, Full = all available")
+    else:
+        output_size = st.selectbox("Output Size", ["compact", "full"], 
+            help="Compact = last 100 points, Full = all available")
+    
+    # Validate date range using utility functions
+    if start_date and end_date:
+        from utils import validate_alpha_vantage_date_range, format_alpha_vantage_date_range_info
+        
+        is_valid, message = validate_alpha_vantage_date_range(start_date, end_date)
+        if not is_valid:
+            st.error(f"❌ {message}")
+            return
+        
+        # Get formatted date range info
+        range_info = format_alpha_vantage_date_range_info(start_date, end_date)
+        
+        if "warning" in range_info:
+            st.warning(f"⚠️ {range_info['warning']}")
+        elif "info" in range_info:
+            st.info(f"📊 {range_info['info']}")
+        else:
+            st.success(f"✅ {range_info['message']}")
+        
+        # Show output size recommendation
+        if "note" in range_info:
+            st.info(f"💡 {range_info['note']}")
     
     if st.button("🌐 Fetch Data", type="primary", disabled=not api_key):
         if not api_key:
             st.error("❌ Please provide an Alpha Vantage API key")
             return
+        
+        if not start_date or not end_date:
+            st.error("❌ Please select both start and end dates")
+            return
             
-        with st.spinner(f"Fetching data for {symbol}..."):
+        with st.spinner(f"Fetching data for {symbol} from {start_date} to {end_date}..."):
             try:
                 import requests
+                from datetime import datetime as dt
+                
+                # Convert dates to datetime objects
+                start_dt = dt.combine(start_date, dt.min.time())
+                end_dt = dt.combine(end_date, dt.max.time())
                 
                 # Alpha Vantage API call
-                url = f"https://www.alphavantage.co/query"
+                url = "https://www.alphavantage.co/query"
                 params = {
                     'function': function,
                     'symbol': symbol,
@@ -242,6 +325,9 @@ def load_alpha_vantage_data():
                     'outputsize': output_size,
                     'datatype': 'json'
                 }
+                
+                # Log the API request details
+                st.info(f"🌐 Requesting {output_size} data for {symbol} ({function})")
                 
                 response = requests.get(url, params=params)
                 data = response.json()
@@ -258,34 +344,52 @@ def load_alpha_vantage_data():
                 time_series_key = list(data.keys())[1]  # Usually the second key
                 time_series = data[time_series_key]
                 
-                # Process the data
+                # Show information about raw data received
+                total_data_points = len(time_series)
+                st.info(f"📊 Received {total_data_points} total data points from API")
+                
+                # Process the data with date filtering
                 processed_data = []
                 for date_str, values in time_series.items():
                     timestamp = pd.to_datetime(date_str)
-                    processed_data.append({
-                        'timestamp': timestamp,
-                        'symbol': symbol,
-                        'open': float(values['1. open']),
-                        'high': float(values['2. high']),
-                        'low': float(values['3. low']),
-                        'close': float(values['4. close']),
-                        'volume': int(values['5. volume']),
-                        'resolution': '1d'  # Alpha Vantage daily data
-                    })
+                    
+                    # Filter by date range
+                    if start_dt <= timestamp <= end_dt:
+                        processed_data.append({
+                            'timestamp': timestamp,
+                            'symbol': symbol,
+                            'open': float(values['1. open']),
+                            'high': float(values['2. high']),
+                            'low': float(values['3. low']),
+                            'close': float(values['4. close']),
+                            'volume': int(values['5. volume']),
+                            'resolution': '1d'  # Alpha Vantage daily data
+                        })
                 
                 df = pd.DataFrame(processed_data)
                 df = df.sort_values('timestamp')
+                
+                if df.empty:
+                    st.warning(f"⚠️ No data found for {symbol} in the specified date range ({start_date} to {end_date})")
+                    st.info("💡 Try using 'full' output size or check if the symbol has data for this period")
+                    return
+                
+                # Show data summary
+                if len(df) < total_data_points:
+                    st.warning(f"⚠️ Only {len(df)} out of {total_data_points} data points fall within your date range")
+                    st.info("💡 Consider using a larger date range or 'full' output size for more data")
                 
                 st.session_state.market_data = df
                 st.session_state.data_loaded = True
                 st.session_state.data_source = "Alpha Vantage API"
                 st.session_state.symbol = symbol
                 
-                st.success(f"✅ Fetched {len(df)} bars for {symbol}")
+                st.success(f"✅ Fetched {len(df)} bars for {symbol} from {start_date} to {end_date}")
                 st.rerun()
                 
             except Exception as e:
                 st.error(f"❌ Error fetching data: {str(e)}")
+                st.info("💡 Tip: Check your API key and symbol. Alpha Vantage free tier has rate limits.")
 
 def load_manual_data():
     """Manually enter data points"""

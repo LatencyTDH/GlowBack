@@ -4,7 +4,6 @@ Strategy Editor Page - Create and edit trading strategies
 
 import streamlit as st
 from streamlit_ace import st_ace
-import json
 
 # Strategy templates
 STRATEGY_TEMPLATES = {

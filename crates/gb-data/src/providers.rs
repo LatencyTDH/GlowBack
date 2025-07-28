@@ -396,7 +396,8 @@ impl DataProvider for AlphaVantageProvider {
         end_date: DateTime<Utc>,
         resolution: Resolution,
     ) -> GbResult<Vec<Bar>> {
-        tracing::info!("Fetching data from Alpha Vantage for {} ({:?})", symbol, resolution);
+        tracing::info!("Fetching data from Alpha Vantage for {} ({:?}) from {} to {}", 
+            symbol, resolution, start_date, end_date);
 
         // Alpha Vantage mainly supports daily data for free tier
         let function = match resolution {
@@ -409,7 +410,7 @@ impl DataProvider for AlphaVantageProvider {
         };
 
         let url = format!(
-            "https://www.alphavantage.co/query?function={}&symbol={}&apikey={}",
+            "https://www.alphavantage.co/query?function={}&symbol={}&apikey={}&outputsize=full",
             function, symbol.symbol, self.api_key
         );
         
@@ -448,11 +449,21 @@ impl DataProvider for AlphaVantageProvider {
         }
 
         let mut bars = self.parse_daily_response(json, symbol)?;
+        let total_bars = bars.len();
 
         // Filter by date range
         bars.retain(|bar| bar.timestamp >= start_date && bar.timestamp <= end_date);
 
-        tracing::info!("Retrieved {} bars from Alpha Vantage for {}", bars.len(), symbol);
+        tracing::info!("Retrieved {} bars from Alpha Vantage for {} (filtered from {} total bars)", 
+            bars.len(), symbol, total_bars);
+        
+        if bars.is_empty() {
+            return Err(DataError::LoadingFailed {
+                message: format!("No data found for {} in date range {} to {}", 
+                    symbol, start_date, end_date),
+            }.into());
+        }
+
         Ok(bars)
     }
     

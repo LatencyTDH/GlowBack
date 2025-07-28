@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import numpy as np
-from datetime import datetime
 
 def show():
     """Main results dashboard page"""
