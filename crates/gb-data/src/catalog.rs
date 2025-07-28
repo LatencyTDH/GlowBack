@@ -2,19 +2,51 @@ use std::path::Path;
 use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use gb_types::{Symbol, Resolution, GbResult, DataError};
-// use duckdb::{Connection, Result as DuckResult};
+use duckdb::Connection;
 
-/// Data catalog for managing metadata (simplified in-memory implementation)
+/// Data catalog for managing metadata with DuckDB backend
 #[derive(Debug)]
 pub struct DataCatalog {
-    // connection: Connection, // TODO: Re-enable when DuckDB dependency is fixed
-    symbols: HashMap<String, SymbolInfo>,
+    connection: Connection,
+    symbols: HashMap<String, SymbolInfo>, // Keep in-memory cache for performance
 }
 
 impl DataCatalog {
-    pub async fn new<P: AsRef<Path>>(_db_path: P) -> GbResult<Self> {
-        // TODO: Re-implement with DuckDB when dependency conflicts are resolved
+    pub async fn new<P: AsRef<Path>>(db_path: P) -> GbResult<Self> {
+        let connection = Connection::open(db_path)
+            .map_err(|e| DataError::DatabaseConnection { message: e.to_string() })?;
+        
+        // Create tables if they don't exist
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS symbol_metadata (
+                id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                asset_class TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                record_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_symbol_metadata_symbol ON symbol_metadata(symbol);
+            CREATE INDEX IF NOT EXISTS idx_symbol_metadata_exchange ON symbol_metadata(exchange);
+            CREATE INDEX IF NOT EXISTS idx_symbol_metadata_asset_class ON symbol_metadata(asset_class);
+            
+            CREATE TABLE IF NOT EXISTS data_sources (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                config TEXT,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );"
+        ).map_err(|e| DataError::DatabaseConnection { message: e.to_string() })?;
+        
         Ok(Self {
+            connection,
             symbols: HashMap::new(),
         })
     }
@@ -35,7 +67,28 @@ impl DataCatalog {
             record_count: 0,
             last_updated: Utc::now(),
         };
-        self.symbols.insert(key, info);
+        
+        // Update in-memory cache
+        self.symbols.insert(key.clone(), info);
+        
+        // Update DuckDB
+        let mut stmt = self.connection.prepare(
+            "INSERT OR REPLACE INTO symbol_metadata 
+             (id, symbol, exchange, asset_class, resolution, start_date, end_date, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
+        ).map_err(|e| DataError::DatabaseConnection { message: e.to_string() })?;
+        
+        stmt.execute([
+            &key,
+            &symbol.symbol,
+            &symbol.exchange,
+            &format!("{:?}", symbol.asset_class),
+            &format!("{:?}", resolution),
+            &start_date.to_rfc3339(),
+            &end_date.to_rfc3339(),
+        ]).map_err(|e| DataError::DatabaseConnection { message: e.to_string() })?;
+        
+        tracing::debug!("Registered symbol data: {} from {} to {}", symbol, start_date, end_date);
         Ok(())
     }
     
@@ -115,13 +168,4 @@ pub struct CatalogStats {
     pub total_records: u64,
     pub earliest_date: Option<DateTime<Utc>>,
     pub latest_date: Option<DateTime<Utc>>,
-}
-
-// TODO: Re-enable when DuckDB is added back
-// impl From<duckdb::Error> for gb_types::DataError {
-//     fn from(err: duckdb::Error) -> Self {
-//         gb_types::DataError::DatabaseConnection {
-//             message: err.to_string(),
-//         }
-//     }
-// } 
+} 

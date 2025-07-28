@@ -288,6 +288,98 @@ impl AlphaVantageProvider {
             client: reqwest::Client::new(),
         }
     }
+
+    /// Parse Alpha Vantage daily response
+    fn parse_daily_response(&self, response: serde_json::Value, symbol: &Symbol) -> GbResult<Vec<Bar>> {
+        let time_series = response
+            .get("Time Series (Daily)")
+            .ok_or_else(|| DataError::ParseError {
+                message: "Missing 'Time Series (Daily)' in response".to_string(),
+            })?
+            .as_object()
+            .ok_or_else(|| DataError::ParseError {
+                message: "Time Series is not an object".to_string(),
+            })?;
+
+        let mut bars = Vec::new();
+
+        for (date_str, data) in time_series {
+            let timestamp = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+                .map_err(|e| DataError::ParseError {
+                    message: format!("Failed to parse date '{}': {}", date_str, e),
+                })?
+                .and_hms_opt(16, 0, 0) // Market close time (4 PM EST)
+                .ok_or_else(|| DataError::ParseError {
+                    message: "Failed to create timestamp".to_string(),
+                })?;
+
+            let timestamp = DateTime::<Utc>::from_naive_utc_and_offset(timestamp, Utc);
+
+            let data_obj = data.as_object().ok_or_else(|| DataError::ParseError {
+                message: format!("Data for {} is not an object", date_str),
+            })?;
+
+            let open = self.parse_price_field(data_obj, "1. open")?;
+            let high = self.parse_price_field(data_obj, "2. high")?;
+            let low = self.parse_price_field(data_obj, "3. low")?;
+            let close = self.parse_price_field(data_obj, "4. close")?;
+            let volume = self.parse_volume_field(data_obj, "5. volume")?;
+
+            let bar = Bar::new(
+                symbol.clone(),
+                timestamp,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                Resolution::Day,
+            );
+
+            bars.push(bar);
+        }
+
+        // Sort by timestamp (oldest first)
+        bars.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        Ok(bars)
+    }
+
+    /// Parse a price field from Alpha Vantage response
+    fn parse_price_field(&self, data: &serde_json::Map<String, serde_json::Value>, field: &str) -> GbResult<rust_decimal::Decimal> {
+        let value_str = data
+            .get(field)
+            .ok_or_else(|| DataError::ParseError {
+                message: format!("Missing field '{}'", field),
+            })?
+            .as_str()
+            .ok_or_else(|| DataError::ParseError {
+                message: format!("Field '{}' is not a string", field),
+            })?;
+
+        value_str.parse::<rust_decimal::Decimal>()
+            .map_err(|e| DataError::ParseError {
+                message: format!("Failed to parse {} value '{}': {}", field, value_str, e),
+            }.into())
+    }
+
+    /// Parse a volume field from Alpha Vantage response
+    fn parse_volume_field(&self, data: &serde_json::Map<String, serde_json::Value>, field: &str) -> GbResult<rust_decimal::Decimal> {
+        let value_str = data
+            .get(field)
+            .ok_or_else(|| DataError::ParseError {
+                message: format!("Missing field '{}'", field),
+            })?
+            .as_str()
+            .ok_or_else(|| DataError::ParseError {
+                message: format!("Field '{}' is not a string", field),
+            })?;
+
+        value_str.parse::<rust_decimal::Decimal>()
+            .map_err(|e| DataError::ParseError {
+                message: format!("Failed to parse {} value '{}': {}", field, value_str, e),
+            }.into())
+    }
 }
 
 #[async_trait]
@@ -299,15 +391,69 @@ impl DataProvider for AlphaVantageProvider {
     
     async fn fetch_bars(
         &mut self,
-        _symbol: &Symbol,
-        _start_date: DateTime<Utc>,
-        _end_date: DateTime<Utc>,
-        _resolution: Resolution,
+        symbol: &Symbol,
+        start_date: DateTime<Utc>,
+        end_date: DateTime<Utc>,
+        resolution: Resolution,
     ) -> GbResult<Vec<Bar>> {
-        // TODO: Implement Alpha Vantage API integration
-        Err(DataError::LoadingFailed {
-            message: "Alpha Vantage integration not yet implemented".to_string(),
-        }.into())
+        tracing::info!("Fetching data from Alpha Vantage for {} ({:?})", symbol, resolution);
+
+        // Alpha Vantage mainly supports daily data for free tier
+        let function = match resolution {
+            Resolution::Day => "TIME_SERIES_DAILY",
+            _ => {
+                return Err(DataError::LoadingFailed {
+                    message: format!("Resolution {:?} not supported by Alpha Vantage free tier", resolution),
+                }.into());
+            }
+        };
+
+        let url = format!(
+            "https://www.alphavantage.co/query?function={}&symbol={}&apikey={}",
+            function, symbol.symbol, self.api_key
+        );
+        
+        let response = self.client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| DataError::LoadingFailed {
+                message: format!("HTTP request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(DataError::LoadingFailed {
+                message: format!("HTTP error: {}", response.status()),
+            }.into());
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| DataError::LoadingFailed {
+                message: format!("Failed to parse JSON response: {}", e),
+            })?;
+
+        // Check for API errors
+        if let Some(error) = json.get("Error Message") {
+            return Err(DataError::LoadingFailed {
+                message: format!("API error: {}", error),
+            }.into());
+        }
+
+        if let Some(note) = json.get("Note") {
+            return Err(DataError::LoadingFailed {
+                message: format!("API limit exceeded: {}", note),
+            }.into());
+        }
+
+        let mut bars = self.parse_daily_response(json, symbol)?;
+
+        // Filter by date range
+        bars.retain(|bar| bar.timestamp >= start_date && bar.timestamp <= end_date);
+
+        tracing::info!("Retrieved {} bars from Alpha Vantage for {}", bars.len(), symbol);
+        Ok(bars)
     }
     
     fn name(&self) -> &str {

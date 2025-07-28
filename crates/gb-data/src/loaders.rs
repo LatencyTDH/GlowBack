@@ -37,15 +37,221 @@ impl BatchLoader {
     /// Load bars from a CSV file using csv crate
     pub async fn load_csv_file<P: AsRef<Path>>(
         &self,
-        _file_path: P,
-        _symbol: &Symbol,
-        _resolution: Resolution,
-        _has_headers: bool,
+        file_path: P,
+        symbol: &Symbol,
+        resolution: Resolution,
+        has_headers: bool,
     ) -> GbResult<Vec<Bar>> {
-        // TODO: Implement CSV loading using csv crate directly
-        Err(DataError::LoadingFailed {
-            message: "CSV loading not yet implemented".to_string(),
+        use csv::ReaderBuilder;
+        use std::str::FromStr;
+        
+        let path = file_path.as_ref();
+        tracing::info!("Loading CSV data from: {}", path.display());
+        
+        let mut bars = Vec::new();
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(has_headers)
+            .from_path(path)
+            .map_err(|e| DataError::LoadingFailed {
+                message: format!("Failed to open CSV file {}: {}", path.display(), e),
+            })?;
+
+        let headers = if has_headers {
+            Some(rdr.headers()
+                .map_err(|e| DataError::LoadingFailed {
+                    message: format!("Failed to read CSV headers: {}", e),
+                })?
+                .clone())
+        } else {
+            None
+        };
+
+        if let Some(ref h) = headers {
+            tracing::debug!("CSV headers: {:?}", h);
+        }
+
+        for (line_num, result) in rdr.records().enumerate() {
+            let record = result.map_err(|e| DataError::LoadingFailed {
+                message: format!("Failed to read CSV record at line {}: {}", line_num + if has_headers { 2 } else { 1 }, e),
+            })?;
+
+            match self.parse_csv_record(&record, symbol, resolution, &headers) {
+                Ok(bar) => bars.push(bar),
+                Err(e) => {
+                    tracing::warn!("Skipping invalid record at line {}: {}", line_num + if has_headers { 2 } else { 1 }, e);
+                    continue;
+                }
+            }
+        }
+
+        tracing::info!("Loaded {} bars from CSV file", bars.len());
+        Ok(bars)
+    }
+
+    /// Parse a CSV record into a Bar struct
+    fn parse_csv_record(
+        &self,
+        record: &csv::StringRecord,
+        symbol: &Symbol,
+        resolution: Resolution,
+        headers: &Option<csv::StringRecord>,
+    ) -> GbResult<Bar> {
+        use std::str::FromStr;
+        
+        // Default column mapping for standard OHLCV CSV format
+        let (timestamp_idx, open_idx, high_idx, low_idx, close_idx, volume_idx) = 
+            if let Some(headers) = headers {
+                self.detect_csv_columns(headers)?
+            } else {
+                // Default ordering: timestamp, open, high, low, close, volume
+                (0, 1, 2, 3, 4, 5)
+            };
+
+        if record.len() <= volume_idx {
+            return Err(DataError::ParseError {
+                message: format!("CSV record has {} columns, expected at least {}", record.len(), volume_idx + 1),
+            }.into());
+        }
+
+        // Parse timestamp
+        let timestamp_str = record.get(timestamp_idx).unwrap_or("");
+        let timestamp = self.parse_timestamp(timestamp_str)?;
+
+        // Parse OHLCV values
+        let open = self.parse_decimal(record.get(open_idx).unwrap_or(""), "open")?;
+        let high = self.parse_decimal(record.get(high_idx).unwrap_or(""), "high")?;
+        let low = self.parse_decimal(record.get(low_idx).unwrap_or(""), "low")?;
+        let close = self.parse_decimal(record.get(close_idx).unwrap_or(""), "close")?;
+        let volume = self.parse_decimal(record.get(volume_idx).unwrap_or(""), "volume")?;
+
+        // Validate OHLC relationships
+        if high < low {
+            return Err(DataError::ParseError {
+                message: format!("Invalid OHLC: high ({}) < low ({})", high, low),
+            }.into());
+        }
+        if high < open || high < close {
+            return Err(DataError::ParseError {
+                message: format!("Invalid OHLC: high ({}) < open ({}) or close ({})", high, open, close),
+            }.into());
+        }
+        if low > open || low > close {
+            return Err(DataError::ParseError {
+                message: format!("Invalid OHLC: low ({}) > open ({}) or close ({})", low, open, close),
+            }.into());
+        }
+
+        Ok(Bar::new(
+            symbol.clone(),
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            resolution,
+        ))
+    }
+
+    /// Detect CSV column positions from headers
+    fn detect_csv_columns(&self, headers: &csv::StringRecord) -> GbResult<(usize, usize, usize, usize, usize, usize)> {
+        let mut timestamp_idx = None;
+        let mut open_idx = None;
+        let mut high_idx = None;
+        let mut low_idx = None;
+        let mut close_idx = None;
+        let mut volume_idx = None;
+
+        for (i, header) in headers.iter().enumerate() {
+            let header_lower = header.to_lowercase();
+            match header_lower.as_str() {
+                "timestamp" | "date" | "datetime" | "time" => timestamp_idx = Some(i),
+                "open" => open_idx = Some(i),
+                "high" => high_idx = Some(i),
+                "low" => low_idx = Some(i),
+                "close" | "close_price" => close_idx = Some(i),
+                "volume" | "vol" => volume_idx = Some(i),
+                _ => {} // Ignore unknown columns
+            }
+        }
+
+        let timestamp_idx = timestamp_idx.ok_or_else(|| DataError::ParseError {
+            message: "Could not find timestamp column in CSV headers".to_string(),
+        })?;
+        let open_idx = open_idx.ok_or_else(|| DataError::ParseError {
+            message: "Could not find open column in CSV headers".to_string(),
+        })?;
+        let high_idx = high_idx.ok_or_else(|| DataError::ParseError {
+            message: "Could not find high column in CSV headers".to_string(),
+        })?;
+        let low_idx = low_idx.ok_or_else(|| DataError::ParseError {
+            message: "Could not find low column in CSV headers".to_string(),
+        })?;
+        let close_idx = close_idx.ok_or_else(|| DataError::ParseError {
+            message: "Could not find close column in CSV headers".to_string(),
+        })?;
+        let volume_idx = volume_idx.ok_or_else(|| DataError::ParseError {
+            message: "Could not find volume column in CSV headers".to_string(),
+        })?;
+
+        Ok((timestamp_idx, open_idx, high_idx, low_idx, close_idx, volume_idx))
+    }
+
+    /// Parse a timestamp string into DateTime<Utc>
+    fn parse_timestamp(&self, timestamp_str: &str) -> GbResult<chrono::DateTime<chrono::Utc>> {
+        use chrono::{DateTime, Utc, NaiveDateTime};
+        
+        // Try parsing as date-only first
+        if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(timestamp_str, "%Y-%m-%d") {
+            // Convert to datetime at market open (9:30 AM EST = 14:30 UTC)
+            if let Some(naive_dt) = naive_date.and_hms_opt(14, 30, 0) {
+                return Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc));
+            }
+        }
+
+        // Try multiple timestamp formats
+        let formats = [
+            "%Y-%m-%d %H:%M:%S",      // 2023-01-01 10:30:00
+            "%Y/%m/%d %H:%M:%S",      // 2023/01/01 10:30:00
+            "%Y/%m/%d",               // 2023/01/01
+            "%m/%d/%Y %H:%M:%S",      // 01/01/2023 10:30:00
+            "%m/%d/%Y",               // 01/01/2023
+            "%Y-%m-%dT%H:%M:%S",      // 2023-01-01T10:30:00
+            "%Y-%m-%dT%H:%M:%SZ",     // 2023-01-01T10:30:00Z
+        ];
+
+        for format in &formats {
+            if let Ok(naive_dt) = NaiveDateTime::parse_from_str(timestamp_str, format) {
+                return Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc));
+            }
+        }
+
+        // Try parsing as Unix timestamp
+        if let Ok(timestamp) = timestamp_str.parse::<i64>() {
+            if let Some(dt) = DateTime::from_timestamp(timestamp, 0) {
+                return Ok(dt);
+            }
+        }
+
+        Err(DataError::ParseError {
+            message: format!("Could not parse timestamp: {}", timestamp_str),
         }.into())
+    }
+
+    /// Parse a decimal value from string
+    fn parse_decimal(&self, value_str: &str, field_name: &str) -> GbResult<rust_decimal::Decimal> {
+        use rust_decimal::Decimal;
+        
+        if value_str.is_empty() {
+            return Err(DataError::ParseError {
+                message: format!("Empty value for field: {}", field_name),
+            }.into());
+        }
+
+        value_str.parse::<Decimal>()
+            .map_err(|e| DataError::ParseError {
+                message: format!("Could not parse {} value '{}': {}", field_name, value_str, e),
+            }.into())
     }
     
     /*/// Convert Polars DataFrame to Bar structs
@@ -378,21 +584,35 @@ mod tests {
     
     #[tokio::test]
     async fn test_csv_loading() {
-        let _temp_file = NamedTempFile::new().unwrap();
-        // TODO: Implement actual CSV loading test
-        /*
-        writeln!(temp_file, "timestamp,open,high,low,close,volume").unwrap();
+        let loader = BatchLoader::new();
+        let symbol = Symbol::equity("AAPL");
+        
+        // Create a temporary CSV file with test data
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "date,open,high,low,close,volume").unwrap();
         writeln!(temp_file, "2023-01-01,100.0,105.0,98.0,102.0,10000").unwrap();
         writeln!(temp_file, "2023-01-02,102.0,107.0,101.0,105.0,15000").unwrap();
         temp_file.flush().unwrap();
         
-        let loader = BatchLoader::new();
-        let symbol = Symbol::equity("AAPL");
         let bars = loader.load_csv_file(temp_file.path(), &symbol, Resolution::Day, true).await.unwrap();
-        
         assert_eq!(bars.len(), 2);
-        assert_eq!(bars[0].close, Decimal::from(102));
-        assert_eq!(bars[1].close, Decimal::from(105));
-        */
+        
+        // Verify first bar
+        let bar1 = &bars[0];
+        assert_eq!(bar1.symbol, symbol);
+        assert_eq!(bar1.open, rust_decimal::Decimal::from(100));
+        assert_eq!(bar1.high, rust_decimal::Decimal::from(105));
+        assert_eq!(bar1.low, rust_decimal::Decimal::from(98));
+        assert_eq!(bar1.close, rust_decimal::Decimal::from(102));
+        assert_eq!(bar1.volume, rust_decimal::Decimal::from(10000));
+        assert_eq!(bar1.resolution, Resolution::Day);
+        
+        // Verify second bar
+        let bar2 = &bars[1];
+        assert_eq!(bar2.open, rust_decimal::Decimal::from(102));
+        assert_eq!(bar2.high, rust_decimal::Decimal::from(107));
+        assert_eq!(bar2.low, rust_decimal::Decimal::from(101));
+        assert_eq!(bar2.close, rust_decimal::Decimal::from(105));
+        assert_eq!(bar2.volume, rust_decimal::Decimal::from(15000));
     }
 } 

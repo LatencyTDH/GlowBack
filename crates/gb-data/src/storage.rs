@@ -1,17 +1,20 @@
-use std::path::{Path, PathBuf};
+// TODO: Re-enable when Arrow compatibility issues are resolved - RESOLVED!
 use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::fs;
 use chrono::{DateTime, Utc};
-use gb_types::{Bar, Symbol, Resolution, GbResult, DataError};
-// TODO: Re-enable when Arrow compatibility issues are resolved
-// use arrow::array::{
-//     Array, ArrayRef, StringArray, TimestampNanosecondArray, Decimal128Array,
-//     Int64Array, RecordBatch,
-// };
-// use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-// use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
-// use parquet::file::properties::WriterProperties;
+use tokio::task;
+use gb_types::{Symbol, Bar, Resolution, GbResult, DataError};
+use arrow::array::{
+    Array, ArrayRef, StringArray, TimestampNanosecondArray, 
+    Decimal128Array, Int64Array
+};
+use arrow::record_batch::RecordBatch;
+use arrow::datatypes::{Schema, Field, DataType, TimeUnit};
+use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
+use parquet::file::properties::WriterProperties;
 use rust_decimal::Decimal;
-// use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::prelude::ToPrimitive;
 
 /// Storage manager for Parquet files
 #[derive(Debug)]
@@ -39,30 +42,76 @@ impl StorageManager {
     /// Save bars to Parquet file
     pub async fn save_bars(
         &self,
-        _symbol: &Symbol,
-        _bars: &[Bar],
-        _resolution: Resolution,
+        symbol: &Symbol,
+        bars: &[Bar],
+        resolution: Resolution,
     ) -> GbResult<()> {
-        // TODO: Implement Parquet storage when Arrow compatibility issues are resolved
+        let storage_path = self.get_storage_path(symbol, resolution);
+        
+        // Ensure parent directory exists
+        if let Some(parent) = storage_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        
+        let schema = Self::get_schema();
+        
+        let writer = ArrowWriter::try_new(
+            fs::File::create(&storage_path)?,
+            schema,
+            Some(WriterProperties::builder().build()),
+        ).map_err(|e| DataError::LoadingFailed { message: e.to_string() })?;
+        
+        let record_batch = Self::bars_to_record_batch(bars)?;
+        let mut writer = writer;
+        writer.write(&record_batch)
+            .map_err(|e| DataError::LoadingFailed { message: e.to_string() })?;
+        writer.close()
+            .map_err(|e| DataError::LoadingFailed { message: e.to_string() })?;
+        
+        tracing::info!("Saved {} bars to {}", bars.len(), storage_path.display());
         Ok(())
     }
     
     /// Load bars from Parquet file
     pub async fn load_bars(
         &self,
-        _symbol: &Symbol,
-        _start_date: DateTime<Utc>,
-        _end_date: DateTime<Utc>,
-        _resolution: Resolution,
+        symbol: &Symbol,
+        start_date: DateTime<Utc>,
+        end_date: DateTime<Utc>,
+        resolution: Resolution,
     ) -> GbResult<Vec<Bar>> {
-        // TODO: Implement Parquet loading when Arrow compatibility issues are resolved
-        Err(DataError::LoadingFailed {
-            message: "Parquet storage not yet implemented".to_string(),
-        }.into())
+        let storage_path = self.get_storage_path(symbol, resolution);
+        
+        if !storage_path.exists() {
+            return Err(DataError::SymbolNotFound { 
+                symbol: symbol.to_string() 
+            }.into());
+        }
+        
+        let file = fs::File::open(&storage_path)?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .map_err(|e| DataError::LoadingFailed { message: e.to_string() })?
+            .build()
+            .map_err(|e| DataError::LoadingFailed { message: e.to_string() })?;
+        
+        let mut bars = Vec::new();
+        
+        for batch_result in reader {
+            let batch = batch_result
+                .map_err(|e| DataError::LoadingFailed { message: e.to_string() })?;
+            let mut batch_bars = Self::record_batch_to_bars(&batch, symbol, resolution)?;
+            
+            // Filter by date range
+            batch_bars.retain(|bar| bar.timestamp >= start_date && bar.timestamp <= end_date);
+            bars.extend(batch_bars);
+        }
+        
+        tracing::info!("Loaded {} bars from {}", bars.len(), storage_path.display());
+        Ok(bars)
     }
     
-    /*/// Convert bars to Arrow RecordBatch
-    fn bars_to_record_batch(&self, bars: &[Bar]) -> GbResult<RecordBatch> {
+    /// Convert bars to Arrow RecordBatch
+    fn bars_to_record_batch(bars: &[Bar]) -> GbResult<RecordBatch> {
         let schema = Self::get_schema();
         
         let symbols: Vec<String> = bars.iter().map(|b| b.symbol.to_string()).collect();
@@ -102,11 +151,10 @@ impl StorageManager {
         let batch = RecordBatch::try_new(schema, arrays)
             .map_err(|e| DataError::InvalidFormat { message: e.to_string() })?;
         Ok(batch)
-    }*/
+    }
     
-    /*/// Convert Arrow RecordBatch to bars
+    /// Convert Arrow RecordBatch to bars
     fn record_batch_to_bars(
-        &self,
         batch: &RecordBatch,
         symbol: &Symbol,
         resolution: Resolution,
@@ -188,9 +236,9 @@ impl StorageManager {
         }
         
         Ok(bars)
-    }*/
+    }
     
-    /*/// Get the Arrow schema for bar data
+    /// Get the Arrow schema for bar data
     fn get_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("symbol", DataType::Utf8, false),
@@ -205,7 +253,7 @@ impl StorageManager {
             Field::new("close", DataType::Decimal128(18, 4), false),
             Field::new("volume", DataType::Int64, false),
         ]))
-    }*/
+    }
     
     /// List available symbols in storage
     pub fn list_symbols(&self) -> GbResult<Vec<Symbol>> {
@@ -342,15 +390,18 @@ mod tests {
             ),
         ];
         
-        // Save bars (currently returns Ok() without doing anything)
+        // Save bars
         storage.save_bars(&symbol, &bars, Resolution::Day).await.unwrap();
         
-        // Load bars (currently returns error - expected)
+        // Load bars back
         let start = Utc::now() - chrono::Duration::days(1);
         let end = Utc::now() + chrono::Duration::days(1);
-        let result = storage.load_bars(&symbol, start, end, Resolution::Day).await;
+        let loaded_bars = storage.load_bars(&symbol, start, end, Resolution::Day).await.unwrap();
         
-        // We expect this to fail since storage is not implemented yet
-        assert!(result.is_err());
+        // Verify the round-trip worked correctly
+        assert_eq!(loaded_bars.len(), bars.len());
+        assert_eq!(loaded_bars[0].symbol, bars[0].symbol);
+        assert_eq!(loaded_bars[0].open, bars[0].open);
+        assert_eq!(loaded_bars[0].close, bars[0].close);
     }
 } 

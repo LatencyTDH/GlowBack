@@ -20,19 +20,15 @@ rust_decimal = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 rayon = { workspace = true }
+async-trait = "0.1"
 
-# DuckDB integration (temporarily disabled due to arrow version conflicts)
-# duckdb = { version = "0.10", features = ["bundled"] }
+# DuckDB integration (re-enabled - testing compatibility with Arrow 55.2)
+duckdb = { version = "1.3", features = ["bundled"] }
 
 # CSV and data format support
 csv = "1.3"
-# polars = { version = "0.49", features = ["lazy", "csv"] }
-
-# HTTP client for data sources
 reqwest = { version = "0.11", features = ["json"] }
-
-# Async trait support
-async-trait = "0.1"
+# polars = { version = "0.49", features = ["lazy", "csv"] }
 
 # Local storage
 dirs = "5.0"
