@@ -1,7 +1,11 @@
 use std::path::Path;
+use std::fs;
 use chrono::{DateTime, Utc};
 use gb_types::{Bar, Symbol, Resolution, GbResult, DataError, AssetClass};
 use rust_decimal::Decimal;
+use arrow::array::{Array, StringArray, TimestampNanosecondArray, Decimal128Array, Int64Array};
+use arrow::record_batch::RecordBatch;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 // use polars::prelude::*;
 
 /// Batch data loader for efficient bulk operations
@@ -24,14 +28,128 @@ impl BatchLoader {
     /// Load bars from a Parquet file using Arrow for performance
     pub async fn load_parquet_file<P: AsRef<Path>>(
         &self,
-        _file_path: P,
-        _symbol: &Symbol,
-        _resolution: Resolution,
+        file_path: P,
+        symbol: &Symbol,
+        resolution: Resolution,
     ) -> GbResult<Vec<Bar>> {
-        // TODO: Implement parquet loading using arrow directly
-        Err(DataError::LoadingFailed {
-            message: "Parquet loading not yet implemented".to_string(),
-        }.into())
+        let path = file_path.as_ref();
+        tracing::info!("Loading Parquet data from: {}", path.display());
+
+        if !path.exists() {
+            return Err(DataError::SymbolNotFound { 
+                symbol: symbol.to_string() 
+            }.into());
+        }
+
+        let file = fs::File::open(path)?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .map_err(|e| DataError::LoadingFailed { 
+                message: format!("Failed to create Parquet reader for {}: {}", path.display(), e) 
+            })?
+            .build()
+            .map_err(|e| DataError::LoadingFailed { 
+                message: format!("Failed to build Parquet reader: {}", e) 
+            })?;
+
+        let mut all_bars = Vec::new();
+
+        for batch_result in reader {
+            let batch = batch_result
+                .map_err(|e| DataError::LoadingFailed { 
+                    message: format!("Failed to read Parquet batch: {}", e) 
+                })?;
+
+            let batch_bars = Self::record_batch_to_bars(&batch, symbol, resolution)?;
+            all_bars.extend(batch_bars);
+        }
+
+        tracing::info!("Loaded {} bars from Parquet file: {}", all_bars.len(), path.display());
+        Ok(all_bars)
+    }
+
+    /// Convert Arrow RecordBatch to bars (similar to storage.rs implementation)
+    fn record_batch_to_bars(
+        batch: &RecordBatch,
+        symbol: &Symbol,
+        resolution: Resolution,
+    ) -> GbResult<Vec<Bar>> {
+        let timestamps = batch.column(1)
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .ok_or_else(|| DataError::Corruption {
+                message: "Invalid timestamp column in Parquet file".to_string(),
+            })?;
+        
+        let opens = batch.column(2)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .ok_or_else(|| DataError::Corruption {
+                message: "Invalid open column in Parquet file".to_string(),
+            })?;
+        
+        let highs = batch.column(3)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .ok_or_else(|| DataError::Corruption {
+                message: "Invalid high column in Parquet file".to_string(),
+            })?;
+        
+        let lows = batch.column(4)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .ok_or_else(|| DataError::Corruption {
+                message: "Invalid low column in Parquet file".to_string(),
+            })?;
+        
+        let closes = batch.column(5)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .ok_or_else(|| DataError::Corruption {
+                message: "Invalid close column in Parquet file".to_string(),
+            })?;
+        
+        let volumes = batch.column(6)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| DataError::Corruption {
+                message: "Invalid volume column in Parquet file".to_string(),
+            })?;
+        
+        let mut bars = Vec::new();
+        
+        for i in 0..batch.num_rows() {
+            if timestamps.is_null(i) || opens.is_null(i) || highs.is_null(i) 
+                || lows.is_null(i) || closes.is_null(i) || volumes.is_null(i) {
+                continue;
+            }
+            
+            let timestamp_nanos = timestamps.value(i);
+            let timestamp = DateTime::from_timestamp(
+                timestamp_nanos / 1_000_000_000,
+                (timestamp_nanos % 1_000_000_000) as u32,
+            ).unwrap_or_default();
+            
+            let open = Decimal::from_i128_with_scale(opens.value(i), 4);
+            let high = Decimal::from_i128_with_scale(highs.value(i), 4);
+            let low = Decimal::from_i128_with_scale(lows.value(i), 4);
+            let close = Decimal::from_i128_with_scale(closes.value(i), 4);
+            let volume = Decimal::from(volumes.value(i));
+            
+            let bar = Bar::new(
+                symbol.clone(),
+                timestamp,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                resolution,
+            );
+            
+            bars.push(bar);
+        }
+        
+        Ok(bars)
     }
     
     /// Load bars from a CSV file using csv crate
@@ -579,7 +697,8 @@ pub enum DataFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    use crate::storage::StorageManager;
+    use tempfile::{NamedTempFile, TempDir};
     use std::io::Write;
     
     #[tokio::test]
@@ -614,5 +733,97 @@ mod tests {
         assert_eq!(bar2.low, rust_decimal::Decimal::from(101));
         assert_eq!(bar2.close, rust_decimal::Decimal::from(105));
         assert_eq!(bar2.volume, rust_decimal::Decimal::from(15000));
+    }
+
+    #[tokio::test]
+    async fn test_parquet_loading() {
+        let loader = BatchLoader::new();
+        let symbol = Symbol::equity("TSLA");
+        
+        // Create test data
+        let test_bars = vec![
+            Bar::new(
+                symbol.clone(),
+                "2023-06-01T14:30:00Z".parse().unwrap(),
+                Decimal::from(250),
+                Decimal::from(255),
+                Decimal::from(248),
+                Decimal::from(252),
+                Decimal::from(50000),
+                Resolution::Day,
+            ),
+            Bar::new(
+                symbol.clone(),
+                "2023-06-02T14:30:00Z".parse().unwrap(),
+                Decimal::from(252),
+                Decimal::from(258),
+                Decimal::from(250),
+                Decimal::from(256),
+                Decimal::from(75000),
+                Resolution::Day,
+            ),
+            Bar::new(
+                symbol.clone(),
+                "2023-06-03T14:30:00Z".parse().unwrap(),
+                Decimal::from(256),
+                Decimal::from(262),
+                Decimal::from(254),
+                Decimal::from(260),
+                Decimal::from(60000),
+                Resolution::Day,
+            ),
+        ];
+
+        // Create temporary directory for storage
+        let temp_dir = TempDir::new().unwrap();
+        let storage = StorageManager::new(temp_dir.path()).unwrap();
+
+        // Save bars to Parquet file using storage
+        storage.save_bars(&symbol, &test_bars, Resolution::Day).await.unwrap();
+
+        // Get the expected Parquet file path (Resolution::Day formats as "1d")
+        let storage_path = temp_dir.path()
+            .join("NASDAQ")   // exchange
+            .join("Equity")   // asset class (Debug format)
+            .join("TSLA")     // symbol
+            .join("1d.parquet"); // Resolution::Day formats as "1d"
+
+        // Verify the file was created
+        assert!(storage_path.exists(), "Parquet file should exist at: {:?}", storage_path);
+
+        // Load bars using the Parquet loader
+        let loaded_bars = loader.load_parquet_file(&storage_path, &symbol, Resolution::Day).await.unwrap();
+
+        // Verify the round-trip worked correctly
+        assert_eq!(loaded_bars.len(), test_bars.len());
+
+        for (loaded, original) in loaded_bars.iter().zip(test_bars.iter()) {
+            assert_eq!(loaded.symbol, original.symbol);
+            assert_eq!(loaded.timestamp, original.timestamp);
+            assert_eq!(loaded.open, original.open);
+            assert_eq!(loaded.high, original.high);
+            assert_eq!(loaded.low, original.low);
+            assert_eq!(loaded.close, original.close);
+            assert_eq!(loaded.volume, original.volume);
+            assert_eq!(loaded.resolution, original.resolution);
+        }
+
+        tracing::info!("Parquet round-trip test completed successfully: {} bars", loaded_bars.len());
+    }
+
+    #[tokio::test]
+    async fn test_parquet_loading_nonexistent_file() {
+        let loader = BatchLoader::new();
+        let symbol = Symbol::equity("NONEXISTENT");
+        
+        let result = loader.load_parquet_file("/path/that/does/not/exist.parquet", &symbol, Resolution::Day).await;
+        
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            gb_types::GbError::Data(DataError::SymbolNotFound { .. }) => {
+                // Expected error type
+            }
+            other => panic!("Expected SymbolNotFound error, got: {:?}", other),
+        }
     }
 } 
