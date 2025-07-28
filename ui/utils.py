@@ -241,3 +241,79 @@ def get_alpha_vantage_rate_limit_info() -> dict:
             "data_points_per_call": "full"
         }
     } 
+
+def validate_backtest_results(results) -> tuple[bool, str, dict]:
+    """Validate backtest results data structure"""
+    if not results:
+        return False, "No results provided", {}
+    
+    if not isinstance(results, dict):
+        return False, f"Results must be a dictionary, got {type(results)}", {}
+    
+    # Check required keys
+    required_keys = ['equity_curve', 'final_value', 'total_return']
+    missing_keys = [key for key in required_keys if key not in results]
+    
+    if missing_keys:
+        return False, f"Missing required keys: {missing_keys}", {"available_keys": list(results.keys())}
+    
+    # Check equity curve structure
+    equity_curve = results.get('equity_curve', [])
+    if not equity_curve:
+        return False, "Empty equity curve data", {}
+    
+    if not isinstance(equity_curve, list):
+        return False, f"Equity curve must be a list, got {type(equity_curve)}", {}
+    
+    # Check first equity curve entry
+    if len(equity_curve) > 0:
+        first_entry = equity_curve[0]
+        if not isinstance(first_entry, dict):
+            return False, f"Equity curve entries must be dictionaries, got {type(first_entry)}", {}
+        
+        required_columns = ['timestamp', 'value']
+        missing_columns = [col for col in required_columns if col not in first_entry]
+        
+        if missing_columns:
+            return False, f"Missing required columns in equity curve: {missing_columns}", {
+                "available_columns": list(first_entry.keys())
+            }
+    
+    return True, "Results structure is valid", {
+        "equity_curve_length": len(equity_curve),
+        "available_keys": list(results.keys())
+    } 
+
+def detect_timestamp_format(sample_timestamps: list) -> str:
+    """Detect timestamp format from sample data"""
+    if not sample_timestamps:
+        return "Auto Detect"
+    
+    # Common patterns to check
+    patterns = [
+        ("ISO8601", r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"),
+        ("%Y-%m-%d", r"\d{4}-\d{2}-\d{2}$"),
+        ("%m/%d/%Y", r"^\d{1,2}/\d{1,2}/\d{4}$"),
+        ("%d/%m/%Y", r"^\d{1,2}/\d{1,2}/\d{4}$"),  # Note: This will match both formats
+        ("%Y-%m-%d %H:%M:%S", r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
+    ]
+    
+    import re
+    for format_name, pattern in patterns:
+        if all(re.match(pattern, str(ts)) for ts in sample_timestamps):
+            return format_name
+    
+    return "Auto Detect"
+
+def validate_timestamp_parsing(timestamp_str: str, format_name: str) -> tuple[bool, str]:
+    """Validate if a timestamp string can be parsed with the given format"""
+    try:
+        if format_name == "ISO8601":
+            pd.to_datetime(timestamp_str, format='ISO8601')
+        elif format_name == "Auto Detect":
+            pd.to_datetime(timestamp_str)
+        else:
+            pd.to_datetime(timestamp_str, format=format_name)
+        return True, "Valid timestamp"
+    except Exception as e:
+        return False, f"Invalid timestamp: {str(e)}" 

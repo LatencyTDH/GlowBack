@@ -15,6 +15,7 @@ def show():
     st.title("📈 Results Dashboard")
     st.markdown("Comprehensive analysis of your backtest results.")
     
+    # Check if results exist
     if not st.session_state.backtest_results:
         st.warning("⚠️ No backtest results available. Please run a backtest first.")
         if st.button("🚀 Go to Backtest Runner"):
@@ -24,22 +25,27 @@ def show():
     
     results = st.session_state.backtest_results
     
-    # Results overview
+    # Validate results structure using utility function
+    from utils import validate_backtest_results
+    is_valid, message, details = validate_backtest_results(results)
+    
+    if not is_valid:
+        st.error(f"❌ {message}")
+        if details:
+            st.write("Details:", details)
+        st.info("💡 This might be due to a backtest error or incomplete results.")
+        return
+    
+    # Show performance overview
     show_performance_overview(results)
     
-    st.markdown("---")
-    
-    # Charts section
+    # Show performance charts
     show_performance_charts(results)
     
-    st.markdown("---")
-    
-    # Trade analysis
+    # Show trade analysis
     show_trade_analysis(results)
     
-    st.markdown("---")
-    
-    # Risk analysis
+    # Show risk analysis
     show_risk_analysis(results)
 
 def show_performance_overview(results):
@@ -149,7 +155,23 @@ def show_performance_charts(results):
     """Show performance charts"""
     st.subheader("📊 Performance Charts")
     
+    # Check if equity_curve exists in results
+    if 'equity_curve' not in results:
+        st.error("❌ No equity curve data found in results")
+        st.write("Available keys:", list(results.keys()))
+        return
+    
     equity_curve = pd.DataFrame(results['equity_curve'])
+    
+    # Check if required columns exist
+    required_columns = ['timestamp', 'value']
+    missing_columns = [col for col in required_columns if col not in equity_curve.columns]
+    
+    if missing_columns:
+        st.error(f"❌ Missing required columns: {missing_columns}")
+        st.write("Available columns:", list(equity_curve.columns))
+        st.info("💡 This might be due to a different data format. Please check the backtest results.")
+        return
     
     # Equity curve chart
     fig = make_subplots(
@@ -174,7 +196,7 @@ def show_performance_charts(results):
     )
     
     # Returns
-    if len(equity_curve) > 1:
+    if len(equity_curve) > 1 and 'returns' in equity_curve.columns:
         daily_returns = equity_curve['returns'].pct_change() * 100
         fig.add_trace(
             go.Scatter(
@@ -236,6 +258,11 @@ def show_monthly_returns_heatmap(equity_curve):
         st.info("Not enough data for monthly analysis (need at least 30 days)")
         return
     
+    # Check if required columns exist
+    if 'timestamp' not in equity_curve.columns or 'value' not in equity_curve.columns:
+        st.error("❌ Missing required columns for monthly analysis")
+        return
+    
     # Calculate monthly returns
     equity_curve['timestamp'] = pd.to_datetime(equity_curve['timestamp'])
     equity_curve.set_index('timestamp', inplace=True)
@@ -273,6 +300,15 @@ def show_monthly_returns_heatmap(equity_curve):
 def show_portfolio_composition(equity_curve):
     """Show portfolio composition over time"""
     st.markdown("**💼 Portfolio Composition**")
+    
+    # Check if required columns exist
+    required_columns = ['timestamp', 'value', 'cash']
+    missing_columns = [col for col in required_columns if col not in equity_curve.columns]
+    
+    if missing_columns:
+        st.error(f"❌ Missing required columns for portfolio composition: {missing_columns}")
+        st.write("Available columns:", list(equity_curve.columns))
+        return
     
     # Create a simple composition chart
     fig = go.Figure()

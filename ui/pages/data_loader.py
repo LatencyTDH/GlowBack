@@ -137,8 +137,8 @@ def load_csv_data():
         with col2:
             date_format = st.selectbox(
                 "Date Format",
-                ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S"],
-                help="Format of date/timestamp column"
+                ["ISO8601", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "Auto Detect"],
+                help="Format of date/timestamp column. Use 'Auto Detect' for automatic parsing."
             )
             resolution = st.selectbox("Resolution", ["1d", "1h", "5m"], index=0)
         
@@ -167,24 +167,60 @@ def load_csv_data():
                 st.write("**CSV Preview:**")
                 st.dataframe(df.head())
                 
+                # Auto-detect timestamp format if requested
+                if date_format == "Auto Detect":
+                    from utils import detect_timestamp_format
+                    sample_timestamps = df[date_col].head(5).tolist()
+                    detected_format = detect_timestamp_format(sample_timestamps)
+                    st.info(f"🔍 Auto-detected format: {detected_format}")
+                    date_format = detected_format
+                
                 # Process the data
                 processed_data = []
-                for _, row in df.iterrows():
+                error_count = 0
+                total_rows = len(df)
+                
+                for idx, row in df.iterrows():
                     try:
-                        timestamp = pd.to_datetime(row[date_col], format=date_format)
+                        # Handle different date format options
+                        if date_format == "ISO8601":
+                            timestamp = pd.to_datetime(row[date_col], format='ISO8601')
+                        elif date_format == "Auto Detect":
+                            timestamp = pd.to_datetime(row[date_col])
+                        else:
+                            timestamp = pd.to_datetime(row[date_col], format=date_format)
+                        
+                        # Validate OHLC data
+                        open_price = float(row[open_col])
+                        high_price = float(row[high_col])
+                        low_price = float(row[low_col])
+                        close_price = float(row[close_col])
+                        
+                        # Basic OHLC validation
+                        if not (low_price <= open_price <= high_price and 
+                               low_price <= close_price <= high_price):
+                            st.warning(f"Row {idx+1}: Invalid OHLC data (low: {low_price}, open: {open_price}, high: {high_price}, close: {close_price})")
+                            error_count += 1
+                            continue
+                        
                         processed_data.append({
                             'timestamp': timestamp,
                             'symbol': symbol,
-                            'open': float(row[open_col]),
-                            'high': float(row[high_col]),
-                            'low': float(row[low_col]),
-                            'close': float(row[close_col]),
+                            'open': open_price,
+                            'high': high_price,
+                            'low': low_price,
+                            'close': close_price,
                             'volume': int(row[volume_col]) if volume_col in row else 0,
                             'resolution': resolution
                         })
                     except Exception as e:
-                        st.warning(f"Skipping row due to error: {e}")
+                        st.warning(f"Row {idx+1}: Error parsing data - {e}")
+                        error_count += 1
                         continue
+                
+                # Show processing summary
+                if error_count > 0:
+                    st.warning(f"⚠️ Skipped {error_count} rows due to errors out of {total_rows} total rows")
                 
                 if processed_data:
                     market_df = pd.DataFrame(processed_data)
