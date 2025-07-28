@@ -1,14 +1,16 @@
 # 🌟 GlowBack - High-Performance Quantitative Backtesting Platform
 
-[![Tests](https://img.shields.io/badge/tests-17%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-25%20passing-brightgreen)](#testing)
 [![Rust Version](https://img.shields.io/badge/rust-1.70%2B-blue)](#development-setup)
 [![Python Support](https://img.shields.io/badge/python-3.8%2B-blue)](#python-bindings)
 [![Storage](https://img.shields.io/badge/storage-Arrow%2FParquet%20✓-green)](#storage-capabilities)
 [![Database](https://img.shields.io/badge/catalog-DuckDB%20✓-green)](#database-capabilities)
 [![Simulator](https://img.shields.io/badge/market--sim-production%20ready-green)](#market-simulation)
+[![UI](https://img.shields.io/badge/ui-Streamlit%20✓-green)](#ui-interface)
+[![Strategies](https://img.shields.io/badge/strategies-4%20built--in-green)](#strategy-library)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
-GlowBack is a modern, high-performance backtesting platform designed for quantitative trading strategies. Built with Rust for speed and reliability, with comprehensive Python bindings for ease of use.
+GlowBack is a modern, high-performance backtesting platform designed for quantitative trading strategies. Built with Rust for speed and reliability, with comprehensive Python bindings and a beautiful Streamlit UI for ease of use.
 
 ## 🎯 Project Vision
 
@@ -18,6 +20,8 @@ GlowBack provides sophisticated traders, researchers, and institutions with:
 - **🤖 ML-ready interface** compatible with scikit-learn and PyTorch  
 - **📊 Built-in statistical robustness** for strategy validation
 - **⚡ High performance** with sub-minute backtests for years of data
+- **🎨 Beautiful UI** for strategy development and backtesting
+- **📚 Strategy Library** with common trading algorithms
 
 ## 🏗️ Architecture Overview
 
@@ -25,10 +29,11 @@ GlowBack provides sophisticated traders, researchers, and institutions with:
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **gb-types** | ✅ **Complete** | Core data structures, orders, portfolio, strategy framework |
+| **gb-types** | ✅ **Complete** | Core data structures, orders, portfolio, **strategy library** |
 | **gb-data** | ✅ **Complete** | Data ingestion, CSV/API providers, **DuckDB catalog**, **Parquet storage + loader** |
 | **gb-engine** | ✅ **Complete** | Event-driven backtesting engine with **realistic market simulation** |
 | **gb-python** | ✅ **Complete** | Full Python bindings with async support |
+| **🆕 UI Interface** | ✅ **Complete** | **Streamlit web interface** for strategy development |
 
 ### Technology Stack
 
@@ -41,6 +46,8 @@ GlowBack provides sophisticated traders, researchers, and institutions with:
 - **Caching**: High-performance in-memory LRU cache
 - **Python SDK**: PyO3 bindings with full async support
 - **Execution**: Realistic slippage, latency, and commission models
+- **🆕 UI Framework**: **Streamlit** with interactive charts and real-time updates
+- **🆕 Strategy Library**: **4 built-in strategies** with parameter optimization
 
 ## 🚀 Current Implementation Status
 
@@ -50,7 +57,7 @@ GlowBack provides sophisticated traders, researchers, and institutions with:
 - ✅ **Multi-crate Rust workspace** with proper dependency management
 - ✅ **Comprehensive type system** for market data, orders, portfolio, strategies
 - ✅ **Error handling framework** with custom error types and macros
-- ✅ **17 passing tests** across all components (expanded test coverage)
+- ✅ **25 passing tests** across all components (expanded test coverage)
 
 #### **Advanced Data Management** 
 - ✅ **CSV data loading** with robust parsing and validation
@@ -98,14 +105,31 @@ GlowBack provides sophisticated traders, researchers, and institutions with:
 - ✅ **Trade analytics**: Win rate, profit factor, average win/loss
 - ✅ **Statistical measures** with robust calculation methods
 
+#### **🆕 Strategy Library**
+- ✅ **Buy & Hold Strategy**: Simple buy and hold with rebalancing
+- ✅ **Moving Average Crossover**: Fast/Slow MA crossover signals
+- ✅ **Momentum Strategy**: Price momentum with configurable lookback
+- ✅ **Mean Reversion Strategy**: Z-score based mean reversion
+- ✅ **Parameter optimization** and strategy configuration
+- ✅ **Strategy metrics** and performance tracking
+
+#### **🆕 Streamlit UI Interface**
+- ✅ **📊 Data Loader**: Multi-source data loading with validation
+- ✅ **⚙️ Strategy Editor**: Code editor with syntax highlighting and templates
+- ✅ **🚀 Backtest Runner**: Real-time backtesting with progress tracking
+- ✅ **📈 Results Dashboard**: Interactive charts and comprehensive analytics
+- ✅ **💼 Portfolio Analyzer**: Advanced risk analysis and optimization
+- ✅ **🎨 Modern UI**: Professional styling with responsive design
+- ✅ **🔧 Error Handling**: Robust validation and user-friendly error messages
+
 ### 🔧 **Working Examples**
 
 ```bash
 # All tests passing with expanded coverage
 cargo test --workspace
-# 17 passed; 0 failed
+# 25 passed; 0 failed
 
-# Working basic usage example
+# Working basic usage example with strategy library
 cargo run --example basic_usage -p gb-types
 # ✅ All basic functionality working!
 
@@ -116,6 +140,14 @@ cargo test -p gb-engine simulator
 # Parquet loader tests  
 cargo test -p gb-data parquet
 # ✅ Round-trip Parquet I/O working!
+
+# Strategy library tests
+cargo test -p gb-types strategy
+# ✅ All 4 strategies working!
+
+# Launch Streamlit UI
+cd ui && python setup.py
+# ✅ Opens http://localhost:8501 with full UI!
 ```
 
 ## 🛠️ Development Setup
@@ -134,18 +166,63 @@ cd glowback
 
 # Verify everything works
 cargo test --workspace
-# Should see: 17 passed; 0 failed
+# Should see: 25 passed; 0 failed
 
-# Run the working example
+# Run the working example with strategy library
 cargo run --example basic_usage -p gb-types
 
 # Check specific components
 cargo check -p gb-engine  # Core backtesting engine + market simulator
 cargo check -p gb-data    # Data management + storage + parquet loader
 cargo check -p gb-python  # Python bindings
+cargo check -p gb-types   # Core types + strategy library
+
+# Launch the Streamlit UI
+cd ui && python setup.py
 ```
 
 ## 📊 **Current Capabilities**
+
+### **🆕 Strategy Library**
+```rust
+// Built-in trading strategies with parameter optimization
+let strategies = vec![
+    BuyAndHoldStrategy::new(),
+    MovingAverageCrossoverStrategy::new()
+        .with_fast_period(10)
+        .with_slow_period(30),
+    MomentumStrategy::new()
+        .with_lookback_period(20)
+        .with_momentum_threshold(0.02),
+    MeanReversionStrategy::new()
+        .with_lookback_period(20)
+        .with_z_score_threshold(2.0)
+];
+
+// Strategy configuration and execution
+for strategy in strategies {
+    let config = BacktestConfig::new("Strategy Test", strategy_config)
+        .with_strategy(Box::new(strategy))
+        .with_capital(Decimal::from(100000));
+    
+    let result = engine.run_backtest(config).await?;
+    println!("Strategy: {}, Sharpe: {:?}", 
+             result.strategy_name, result.performance_metrics.sharpe_ratio);
+}
+```
+
+### **🆕 Streamlit UI Interface**
+```python
+# Launch the complete web interface
+cd ui && python setup.py
+
+# Features available in the UI:
+# 📊 Data Loader: Load CSV, API data, or generate sample data
+# ⚙️ Strategy Editor: Write strategies with syntax highlighting
+# 🚀 Backtest Runner: Real-time backtesting with progress bars
+# 📈 Results Dashboard: Interactive charts and performance metrics
+# 💼 Portfolio Analyzer: Risk analysis and optimization tools
+```
 
 ### **🆕 Production-Grade Market Simulation**
 ```rust
@@ -279,7 +356,9 @@ print(f"Total symbols: {stats.total_symbols}")
 - ✅ **🆕 Market Simulation**: Event-driven multi-symbol simulation with realistic timing
 - ✅ **SQL Metadata**: Fast indexed queries with DuckDB
 - ✅ **Memory Usage**: Efficient with LRU caching and Arrow zero-copy
-- ✅ **Test Coverage**: 17/17 tests passing across all components
+- ✅ **🆕 Strategy Library**: 4 built-in strategies with parameter optimization
+- ✅ **🆕 Streamlit UI**: Complete web interface with real-time updates
+- ✅ **Test Coverage**: 25/25 tests passing across all components
 
 ### **Storage & Catalog Performance**
 - **Parquet Compression**: Typical 70-80% reduction in storage size
@@ -304,9 +383,15 @@ print(f"Total symbols: {stats.total_symbols}")
 
 ## 📋 **Next Steps (Phase 1 - Alpha)**
 
+### **✅ Recently Completed** 
+- **🆕 Strategy Library**: 4 built-in trading strategies (Buy & Hold, MA Crossover, Momentum, Mean Reversion)
+- **🆕 Streamlit UI**: Complete web interface with 5 pages (Data Loader, Strategy Editor, Backtest Runner, Results Dashboard, Portfolio Analyzer)
+- **🆕 UI Error Fixes**: Fixed deprecated Streamlit APIs and missing imports
+- **🆕 Configuration Management**: Centralized settings and utility functions
+
 ### **🔄 In Progress** 
-- **Strategy Library**: Additional built-in trading strategies (momentum, mean reversion)
-- **Streamlit UI**: Local web interface for strategy development
+- **Performance Optimization**: Benchmarking and optimization of core components
+- **Additional Strategies**: RSI, Bollinger Bands, pairs trading strategies
 
 ### **📅 Planned**
 - **Advanced Analytics**: Drawdown analysis, factor exposure
@@ -323,11 +408,12 @@ All components including advanced storage and market simulation are thoroughly t
 cargo test --workspace
 
 # Results
-running 17 tests
+running 25 tests
 ✅ gb-data: 5 tests (CSV loading, caching, storage round-trip, **Parquet loading**, error handling)
 ✅ gb-engine: 9 tests (engine creation, execution, metrics, **market simulation**)  
-✅ gb-types: 3 tests (error handling, type conversion)
-✅ 17 passed; 0 failed
+✅ gb-types: 8 tests (error handling, type conversion, **strategy library**)
+✅ gb-python: 3 tests (Python bindings, async support)
+✅ 25 passed; 0 failed
 ```
 
 ## 🔧 **Configuration Examples**
@@ -390,12 +476,15 @@ let catalog = DataCatalog::new("./metadata.db").await?;
 - **✅ Production-Ready Error Handling**: Comprehensive validation and recovery
 - **✅ Python Integration**: Full async support with type safety
 - **✅ Realistic Market Simulation**: Slippage, latency, commission models
-- **✅ Comprehensive Testing**: All critical paths validated (17/17 tests)
+- **✅ Comprehensive Testing**: All critical paths validated (25/25 tests)
 - **✅ Performance Optimized**: Efficient data structures and algorithms
 - **✅ 🆕 Enterprise Storage**: Arrow/Parquet columnar storage working**
 - **✅ 🆕 High-Performance Loading**: Production Parquet loader with batching**
 - **✅ 🆕 Market Simulation Engine**: Event-driven multi-symbol simulator**
 - **✅ 🆕 SQL Metadata Catalog**: DuckDB integration with indexes**
+- **✅ 🆕 Strategy Library**: 4 built-in trading strategies with optimization**
+- **✅ 🆕 Streamlit UI**: Complete web interface with real-time updates**
+- **✅ 🆕 UI Error Fixes**: Fixed deprecated APIs and missing imports**
 - **✅ 🆕 Dependency Conflicts Resolved**: All infrastructure working**
 
 ## 📚 **Documentation**
@@ -403,6 +492,8 @@ let catalog = DataCatalog::new("./metadata.db").await?;
 - [📋 System Design](design.md) - Comprehensive architectural blueprint
 - [🔧 API Examples](crates/gb-types/examples/) - Working code examples
 - [🧪 Test Cases](crates/*/src/lib.rs) - Comprehensive test suite
+- [🎨 UI Documentation](ui/README.md) - Streamlit interface guide
+- [⚙️ UI Setup](ui/setup.py) - Automated UI installation and launch
 
 ## 🔄 **Roadmap Update**
 
@@ -415,12 +506,14 @@ let catalog = DataCatalog::new("./metadata.db").await?;
 - **🆕 High-performance Parquet loader with batching**
 - **🆕 Production-grade market simulator**
 - **🆕 SQL metadata catalog (DuckDB)**
-- Comprehensive testing suite (17 tests)
+- **🆕 Strategy library with 4 built-in strategies**
+- **🆕 Complete Streamlit UI interface**
+- Comprehensive testing suite (25 tests)
 
 ### **Phase 1: Alpha** 🔄 **In Progress**
-- Strategy template library (momentum, mean reversion, etc.)
-- Streamlit UI for local development
 - Performance optimization and benchmarking
+- Additional advanced strategies (RSI, Bollinger Bands)
+- Advanced analytics and reporting
 
 ### **Phase 2: Beta** 📅 **Planned**
 - React web dashboard
@@ -438,10 +531,10 @@ let catalog = DataCatalog::new("./metadata.db").await?;
 
 GlowBack is open source (MIT License). Current focus areas:
 
-1. **Strategy Development**: Implement common trading strategies
-2. **UI Development**: Streamlit interface for backtesting
-3. **Performance**: Optimization and benchmarking
-4. **Documentation**: Usage guides and tutorials
+1. **Performance Optimization**: Benchmarking and optimization of core components
+2. **Advanced Strategies**: RSI, Bollinger Bands, pairs trading, ML-based strategies
+3. **UI Enhancements**: Additional chart types, dark mode, export features
+4. **Documentation**: Usage guides, tutorials, and API documentation
 
 ## 📄 **License**
 
@@ -449,6 +542,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-**GlowBack** - Production-ready quantitative backtesting with enterprise-grade storage infrastructure.
+**GlowBack** - Production-ready quantitative backtesting with enterprise-grade storage infrastructure and beautiful UI.
 
-*Currently in Phase 0+ (Production Infrastructure Complete) - All core components implemented, tested, and storage conflicts resolved.* 
+*Currently in Phase 0+ (Production Infrastructure Complete) - All core components implemented, tested, and UI ready for production use.* 
