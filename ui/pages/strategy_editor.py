@@ -22,7 +22,7 @@ class BuyAndHoldStrategy:
             # Buy with 95% of available cash
             shares = int(portfolio.cash * 0.95 / bar.close)
             if shares > 0:
-                portfolio.buy(bar.symbol, shares, bar.close)
+                portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
                 self.position_opened = True
         
         return []  # No specific actions
@@ -62,7 +62,7 @@ class MovingAverageCrossover:
             if short_ma > long_ma and self.position <= 0:
                 shares = int(portfolio.cash * 0.95 / bar.close)
                 if shares > 0:
-                    portfolio.buy(bar.symbol, shares, bar.close)
+                    portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
                     self.position = 1
                     return [f"BUY: {shares} shares at ${bar.close}"]
             
@@ -70,7 +70,7 @@ class MovingAverageCrossover:
             elif short_ma < long_ma and self.position > 0:
                 current_position = portfolio.get_position(bar.symbol)
                 if current_position > 0:
-                    portfolio.sell(bar.symbol, current_position, bar.close)
+                    portfolio.sell(bar.symbol, current_position, bar.close, bar.timestamp)
                     self.position = -1
                     return [f"SELL: {current_position} shares at ${bar.close}"]
         
@@ -118,12 +118,12 @@ class MeanReversionStrategy:
         if z_score < -self.threshold and current_position == 0:
             shares = int(portfolio.cash * 0.3 / bar.close)  # Use 30% of cash
             if shares > 0:
-                portfolio.buy(bar.symbol, shares, bar.close)
+                portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
                 return [f"BUY: {shares} shares at ${bar.close} (z-score: {z_score:.2f})"]
         
         # Sell when price is significantly above mean (z-score > threshold)
         elif z_score > self.threshold and current_position > 0:
-            portfolio.sell(bar.symbol, current_position, bar.close)
+            portfolio.sell(bar.symbol, current_position, bar.close, bar.timestamp)
             return [f"SELL: {current_position} shares at ${bar.close} (z-score: {z_score:.2f})"]
         
         return []
@@ -169,13 +169,13 @@ class MomentumStrategy:
         if momentum > self.momentum_threshold and self.position <= 0:
             shares = int(portfolio.cash * 0.8 / bar.close)  # Use 80% of cash
             if shares > 0:
-                portfolio.buy(bar.symbol, shares, bar.close)
+                portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
                 self.position = 1
                 return [f"BUY: {shares} shares at ${bar.close} (momentum: {momentum*100:.1f}%)"]
         
         # Strong negative momentum - close position
         elif momentum < -self.momentum_threshold and current_position > 0:
-            portfolio.sell(bar.symbol, current_position, bar.close)
+            portfolio.sell(bar.symbol, current_position, bar.close, bar.timestamp)
             self.position = 0
             return [f"SELL: {current_position} shares at ${bar.close} (momentum: {momentum*100:.1f}%)"]
         
@@ -384,8 +384,8 @@ def show_strategy_documentation():
         **Portfolio Object:**
         - `portfolio.cash` - Available cash
         - `portfolio.value` - Total portfolio value
-        - `portfolio.buy(symbol, shares, price)` - Place buy order
-        - `portfolio.sell(symbol, shares, price)` - Place sell order
+        - `portfolio.buy(symbol, shares, price, timestamp)` - Place buy order
+        - `portfolio.sell(symbol, shares, price, timestamp)` - Place sell order
         - `portfolio.get_position(symbol)` - Get current position size
         """)
     
@@ -395,8 +395,8 @@ def show_strategy_documentation():
         
         ```python
         # Trading Methods
-        portfolio.buy(symbol, shares, price)     # Buy shares
-        portfolio.sell(symbol, shares, price)    # Sell shares
+        portfolio.buy(symbol, shares, price, timestamp)     # Buy shares
+        portfolio.sell(symbol, shares, price, timestamp)    # Sell shares
         
         # Information Methods
         portfolio.cash                           # Available cash
@@ -445,7 +445,7 @@ def show_strategy_documentation():
                     ma = sum(self.prices) / self.period
                     if bar.close > ma and portfolio.get_position(bar.symbol) == 0:
                         shares = int(portfolio.cash / bar.close)
-                        portfolio.buy(bar.symbol, shares, bar.close)
+                        portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
                         return [f"Bought {shares} shares at ${bar.close}"]
                 return []
         ```
@@ -494,11 +494,11 @@ def show_strategy_documentation():
                 
                 if rsi < self.oversold and position == 0:
                     shares = int(portfolio.cash * 0.5 / bar.close)
-                    portfolio.buy(bar.symbol, shares, bar.close)
+                    portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
                     return [f"RSI Oversold: Bought {shares} shares (RSI: {rsi:.1f})"]
                 
                 elif rsi > self.overbought and position > 0:
-                    portfolio.sell(bar.symbol, position, bar.close)
+                    portfolio.sell(bar.symbol, position, bar.close, bar.timestamp)
                     return [f"RSI Overbought: Sold {position} shares (RSI: {rsi:.1f})"]
                 
                 return []

@@ -115,7 +115,7 @@ class MyStrategy:
         # Your strategy logic here
         if bar.close > 100 and self.position == 0:
             shares = int(portfolio.cash / bar.close)
-            portfolio.buy(bar.symbol, shares, bar.close)
+            portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
             self.position = 1
             return [f"Bought {shares} shares at ${bar.close}"]
         

@@ -19,14 +19,14 @@ class SimplePortfolio:
         self.trades = []
         self.equity_curve = []
         
-    def buy(self, symbol, shares, price):
+    def buy(self, symbol, shares, price, timestamp=None):
         """Buy shares"""
         cost = shares * price
         if cost <= self.cash:
             self.cash -= cost
             self.positions[symbol] = self.positions.get(symbol, 0) + shares
             self.trades.append({
-                'timestamp': datetime.now(),
+                'timestamp': timestamp or datetime.now(),
                 'symbol': symbol,
                 'action': 'BUY',
                 'shares': shares,
@@ -36,7 +36,7 @@ class SimplePortfolio:
             return True
         return False
     
-    def sell(self, symbol, shares, price):
+    def sell(self, symbol, shares, price, timestamp=None):
         """Sell shares"""
         if self.positions.get(symbol, 0) >= shares:
             proceeds = shares * price
@@ -45,7 +45,7 @@ class SimplePortfolio:
             if self.positions[symbol] == 0:
                 del self.positions[symbol]
             self.trades.append({
-                'timestamp': datetime.now(),
+                'timestamp': timestamp or datetime.now(),
                 'symbol': symbol,
                 'action': 'SELL',
                 'shares': shares,
