@@ -3,7 +3,7 @@ use num_traits::cast::ToPrimitive;
 
 /// GlowBack Python module
 #[pymodule]
-fn glowback(_py: Python, m: &PyModule) -> PyResult<()> {
+fn glowback(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add("__version__", "0.1.0")?;
     m.add_class::<PySymbol>()?;
     m.add_class::<PyDataManager>()?;
@@ -58,7 +58,7 @@ impl PySymbol {
 /// Python wrapper for DataManager
 #[pyclass]
 struct PyDataManager {
-    inner: gb_data::DataManager,
+    inner: std::sync::Mutex<gb_data::DataManager>,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -75,7 +75,10 @@ impl PyDataManager {
             gb_data::DataManager::new().await
         }).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create data manager: {}", e)))?;
 
-        Ok(Self { inner, runtime })
+        Ok(Self { 
+            inner: std::sync::Mutex::new(inner), 
+            runtime 
+        })
     }
 
     /// Load market data for a symbol
@@ -105,8 +108,10 @@ impl PyDataManager {
 
         // Load data asynchronously
         let bars = self.runtime.block_on(async {
-            self.inner.load_data(&symbol.inner, start_date, end_date, resolution).await
-        }).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to load data: {}", e)))?;
+            let mut inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+            inner.load_data(&symbol.inner, start_date, end_date, resolution).await
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to load data: {}", e)))
+        })?;
 
         // Convert to Python bars
         let py_bars = bars.into_iter().map(|bar| PyBar { inner: bar }).collect();
@@ -116,29 +121,34 @@ impl PyDataManager {
     /// Add a sample data provider
     fn add_sample_provider(&mut self) -> PyResult<()> {
         let provider = Box::new(gb_data::SampleDataProvider::new());
-        self.inner.add_provider(provider);
+        let mut inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+        inner.add_provider(provider);
         Ok(())
     }
 
     /// Add a CSV data provider
     fn add_csv_provider(&mut self, base_path: &str) -> PyResult<()> {
         let provider = Box::new(gb_data::CsvDataProvider::new(base_path));
-        self.inner.add_provider(provider);
+        let mut inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+        inner.add_provider(provider);
         Ok(())
     }
 
     /// Add an Alpha Vantage provider
     fn add_alpha_vantage_provider(&mut self, api_key: &str) -> PyResult<()> {
         let provider = Box::new(gb_data::AlphaVantageProvider::new(api_key.to_string()));
-        self.inner.add_provider(provider);
+        let mut inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+        inner.add_provider(provider);
         Ok(())
     }
 
     /// Get catalog statistics
     fn get_catalog_stats(&self) -> PyResult<PyCatalogStats> {
         let stats = self.runtime.block_on(async {
-            self.inner.catalog.get_catalog_stats().await
-        }).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to get catalog stats: {}", e)))?;
+            let inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+            inner.catalog.get_catalog_stats().await
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to get catalog stats: {}", e)))
+        })?;
 
         Ok(PyCatalogStats {
             total_symbols: stats.total_symbols as usize,
@@ -150,7 +160,8 @@ impl PyDataManager {
 
     /// Get number of configured data providers
     fn get_provider_count(&self) -> PyResult<usize> {
-        Ok(self.inner.providers.len())
+        let inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+        Ok(inner.providers.len())
     }
 }
 
