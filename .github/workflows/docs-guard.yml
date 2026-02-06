@@ -1,0 +1,31 @@
+name: Docs Guard
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  docs-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - crates/**
+              - ui/**
+            docs:
+              - docs/**
+              - README.md
+      - name: Enforce docs update
+        if: ${{ !contains(join(github.event.pull_request.labels.*.name, ','), 'no-docs') }}
+        run: |
+          if [[ "${{ steps.filter.outputs.code }}" == "true" && "${{ steps.filter.outputs.docs }}" != "true" ]]; then
+            echo "Docs update required when code changes. Either update docs/README or add a no-docs label to the PR."
+            exit 1
+          fi
+      - name: Allow no-docs label
+        if: contains(join(github.event.pull_request.labels.*.name, ','), 'no-docs')
+        run: echo "no-docs label present; bypassing docs requirement."

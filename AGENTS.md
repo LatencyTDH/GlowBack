@@ -16,7 +16,7 @@ GlowBack is a Rust‑first quantitative backtesting platform with Python binding
 ## Development Standards
 
 - **Keep changes scoped.** Prefer small, reviewable commits.
-- **Document behavior.** If you change APIs or user behavior, update the relevant README or docs.
+- **Document behavior.** If you change APIs or user behavior, update docs in the same PR.
 - **Respect invariants.** Financial data uses `Decimal` and nanosecond UTC timestamps.
 - **Avoid breaking tests.** Run targeted tests for the crate you touch.
 
