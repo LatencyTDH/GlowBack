@@ -186,21 +186,26 @@ impl Engine {
     /// Execute pending orders based on current market conditions
     async fn execute_pending_orders(&mut self) -> GbResult<()> {
         let mut executed_orders = Vec::new();
+        let mut order_events_to_process = Vec::new();
         
         for (index, order) in self.pending_orders.iter().enumerate() {
             if let Some(fill) = self.try_execute_order(order).await? {
                 // Apply fill to portfolio
                 self.portfolio.apply_fill(&fill);
                 
-                // Update strategy metrics
+                // Update strategy metrics - just count total trades here
+                // Win/loss determination should be based on P&L, not just execution
                 self.strategy_metrics.total_trades += 1;
-                if fill.price > Decimal::ZERO {
-                    self.strategy_metrics.winning_trades += 1;
-                }
                 
                 // Log execution
                 info!("Executed order: {:?} {} {} at {}", 
                     order.side, order.quantity, order.symbol, fill.price);
+                
+                // Prepare order event for strategy callback
+                order_events_to_process.push(gb_types::OrderEvent::OrderFilled {
+                    order_id: order.id,
+                    fill: fill.clone(),
+                });
                 
                 executed_orders.push(index);
             }
@@ -209,6 +214,21 @@ impl Engine {
         // Remove executed orders (in reverse order to maintain indices)
         for &index in executed_orders.iter().rev() {
             self.pending_orders.remove(index);
+        }
+        
+        // Notify strategy of order events
+        for order_event in order_events_to_process {
+            let context = self.build_strategy_context();
+            match self.strategy.on_order_event(&order_event, &context) {
+                Ok(actions) => {
+                    for action in actions {
+                        self.process_strategy_action(action)?;
+                    }
+                }
+                Err(e) => {
+                    warn!("Strategy on_order_event error: {}", e);
+                }
+            }
         }
         
         Ok(())
@@ -383,19 +403,84 @@ impl Engine {
     async fn finalize_results(&mut self, result: &mut BacktestResult) -> GbResult<()> {
         // Get strategy metrics and merge with engine metrics
         let strategy_metrics = self.strategy.get_metrics();
-        self.strategy_metrics.total_return = strategy_metrics.total_return;
-        self.strategy_metrics.annualized_return = strategy_metrics.annualized_return;
-        self.strategy_metrics.volatility = strategy_metrics.volatility;
-        self.strategy_metrics.sharpe_ratio = strategy_metrics.sharpe_ratio;
-        self.strategy_metrics.max_drawdown = strategy_metrics.max_drawdown;
+        
+        // Copy strategy-computed metrics
+        self.strategy_metrics.winning_trades = strategy_metrics.winning_trades;
+        self.strategy_metrics.losing_trades = strategy_metrics.losing_trades;
+        self.strategy_metrics.win_rate = strategy_metrics.win_rate;
+        self.strategy_metrics.average_win = strategy_metrics.average_win;
+        self.strategy_metrics.average_loss = strategy_metrics.average_loss;
+        self.strategy_metrics.profit_factor = strategy_metrics.profit_factor;
+        
+        // Compute portfolio-based metrics
+        let total_return = self.portfolio.get_total_return();
+        self.strategy_metrics.total_return = total_return;
+        
+        // Calculate annualized return based on backtest duration
+        let days = (self.config.end_date - self.config.start_date).num_days() as f64;
+        if days > 0.0 {
+            let years = days / 365.25;
+            let return_decimal: f64 = total_return.try_into().unwrap_or(0.0);
+            let annualized = ((1.0 + return_decimal).powf(1.0 / years) - 1.0);
+            self.strategy_metrics.annualized_return = Decimal::try_from(annualized).unwrap_or_default();
+        }
+        
+        // Calculate volatility from daily returns
+        let daily_returns: Vec<f64> = self.portfolio.daily_returns
+            .iter()
+            .map(|dr| dr.daily_return.try_into().unwrap_or(0.0))
+            .collect();
+        
+        if daily_returns.len() > 1 {
+            let mean: f64 = daily_returns.iter().sum::<f64>() / daily_returns.len() as f64;
+            let variance: f64 = daily_returns.iter()
+                .map(|r| (r - mean).powi(2))
+                .sum::<f64>() / (daily_returns.len() - 1) as f64;
+            let daily_vol = variance.sqrt();
+            let annualized_vol = daily_vol * (252.0_f64).sqrt(); // Annualize assuming 252 trading days
+            self.strategy_metrics.volatility = Decimal::try_from(annualized_vol).unwrap_or_default();
+            
+            // Calculate Sharpe ratio (assuming risk-free rate of 0 for simplicity)
+            if annualized_vol > 0.0 {
+                let annualized_return: f64 = self.strategy_metrics.annualized_return.try_into().unwrap_or(0.0);
+                let sharpe = annualized_return / annualized_vol;
+                self.strategy_metrics.sharpe_ratio = Some(Decimal::try_from(sharpe).unwrap_or_default());
+            }
+        }
+        
+        // Calculate max drawdown from daily returns
+        let mut peak = self.config.initial_capital;
+        let mut max_dd = Decimal::ZERO;
+        for dr in &self.portfolio.daily_returns {
+            if dr.portfolio_value > peak {
+                peak = dr.portfolio_value;
+            }
+            if peak > Decimal::ZERO {
+                let drawdown = (peak - dr.portfolio_value) / peak;
+                if drawdown > max_dd {
+                    max_dd = drawdown;
+                }
+            }
+        }
+        self.strategy_metrics.max_drawdown = max_dd;
+        
+        // Set end time
+        self.strategy_metrics.end_time = Some(self.current_time);
         
         // Mark result as completed with final portfolio and metrics
         result.mark_completed(self.portfolio.clone(), self.strategy_metrics.clone());
         
         info!("Final portfolio value: {}", self.portfolio.total_equity);
-        info!("Total return: {}", self.portfolio.get_total_return());
+        info!("Total return: {:.2}%", total_return * Decimal::from(100));
+        info!("Annualized volatility: {:.2}%", self.strategy_metrics.volatility * Decimal::from(100));
+        info!("Max drawdown: {:.2}%", max_dd * Decimal::from(100));
         info!("Total trades: {}", self.strategy_metrics.total_trades);
-        info!("Winning trades: {}", self.strategy_metrics.winning_trades);
+        if self.strategy_metrics.total_trades > 0 {
+            info!("Win rate: {:.2}%", self.strategy_metrics.win_rate * Decimal::from(100));
+        }
+        if let Some(sharpe) = self.strategy_metrics.sharpe_ratio {
+            info!("Sharpe ratio: {:.2}", sharpe);
+        }
         
         Ok(())
     }
