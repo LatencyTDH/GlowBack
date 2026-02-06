@@ -1,0 +1,19 @@
+site_name: GlowBack
+site_description: High-performance quantitative backtesting platform built in Rust with Python bindings and a Streamlit UI.
+site_url: https://latencytdh.github.io/GlowBack/
+repo_url: https://github.com/LatencyTDH/GlowBack
+repo_name: LatencyTDH/GlowBack
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - toc.integrate
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Architecture: architecture.md
+  - Contributing: contributing.md
