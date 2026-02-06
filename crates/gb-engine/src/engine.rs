@@ -266,29 +266,32 @@ impl Engine {
         // Build the current strategy context with market data and portfolio state
         let context = self.build_strategy_context();
         
-        // Process market events for each symbol
+        // Collect all current bars first to avoid borrow conflicts
+        let mut current_bars_to_process: Vec<(Symbol, Bar)> = Vec::new();
+        
         for symbol in &self.config.symbols.clone() {
-            // Find the current bar for this symbol
             if let Some(bars) = self.market_data.get(symbol) {
-                let current_bars: Vec<&Bar> = bars
-                    .iter()
-                    .filter(|bar| bar.timestamp.date_naive() == self.current_time.date_naive())
-                    .collect();
-                
-                for bar in current_bars {
-                    let market_event = MarketEvent::Bar(bar.clone());
-                    
-                    // Call the strategy's on_market_event method
-                    match self.strategy.on_market_event(&market_event, &context) {
-                        Ok(actions) => {
-                            for action in actions {
-                                self.process_strategy_action(action)?;
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Strategy error processing {}: {}", symbol, e);
-                        }
+                for bar in bars.iter() {
+                    if bar.timestamp.date_naive() == self.current_time.date_naive() {
+                        current_bars_to_process.push((symbol.clone(), bar.clone()));
                     }
+                }
+            }
+        }
+        
+        // Now process each bar - no borrow conflict since we own the data
+        for (symbol, bar) in current_bars_to_process {
+            let market_event = MarketEvent::Bar(bar);
+            
+            // Call the strategy's on_market_event method
+            match self.strategy.on_market_event(&market_event, &context) {
+                Ok(actions) => {
+                    for action in actions {
+                        self.process_strategy_action(action)?;
+                    }
+                }
+                Err(e) => {
+                    warn!("Strategy error processing {}: {}", symbol, e);
                 }
             }
         }
