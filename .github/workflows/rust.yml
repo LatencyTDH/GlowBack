@@ -3,20 +3,77 @@ name: Rust Build Pipeline
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
   pull_request:
     branches: [ "main" ]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      crates: ${{ steps.set-matrix.outputs.crates }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            common:
+              - Cargo.toml
+              - Cargo.lock
+            gb-engine:
+              - crates/gb-engine/**
+            gb-data:
+              - crates/gb-data/**
+            gb-types:
+              - crates/gb-types/**
+            gb-python:
+              - crates/gb-python/**
+      - id: set-matrix
+        run: |
+          if [[ "${{ steps.filter.outputs.common }}" == "true" ]]; then
+            echo 'crates=["gb-engine","gb-data","gb-types","gb-python"]' >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          crates=()
+          [[ "${{ steps.filter.outputs.gb-engine }}" == "true" ]] && crates+=("gb-engine")
+          [[ "${{ steps.filter.outputs.gb-data }}" == "true" ]] && crates+=("gb-data")
+          [[ "${{ steps.filter.outputs.gb-types }}" == "true" ]] && crates+=("gb-types")
+          [[ "${{ steps.filter.outputs.gb-python }}" == "true" ]] && crates+=("gb-python")
+          if [ ${#crates[@]} -eq 0 ]; then
+            echo 'crates=["gb-engine","gb-data","gb-types","gb-python"]' >> $GITHUB_OUTPUT
+          else
+            json=$(printf '%s
+' "${crates[@]}" | jq -R . | jq -s .)
+            echo "crates=$json" >> $GITHUB_OUTPUT
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJson(needs.changes.outputs.crates) }}
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Build (crate)
+        run: cargo build -p ${{ matrix.crate }} --verbose
+      - name: Run tests (crate)
+        run: cargo test -p ${{ matrix.crate }} --verbose
