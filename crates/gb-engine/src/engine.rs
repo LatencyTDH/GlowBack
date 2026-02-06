@@ -117,8 +117,13 @@ impl Engine {
         let mut result = BacktestResult::new(self.config.clone());
         
         // Initialize strategy
-        let strategy_config = self.strategy.get_config();
+        let strategy_config = self.strategy.get_config().clone();
         info!("Running strategy: {}", strategy_config.name);
+        
+        // Initialize the strategy with its configuration
+        if let Err(e) = self.strategy.initialize(&strategy_config) {
+            warn!("Strategy initialization warning: {}", e);
+        }
 
         // Main simulation loop
         self.current_time = self.config.start_date;
@@ -138,12 +143,18 @@ impl Engine {
             // 4. Generate strategy signals
             self.generate_strategy_signals().await?;
             
-            // 5. Update daily returns
+            // 5. Call strategy's on_day_end for end-of-day processing
+            self.call_strategy_day_end().await?;
+            
+            // 6. Update daily returns
             self.update_daily_returns().await?;
             
             // Advance time
             self.current_time += Duration::days(1);
         }
+        
+        // Call strategy's on_stop for cleanup
+        self.call_strategy_stop().await?;
 
         // Finalize results
         self.finalize_results(&mut result).await?;
@@ -250,36 +261,101 @@ impl Engine {
         Ok(())
     }
 
-    /// Generate strategy signals
+    /// Generate strategy signals by calling the strategy's on_market_event method
     async fn generate_strategy_signals(&mut self) -> GbResult<()> {
-        // For now, generate simple buy signals based on mock data
-        // In a real implementation, this would call the strategy's on_market_event method
+        // Build the current strategy context with market data and portfolio state
+        let context = self.build_strategy_context();
+        
+        // Process market events for each symbol
         for symbol in &self.config.symbols.clone() {
-            // Simple mock strategy: buy if no position exists
-            if !self.portfolio.positions.contains_key(symbol) && self.portfolio.cash > Decimal::from(1000) {
-                let order = Order::market_order(
-                    symbol.clone(),
-                    Side::Buy,
-                    Decimal::from(10), // quantity
-                    "engine_strategy".to_string(),
-                );
-                self.pending_orders.push(order);
-                debug!("Generated BUY signal: 10 shares of {}", symbol);
+            // Find the current bar for this symbol
+            if let Some(bars) = self.market_data.get(symbol) {
+                let current_bars: Vec<&Bar> = bars
+                    .iter()
+                    .filter(|bar| bar.timestamp.date_naive() == self.current_time.date_naive())
+                    .collect();
+                
+                for bar in current_bars {
+                    let market_event = MarketEvent::Bar(bar.clone());
+                    
+                    // Call the strategy's on_market_event method
+                    match self.strategy.on_market_event(&market_event, &context) {
+                        Ok(actions) => {
+                            for action in actions {
+                                self.process_strategy_action(action)?;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Strategy error processing {}: {}", symbol, e);
+                        }
+                    }
+                }
             }
         }
         
         Ok(())
     }
 
-    /// Create strategy context for current state
-    async fn create_strategy_context(&self, _symbol: &Symbol) -> GbResult<StrategyContext> {
-        // Simplified context creation for the enhanced engine
-        let context = StrategyContext::new(
-            "engine_strategy".to_string(),
-            self.portfolio.initial_capital,
+    /// Build a complete StrategyContext with current market data and portfolio state
+    fn build_strategy_context(&self) -> StrategyContext {
+        use gb_types::{MarketDataBuffer, MarketEvent as ME};
+        
+        let mut context = StrategyContext::new(
+            self.strategy.get_config().strategy_id.clone(),
+            self.config.initial_capital,
         );
         
-        Ok(context)
+        // Copy portfolio state
+        context.portfolio = self.portfolio.clone();
+        context.current_time = self.current_time;
+        context.pending_orders = self.pending_orders.clone();
+        
+        // Build market data buffers for each symbol with historical data up to current time
+        for (symbol, bars) in &self.market_data {
+            let mut buffer = MarketDataBuffer::new(symbol.clone(), 100); // Keep last 100 bars
+            
+            // Add all bars up to and including current date
+            for bar in bars {
+                if bar.timestamp <= self.current_time {
+                    buffer.add_event(ME::Bar(bar.clone()));
+                }
+            }
+            
+            context.market_data.insert(symbol.clone(), buffer);
+        }
+        
+        context
+    }
+
+    /// Process a single strategy action
+    fn process_strategy_action(&mut self, action: gb_types::StrategyAction) -> GbResult<()> {
+        use gb_types::StrategyAction;
+        
+        match action {
+            StrategyAction::PlaceOrder(order) => {
+                debug!("Strategy placed order: {:?} {} {} at {:?}", 
+                    order.side, order.quantity, order.symbol, order.order_type);
+                self.pending_orders.push(order);
+            }
+            StrategyAction::CancelOrder { order_id } => {
+                debug!("Strategy cancelled order: {}", order_id);
+                self.pending_orders.retain(|o| o.id != order_id);
+            }
+            StrategyAction::Log { level, message } => {
+                match level {
+                    gb_types::LogLevel::Debug => debug!("[Strategy] {}", message),
+                    gb_types::LogLevel::Info => info!("[Strategy] {}", message),
+                    gb_types::LogLevel::Warning => warn!("[Strategy] {}", message),
+                    gb_types::LogLevel::Error => tracing::error!("[Strategy] {}", message),
+                }
+            }
+            StrategyAction::SetParameter { key, value } => {
+                debug!("Strategy set parameter: {} = {}", key, value);
+                // Parameters are stored in strategy config, not in engine
+            }
+        }
+        
+        Ok(())
     }
 
     /// Update daily returns
@@ -302,6 +378,14 @@ impl Engine {
 
     /// Finalize backtest results
     async fn finalize_results(&mut self, result: &mut BacktestResult) -> GbResult<()> {
+        // Get strategy metrics and merge with engine metrics
+        let strategy_metrics = self.strategy.get_metrics();
+        self.strategy_metrics.total_return = strategy_metrics.total_return;
+        self.strategy_metrics.annualized_return = strategy_metrics.annualized_return;
+        self.strategy_metrics.volatility = strategy_metrics.volatility;
+        self.strategy_metrics.sharpe_ratio = strategy_metrics.sharpe_ratio;
+        self.strategy_metrics.max_drawdown = strategy_metrics.max_drawdown;
+        
         // Mark result as completed with final portfolio and metrics
         result.mark_completed(self.portfolio.clone(), self.strategy_metrics.clone());
         
@@ -310,6 +394,43 @@ impl Engine {
         info!("Total trades: {}", self.strategy_metrics.total_trades);
         info!("Winning trades: {}", self.strategy_metrics.winning_trades);
         
+        Ok(())
+    }
+
+    /// Call strategy's on_day_end method for end-of-day processing
+    async fn call_strategy_day_end(&mut self) -> GbResult<()> {
+        let context = self.build_strategy_context();
+        
+        match self.strategy.on_day_end(&context) {
+            Ok(actions) => {
+                for action in actions {
+                    self.process_strategy_action(action)?;
+                }
+            }
+            Err(e) => {
+                warn!("Strategy on_day_end error: {}", e);
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Call strategy's on_stop method for cleanup
+    async fn call_strategy_stop(&mut self) -> GbResult<()> {
+        let context = self.build_strategy_context();
+        
+        match self.strategy.on_stop(&context) {
+            Ok(actions) => {
+                for action in actions {
+                    self.process_strategy_action(action)?;
+                }
+            }
+            Err(e) => {
+                warn!("Strategy on_stop error: {}", e);
+            }
+        }
+        
+        info!("Strategy stopped");
         Ok(())
     }
 } 
