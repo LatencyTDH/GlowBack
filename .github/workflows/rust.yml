@@ -50,23 +50,29 @@ jobs:
             echo 'crates=["gb-engine","gb-data","gb-types","gb-python"]' >> $GITHUB_OUTPUT
             exit 0
           fi
+
+          gb_engine="${{ steps.filter.outputs.gb-engine }}"
+          gb_data="${{ steps.filter.outputs.gb-data }}"
+          gb_types="${{ steps.filter.outputs.gb-types }}"
+          gb_python="${{ steps.filter.outputs.gb-python }}"
+
           crates=()
-          [[ "${{ steps.filter.outputs.gb-engine }}" == "true" ]] && crates+=("gb-engine")
-          [[ "${{ steps.filter.outputs.gb-data }}" == "true" ]] && crates+=("gb-data")
-          [[ "${{ steps.filter.outputs.gb-types }}" == "true" ]] && crates+=("gb-types")
-          [[ "${{ steps.filter.outputs.gb-python }}" == "true" ]] && crates+=("gb-python")
+          [[ "$gb_engine" == "true" ]] && crates+=("gb-engine")
+          [[ "$gb_data" == "true" ]] && crates+=("gb-data")
+          [[ "$gb_types" == "true" ]] && crates+=("gb-types")
+          [[ "$gb_python" == "true" ]] && crates+=("gb-python")
+
           if [ ${#crates[@]} -eq 0 ]; then
             echo 'crates=["gb-engine","gb-data","gb-types","gb-python"]' >> $GITHUB_OUTPUT
           else
-            python - <<'PY' >> $GITHUB_OUTPUT
-import json
-import os
-crates = [c for c in os.environ["CRATES"].split(",") if c]
-print("crates=" + json.dumps(crates))
-PY
+            json="["
+            for c in "${crates[@]}"; do
+              json+="\"$c\","
+            done
+            json=${json%,}
+            json+="]"
+            echo "crates=$json" >> $GITHUB_OUTPUT
           fi
-        env:
-          CRATES: ${{ steps.filter.outputs.gb-engine == 'true' && 'gb-engine,' || '' }}${{ steps.filter.outputs.gb-data == 'true' && 'gb-data,' || '' }}${{ steps.filter.outputs.gb-types == 'true' && 'gb-types,' || '' }}${{ steps.filter.outputs.gb-python == 'true' && 'gb-python' || '' }}
 
   test:
     if: github.event_name != 'schedule'
