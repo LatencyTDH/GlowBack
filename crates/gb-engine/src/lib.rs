@@ -400,4 +400,82 @@ mod tests {
         // Engine should properly track results
         assert!(backtest_result.final_portfolio.is_some());
     }
-} 
+
+    #[tokio::test]
+    async fn test_strategy_config_inherits_backtest_symbols_and_capital() {
+        use gb_types::{Strategy, StrategyConfig, StrategyMetrics, StrategyAction, MarketEvent, StrategyContext, OrderEvent};
+        use std::sync::{Arc, Mutex};
+        
+        #[derive(Clone)]
+        struct CaptureConfigStrategy {
+            config: StrategyConfig,
+            captured: Arc<Mutex<Option<StrategyConfig>>>,
+        }
+        
+        impl CaptureConfigStrategy {
+            fn new(captured: Arc<Mutex<Option<StrategyConfig>>>) -> Self {
+                Self {
+                    config: StrategyConfig::new("capture_strategy".to_string(), "Capture Strategy".to_string()),
+                    captured,
+                }
+            }
+        }
+        
+        impl Strategy for CaptureConfigStrategy {
+            fn initialize(&mut self, config: &StrategyConfig) -> Result<(), String> {
+                self.config = config.clone();
+                *self.captured.lock().unwrap() = Some(config.clone());
+                Ok(())
+            }
+            
+            fn on_market_event(
+                &mut self,
+                _event: &MarketEvent,
+                _context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                Ok(vec![])
+            }
+            
+            fn on_order_event(
+                &mut self,
+                _event: &OrderEvent,
+                _context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                Ok(vec![])
+            }
+            
+            fn on_day_end(&mut self, _context: &StrategyContext) -> Result<Vec<StrategyAction>, String> {
+                Ok(vec![])
+            }
+            
+            fn on_stop(&mut self, _context: &StrategyContext) -> Result<Vec<StrategyAction>, String> {
+                Ok(vec![])
+            }
+            
+            fn get_config(&self) -> &StrategyConfig {
+                &self.config
+            }
+            
+            fn get_metrics(&self) -> StrategyMetrics {
+                StrategyMetrics::new(self.config.strategy_id.clone())
+            }
+        }
+        
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.initial_capital = Decimal::from(250000);
+        config.start_date = Utc::now() - Duration::days(5);
+        config.end_date = Utc::now();
+        
+        let captured = Arc::new(Mutex::new(None));
+        let strategy = Box::new(CaptureConfigStrategy::new(Arc::clone(&captured)));
+        
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        let result = engine.run_with_strategy(strategy).await;
+        assert!(result.is_ok());
+        
+        let captured_config = captured.lock().unwrap().clone().expect("strategy config should be captured");
+        assert_eq!(captured_config.symbols, vec![Symbol::equity("AAPL")]);
+        assert_eq!(captured_config.initial_capital, Decimal::from(250000));
+    }
+}

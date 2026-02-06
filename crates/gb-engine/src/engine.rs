@@ -115,7 +115,17 @@ impl Engine {
         let mut result = BacktestResult::new(self.config.clone());
         
         // Initialize strategy
-        let strategy_config = self.strategy.get_config().clone();
+        let mut strategy_config = self.strategy.get_config().clone();
+        
+        // Merge backtest-level settings into the strategy config
+        if !self.config.symbols.is_empty() {
+            strategy_config.symbols = self.config.symbols.clone();
+        }
+        strategy_config.initial_capital = self.config.initial_capital;
+        for (key, value) in &self.config.strategy_config.parameters {
+            strategy_config.parameters.insert(key.clone(), value.clone());
+        }
+        
         info!("Running strategy: {}", strategy_config.name);
         
         // Initialize the strategy with its configuration
