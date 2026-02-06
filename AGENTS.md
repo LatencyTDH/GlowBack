@@ -62,6 +62,7 @@ streamlit run app.py
 3. Run relevant tests.
 4. Update docs if public behavior changes.
 5. Open a PR with a clear summary and test notes.
+6. After merge, delete the feature branch (manual cleanup).
 
 ## Avoid
 
