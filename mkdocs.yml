@@ -11,9 +11,32 @@ theme:
     - navigation.instant
     - navigation.tabs
     - toc.integrate
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
 
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Concepts:
+      - Core Concepts: concepts/core-concepts.md
+      - Data Model: concepts/data-model.md
+      - Execution Model: concepts/execution-model.md
+      - Results & Metrics: concepts/results-metrics.md
+  - Tutorials:
+      - CSV Data: tutorials/csv-data.md
+      - Alpha Vantage: tutorials/alpha-vantage.md
+      - Strategy Templates: tutorials/strategy-templates.md
+      - UI Workflow: tutorials/ui-workflow.md
+  - Examples: examples/index.md
   - Architecture: architecture.md
+  - API Reference:
+      - Rust: api/rust.md
+      - Python: api/python.md
+  - Performance: performance.md
+  - Roadmap: roadmap.md
+  - FAQ: faq.md
+  - Changelog: changelog.md
   - Contributing: contributing.md

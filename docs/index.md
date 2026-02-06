@@ -11,12 +11,24 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 - Python bindings with async support
 - Streamlit UI for strategy development and analysis
 
-## Quick Links
+## Quickstart
 
-- [Getting Started](getting-started.md)
-- [Architecture](architecture.md)
-- [Contributing](contributing.md)
+```bash
+git clone https://github.com/LatencyTDH/GlowBack.git
+cd GlowBack
+cargo test --workspace
+cargo run --example basic_usage -p gb-types
+```
 
-## Status
+```bash
+cd ui
+python setup.py
+# Opens http://localhost:8501
+```
 
-Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress.
+## Where to go next
+
+- **Getting Started** for setup and first run
+- **Concepts** for data model and execution details
+- **Tutorials** for common workflows
+- **API Reference** for bindings and crate docs

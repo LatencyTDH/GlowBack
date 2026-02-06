@@ -15,3 +15,18 @@ GlowBack is a Rust‑first backtesting platform with a Python SDK and local UI.
 2. Configure a strategy and execution parameters.
 3. Run the engine and stream results to UI/SDK.
 4. Persist results for analysis and reporting.
+
+## System Diagram
+
+```mermaid
+graph TD
+    subgraph Researcher Workspace
+        Jupyter[JupyterLab]
+        CLI[CLI]
+    end
+    Jupyter -->|REST/WS| API[FastAPI Gateway]
+    CLI -->|gRPC| API
+    API --> Engine[Rust Engine]
+    Engine --> Store[(Storage)]
+    API --> UI[React/Streamlit UI]
+```
