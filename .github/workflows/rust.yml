@@ -58,10 +58,15 @@ jobs:
           if [ ${#crates[@]} -eq 0 ]; then
             echo 'crates=["gb-engine","gb-data","gb-types","gb-python"]' >> $GITHUB_OUTPUT
           else
-            json=$(printf '%s
-' "${crates[@]}" | jq -R . | jq -s .)
-            echo "crates=$json" >> $GITHUB_OUTPUT
+            python - <<'PY' >> $GITHUB_OUTPUT
+import json
+import os
+crates = [c for c in os.environ["CRATES"].split(",") if c]
+print("crates=" + json.dumps(crates))
+PY
           fi
+        env:
+          CRATES: ${{ steps.filter.outputs.gb-engine == 'true' && 'gb-engine,' || '' }}${{ steps.filter.outputs.gb-data == 'true' && 'gb-data,' || '' }}${{ steps.filter.outputs.gb-types == 'true' && 'gb-types,' || '' }}${{ steps.filter.outputs.gb-python == 'true' && 'gb-python' || '' }}
 
   test:
     if: github.event_name != 'schedule'
