@@ -478,4 +478,4 @@ mod tests {
         assert_eq!(captured_config.symbols, vec![Symbol::equity("AAPL")]);
         assert_eq!(captured_config.initial_capital, Decimal::from(250000));
     }
-} 
+}
