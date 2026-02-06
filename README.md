@@ -2,6 +2,7 @@
 
 High‑performance quantitative backtesting platform built in Rust with Python bindings and a Streamlit UI.
 
+[![CI](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml)
 [![Tests](https://img.shields.io/badge/tests-25%20passing-brightgreen)](#testing)
 [![Rust Version](https://img.shields.io/badge/rust-1.70%2B-blue)](#development-setup)
 [![Python Support](https://img.shields.io/badge/python-3.8%2B-blue)](#python-bindings)
