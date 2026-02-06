@@ -65,11 +65,10 @@ impl BacktestEngine {
     pub async fn run_with_strategy(&mut self, strategy: Box<dyn Strategy>) -> GbResult<BacktestResult> {
         info!("Starting backtest with strategy: {}", strategy.get_config().name);
         
-        // Create the full Engine with strategy support
-        let data_manager = DataManager::new().await?;
+        // Create the full Engine with strategy support using our existing data manager
         let mut engine = Engine::new(
             self.config.clone(),
-            data_manager,
+            &mut self.data_manager,
             strategy,
         ).await?;
         
@@ -386,10 +385,10 @@ mod tests {
         config.start_date = Utc::now() - Duration::days(5);
         config.end_date = Utc::now();
         
-        let data_manager = DataManager::new().await.unwrap();
+        let mut data_manager = DataManager::new().await.unwrap();
         let strategy = Box::new(BuyAndHoldStrategy::new());
         
-        let engine_result = Engine::new(config, data_manager, strategy).await;
+        let engine_result = Engine::new(config, &mut data_manager, strategy).await;
         assert!(engine_result.is_ok());
         
         let mut engine = engine_result.unwrap();

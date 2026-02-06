@@ -15,7 +15,6 @@ use rust_decimal::Decimal;
 /// Enhanced backtesting engine with event-driven simulation
 pub struct Engine {
     config: BacktestConfig,
-    data_manager: DataManager,
     portfolio: Portfolio,
     strategy: Box<dyn Strategy>,
     current_time: DateTime<Utc>,
@@ -28,7 +27,7 @@ impl Engine {
     /// Create a new engine with strategy and data manager
     pub async fn new(
         config: BacktestConfig,
-        mut data_manager: DataManager,
+        data_manager: &mut DataManager,
         strategy: Box<dyn Strategy>,
     ) -> GbResult<Self> {
         info!("Creating enhanced backtesting engine");
@@ -65,7 +64,6 @@ impl Engine {
         Ok(Self {
             current_time: config.start_date,
             config,
-            data_manager,
             portfolio,
             strategy,
             market_data,
