@@ -15,12 +15,15 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust.yml"
+  schedule:
+    - cron: "0 3 * * *"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   changes:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     outputs:
       crates: ${{ steps.set-matrix.outputs.crates }}
@@ -61,6 +64,7 @@ jobs:
           fi
 
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     needs: changes
     strategy:
@@ -77,3 +81,16 @@ jobs:
         run: cargo build -p ${{ matrix.crate }} --verbose
       - name: Run tests (crate)
         run: cargo test -p ${{ matrix.crate }} --verbose
+
+  full-workspace:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Build (workspace)
+        run: cargo build --workspace --verbose
+      - name: Run tests (workspace)
+        run: cargo test --workspace --verbose
