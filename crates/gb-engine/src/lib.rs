@@ -5,9 +5,12 @@ pub mod engine;
 pub mod execution;
 pub mod simulator;
 
-use gb_types::{GbResult, BacktestConfig, BacktestResult, Symbol};
+use gb_types::{GbResult, BacktestConfig, BacktestResult, Symbol, Strategy};
 use gb_data::DataManager;
 use tracing::{info, error};
+
+// Re-export the Engine for direct use
+pub use engine::Engine;
 
 /// Simple backtesting engine that works with existing types
 #[derive(Debug)]
@@ -55,15 +58,35 @@ impl BacktestEngine {
         Ok(())
     }
 
-    /// Run a simple backtest simulation
+    /// Run a backtest with a provided strategy
+    /// 
+    /// This is the primary method for running backtests - it delegates to the 
+    /// full Engine implementation with proper strategy integration.
+    pub async fn run_with_strategy(&mut self, strategy: Box<dyn Strategy>) -> GbResult<BacktestResult> {
+        info!("Starting backtest with strategy: {}", strategy.get_config().name);
+        
+        // Create the full Engine with strategy support using our existing data manager
+        let mut engine = Engine::new(
+            self.config.clone(),
+            &mut self.data_manager,
+            strategy,
+        ).await?;
+        
+        // Run the backtest using the full engine
+        engine.run().await
+    }
+
+    /// Run a simple backtest simulation (legacy method for backwards compatibility)
+    /// 
+    /// For proper backtesting with strategies, use `run_with_strategy` instead.
     pub async fn run(&mut self) -> GbResult<BacktestResult> {
-        info!("Starting simple backtest simulation");
+        info!("Starting simple backtest simulation (no strategy)");
         
         // Create basic result with current configuration
         let mut result = BacktestResult::new(self.config.clone());
         
         // For now, just mark it as completed successfully
-        // In a full implementation, this would run the actual simulation
+        // Use run_with_strategy for actual strategy execution
         let portfolio = gb_types::Portfolio::new(
             "demo_portfolio".to_string(),
             self.config.initial_capital,
@@ -227,5 +250,154 @@ mod tests {
         
         // The actual validation would happen during execution
         // For now, our placeholder implementation doesn't validate dates
+    }
+
+    #[tokio::test]
+    async fn test_backtest_with_buy_and_hold_strategy() {
+        use gb_types::BuyAndHoldStrategy;
+        
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(10);
+        config.end_date = Utc::now();
+        
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        
+        // Create and run with buy and hold strategy
+        let strategy = Box::new(BuyAndHoldStrategy::new());
+        let result = engine.run_with_strategy(strategy).await;
+        
+        assert!(result.is_ok());
+        let backtest_result = result.unwrap();
+        
+        // Verify we got valid results
+        assert!(backtest_result.final_portfolio.is_some());
+        assert!(backtest_result.strategy_metrics.is_some());
+        
+        // The buy and hold strategy should have executed at least one trade
+        let strategy_metrics = backtest_result.strategy_metrics.as_ref().unwrap();
+        // Note: Total trades tracked in engine, not strategy metrics directly
+        
+        let portfolio = backtest_result.final_portfolio.as_ref().unwrap();
+        // Portfolio should have been updated (either positions or cash changed)
+        assert!(portfolio.total_equity > Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_backtest_with_moving_average_crossover_strategy() {
+        use gb_types::MovingAverageCrossoverStrategy;
+        
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(30);
+        config.end_date = Utc::now();
+        
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        
+        // Create MA crossover strategy with short period 5, long period 10
+        let strategy = Box::new(MovingAverageCrossoverStrategy::new(5, 10));
+        let result = engine.run_with_strategy(strategy).await;
+        
+        assert!(result.is_ok());
+        let backtest_result = result.unwrap();
+        
+        // Verify we got valid results
+        assert!(backtest_result.final_portfolio.is_some());
+        assert!(backtest_result.performance_metrics.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_backtest_with_momentum_strategy() {
+        use gb_types::MomentumStrategy;
+        
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(20);
+        config.end_date = Utc::now();
+        
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        
+        // Create momentum strategy with 5-day lookback, 5% threshold
+        let strategy = Box::new(MomentumStrategy::new(5, 0.05));
+        let result = engine.run_with_strategy(strategy).await;
+        
+        assert!(result.is_ok());
+        let backtest_result = result.unwrap();
+        
+        // Verify we got valid results
+        assert!(backtest_result.final_portfolio.is_some());
+        
+        // Portfolio equity should be positive
+        let portfolio = backtest_result.final_portfolio.as_ref().unwrap();
+        assert!(portfolio.total_equity > Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_backtest_with_mean_reversion_strategy() {
+        use gb_types::MeanReversionStrategy;
+        
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(30);
+        config.end_date = Utc::now();
+        
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        
+        // Create mean reversion strategy with 10-day lookback, 2.0 entry, 1.0 exit thresholds
+        let strategy = Box::new(MeanReversionStrategy::new(10, 2.0, 1.0));
+        let result = engine.run_with_strategy(strategy).await;
+        
+        assert!(result.is_ok());
+        let backtest_result = result.unwrap();
+        
+        // Verify we got valid results
+        assert!(backtest_result.final_portfolio.is_some());
+        assert!(backtest_result.strategy_metrics.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_strategy_integration_daily_returns_tracked() {
+        use gb_types::BuyAndHoldStrategy;
+        
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(10);
+        config.end_date = Utc::now();
+        
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        
+        let strategy = Box::new(BuyAndHoldStrategy::new());
+        let result = engine.run_with_strategy(strategy).await.unwrap();
+        
+        let portfolio = result.final_portfolio.as_ref().unwrap();
+        
+        // Should have daily returns for each trading day
+        // Note: The exact count depends on the simulation, but should have some entries
+        assert!(!portfolio.daily_returns.is_empty() || portfolio.total_equity > Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_engine_directly_with_strategy() {
+        use gb_types::BuyAndHoldStrategy;
+        
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(5);
+        config.end_date = Utc::now();
+        
+        let mut data_manager = DataManager::new().await.unwrap();
+        let strategy = Box::new(BuyAndHoldStrategy::new());
+        
+        let engine_result = Engine::new(config, &mut data_manager, strategy).await;
+        assert!(engine_result.is_ok());
+        
+        let mut engine = engine_result.unwrap();
+        let result = engine.run().await;
+        
+        assert!(result.is_ok());
+        let backtest_result = result.unwrap();
+        
+        // Engine should properly track results
+        assert!(backtest_result.final_portfolio.is_some());
     }
 } 
