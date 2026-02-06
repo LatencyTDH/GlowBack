@@ -15,3 +15,9 @@ We welcome contributions. Please keep changes scoped and well‑documented.
 ```bash
 cargo test --workspace
 ```
+
+## Repo Structure
+
+- `crates/` — Rust crates
+- `ui/` — Streamlit UI
+- `docs/` — MkDocs documentation

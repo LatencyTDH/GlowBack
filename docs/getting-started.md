@@ -26,3 +26,9 @@ cd ui
 python setup.py
 # Opens http://localhost:8501
 ```
+
+## Next Steps
+
+- Load sample data via the UI
+- Try a built‑in strategy template
+- Review results in the dashboard
