@@ -1,3 +1,5 @@
+![GlowBack Banner](assets/glowback-banner.jpg)
+
 # GlowBack
 
 High‑performance quantitative backtesting platform built in Rust with Python bindings and a Streamlit UI.
