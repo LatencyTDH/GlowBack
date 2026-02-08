@@ -356,6 +356,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_backtest_with_rsi_strategy() {
+        use gb_types::RsiStrategy;
+        
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(30);
+        config.end_date = Utc::now();
+        
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        
+        // Create RSI strategy with default thresholds
+        let strategy = Box::new(RsiStrategy::new(14, 30.0, 70.0));
+        let result = engine.run_with_strategy(strategy).await;
+        
+        assert!(result.is_ok());
+        let backtest_result = result.unwrap();
+        
+        // Verify we got valid results
+        assert!(backtest_result.final_portfolio.is_some());
+        assert!(backtest_result.strategy_metrics.is_some());
+    }
+
+    #[tokio::test]
     async fn test_strategy_integration_daily_returns_tracked() {
         use gb_types::BuyAndHoldStrategy;
         

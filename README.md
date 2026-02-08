@@ -49,7 +49,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 - Multi‑symbol backtesting with chronological event ordering
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
-- Strategy library: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion
+- Strategy library: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, RSI
 - Storage: Arrow/Parquet with batch loading and round‑trip I/O
 - Catalog: DuckDB metadata with indexed queries
 
@@ -115,7 +115,7 @@ cargo test --workspace
 
 **In progress**
 - Performance benchmarking and optimization
-- Additional strategies (RSI, Bollinger Bands, pairs trading)
+- Additional strategies (Bollinger Bands, pairs trading)
 
 **Planned**
 - Advanced analytics (drawdown, factor exposure)
