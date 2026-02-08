@@ -9,7 +9,7 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 [![CI](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml)
 [![Tests](https://img.shields.io/badge/tests-25%20passing-brightgreen)](#testing)
 [![Docs](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs.yml/badge.svg?branch=main)](https://latencytdh.github.io/GlowBack/)
-[![Rust Version](https://img.shields.io/badge/rust-1.93%2B-blue)](#development-setup)
+[![Rust Version](https://img.shields.io/badge/rust-stable-blue)](#development-setup)
 [![Python Support](https://img.shields.io/badge/python-3.8%2B-blue)](#python-bindings)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
@@ -59,7 +59,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 
 Prerequisites:
 
-- Rust 1.93+
+- Rust (latest stable)
 - Python 3.8+ (for Python bindings)
 
 ```bash
