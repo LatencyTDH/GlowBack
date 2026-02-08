@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust 1.85+
+- Rust (latest stable)
 - Python 3.8+ (for Python bindings)
 
 ## Clone and Test
