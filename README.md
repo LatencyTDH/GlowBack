@@ -1,4 +1,6 @@
-![GlowBack Banner](assets/glowback-banner.jpg)
+<p align="center">
+  <img src="assets/glowback-banner.jpg" alt="GlowBack Banner" width="80%" />
+</p>
 
 # GlowBack
 
