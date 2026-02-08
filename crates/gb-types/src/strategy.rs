@@ -709,6 +709,18 @@ pub struct MeanReversionStrategy {
     max_position_size: Decimal,
 }
 
+/// RSI Strategy
+/// Buys when RSI is oversold, sells when RSI is overbought
+#[derive(Debug, Clone)]
+pub struct RsiStrategy {
+    config: StrategyConfig,
+    initialized: bool,
+    lookback_period: usize,
+    oversold_threshold: Decimal,
+    overbought_threshold: Decimal,
+    position_size: Decimal,
+}
+
 impl MeanReversionStrategy {
     pub fn new(lookback_period: usize, entry_threshold: f64, exit_threshold: f64) -> Self {
         let mut config = StrategyConfig::new(
@@ -899,6 +911,153 @@ impl Strategy for MeanReversionStrategy {
     }
 } 
 
+impl RsiStrategy {
+    pub fn new(lookback_period: usize, oversold_threshold: f64, overbought_threshold: f64) -> Self {
+        let mut config = StrategyConfig::new(
+            "rsi".to_string(),
+            "RSI Strategy".to_string()
+        );
+        config.set_parameter("lookback_period", lookback_period);
+        config.set_parameter("oversold_threshold", oversold_threshold);
+        config.set_parameter("overbought_threshold", overbought_threshold);
+        config.set_parameter("position_size", 0.95f64);
+
+        Self {
+            config,
+            initialized: false,
+            lookback_period,
+            oversold_threshold: Decimal::from_f64_retain(oversold_threshold).unwrap_or(Decimal::from(30)),
+            overbought_threshold: Decimal::from_f64_retain(overbought_threshold).unwrap_or(Decimal::from(70)),
+            position_size: Decimal::new(95, 2),
+        }
+    }
+
+    fn calculate_rsi(&self, prices: &[Decimal]) -> Option<Decimal> {
+        if prices.len() < self.lookback_period + 1 {
+            return None;
+        }
+
+        let mut gains = Decimal::ZERO;
+        let mut losses = Decimal::ZERO;
+
+        let recent_prices = prices.iter().rev().take(self.lookback_period + 1).cloned().collect::<Vec<_>>();
+        let mut recent_prices = recent_prices.into_iter().rev();
+        let mut previous = recent_prices.next()?;
+
+        for price in recent_prices {
+            let change = price - previous;
+            if change > Decimal::ZERO {
+                gains += change;
+            } else if change < Decimal::ZERO {
+                losses += change.abs();
+            }
+            previous = price;
+        }
+
+        let period = Decimal::from(self.lookback_period);
+        let avg_gain = gains / period;
+        let avg_loss = losses / period;
+
+        if avg_loss == Decimal::ZERO {
+            return Some(Decimal::from(100));
+        }
+        if avg_gain == Decimal::ZERO {
+            return Some(Decimal::ZERO);
+        }
+
+        let rs = avg_gain / avg_loss;
+        let rsi = Decimal::from(100) - (Decimal::from(100) / (Decimal::ONE + rs));
+        Some(rsi)
+    }
+}
+
+impl Strategy for RsiStrategy {
+    fn initialize(&mut self, config: &StrategyConfig) -> Result<(), String> {
+        self.config = config.clone();
+        self.lookback_period = self.config.get_parameter("lookback_period").unwrap_or(14);
+        self.oversold_threshold = self.config.get_parameter::<f64>("oversold_threshold").map(Decimal::from_f64_retain).flatten().unwrap_or(Decimal::from(30));
+        self.overbought_threshold = self.config.get_parameter::<f64>("overbought_threshold").map(Decimal::from_f64_retain).flatten().unwrap_or(Decimal::from(70));
+        self.position_size = self.config.get_parameter::<f64>("position_size").map(Decimal::from_f64_retain).flatten().unwrap_or(Decimal::new(95, 2));
+        self.initialized = true;
+        Ok(())
+    }
+
+    fn on_market_event(
+        &mut self,
+        event: &MarketEvent,
+        context: &StrategyContext,
+    ) -> Result<Vec<StrategyAction>, String> {
+        if !self.initialized {
+            return Ok(vec![]);
+        }
+
+        let symbol = event.symbol();
+        if let Some(buffer) = context.get_market_data(symbol) {
+            let bars = buffer.get_bars(self.lookback_period + 1);
+            let prices: Vec<Decimal> = bars.iter().map(|bar| bar.close).collect();
+
+            if let Some(rsi) = self.calculate_rsi(&prices) {
+                let mut actions = Vec::new();
+                let current_position = context.get_position(symbol);
+                let current_quantity = current_position.map(|p| p.quantity).unwrap_or(Decimal::ZERO);
+
+                if rsi < self.oversold_threshold {
+                    let target_quantity = if let Some(price) = context.get_current_price(symbol) {
+                        (context.get_portfolio_value() * self.position_size) / price
+                    } else {
+                        Decimal::ZERO
+                    };
+
+                    let quantity_diff = target_quantity - current_quantity;
+                    if quantity_diff > Decimal::new(1, 4) {
+                        let order = Order::market_order(
+                            symbol.clone(),
+                            crate::orders::Side::Buy,
+                            quantity_diff,
+                            self.config.strategy_id.clone()
+                        );
+                        actions.push(StrategyAction::PlaceOrder(order));
+                    }
+                } else if rsi > self.overbought_threshold {
+                    if current_quantity > Decimal::ZERO {
+                        let order = Order::market_order(
+                            symbol.clone(),
+                            crate::orders::Side::Sell,
+                            current_quantity,
+                            self.config.strategy_id.clone()
+                        );
+                        actions.push(StrategyAction::PlaceOrder(order));
+                    }
+                }
+
+                return Ok(actions);
+            }
+        }
+
+        Ok(vec![])
+    }
+
+    fn on_order_event(&mut self, _event: &OrderEvent, _context: &StrategyContext) -> Result<Vec<StrategyAction>, String> {
+        Ok(vec![])
+    }
+
+    fn on_day_end(&mut self, _context: &StrategyContext) -> Result<Vec<StrategyAction>, String> {
+        Ok(vec![])
+    }
+
+    fn on_stop(&mut self, _context: &StrategyContext) -> Result<Vec<StrategyAction>, String> {
+        Ok(vec![])
+    }
+
+    fn get_config(&self) -> &StrategyConfig {
+        &self.config
+    }
+
+    fn get_metrics(&self) -> StrategyMetrics {
+        StrategyMetrics::new(self.config.strategy_id.clone())
+    }
+}
+
 #[cfg(test)]
 mod strategy_tests {
     use super::*;
@@ -1047,6 +1206,39 @@ mod strategy_tests {
         let actions = strategy.on_market_event(&event, &context);
         assert!(actions.is_ok());
         // Should generate buy signal as price is far below mean
+    }
+
+    #[test]
+    fn test_rsi_calculation() {
+        let strategy = RsiStrategy::new(5, 30.0, 70.0);
+        let prices = vec![dec!(100), dec!(102), dec!(104), dec!(103), dec!(105), dec!(107)];
+
+        let rsi = strategy.calculate_rsi(&prices);
+        assert!(rsi.is_some());
+        let value = rsi.unwrap();
+        assert!(value > dec!(50)); // Mostly rising prices should produce RSI above 50
+    }
+
+    #[test]
+    fn test_rsi_strategy_buy_signal() {
+        let mut strategy = RsiStrategy::new(5, 30.0, 70.0);
+        let mut config = StrategyConfig::new("test_rsi".to_string(), "Test RSI".to_string());
+        config.add_symbol(create_test_symbol());
+
+        assert!(strategy.initialize(&config).is_ok());
+
+        let mut bars = Vec::new();
+        let base_time = Utc::now();
+        let prices = vec![dec!(100), dec!(98), dec!(96), dec!(95), dec!(94), dec!(93)];
+        for (i, price) in prices.into_iter().enumerate() {
+            let bar = create_test_bar(price, base_time + chrono::Duration::days(i as i64));
+            bars.push(bar);
+        }
+
+        let context = create_test_context_with_data(bars);
+        let event = MarketEvent::Bar(create_test_bar(dec!(92), base_time + chrono::Duration::days(7)));
+        let actions = strategy.on_market_event(&event, &context);
+        assert!(actions.is_ok());
     }
 
     #[test]
