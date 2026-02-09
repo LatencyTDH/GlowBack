@@ -42,6 +42,7 @@ nav:
   - API Reference:
       - Rust: api/rust.md
       - Python: api/python.md
+      - FastAPI: api/fastapi.md
   - Performance: performance.md
   - Roadmap: roadmap.md
   - FAQ: faq.md
