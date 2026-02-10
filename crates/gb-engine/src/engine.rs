@@ -4,7 +4,7 @@
 use gb_types::{
     GbResult, BacktestConfig, BacktestResult, Portfolio, Bar, Symbol, Strategy,
     StrategyContext, Order, Fill, MarketEvent, EquityCurvePoint,
-    StrategyMetrics, Side
+    StrategyMetrics
 };
 use gb_data::DataManager;
 use tracing::{info, debug, warn};
@@ -65,6 +65,7 @@ impl Engine {
 
         Ok(Self {
             current_time: config.start_date,
+            equity_peak: config.initial_capital,
             config,
             portfolio,
             strategy,
@@ -72,7 +73,6 @@ impl Engine {
             pending_orders: Vec::new(),
             strategy_metrics,
             equity_curve: Vec::new(),
-            equity_peak: config.initial_capital,
         })
     }
 
@@ -460,7 +460,7 @@ impl Engine {
         if days > 0.0 {
             let years = days / 365.25;
             let return_decimal: f64 = total_return.try_into().unwrap_or(0.0);
-            let annualized = ((1.0 + return_decimal).powf(1.0 / years) - 1.0);
+            let annualized = (1.0 + return_decimal).powf(1.0 / years) - 1.0;
             self.strategy_metrics.annualized_return = Decimal::try_from(annualized).unwrap_or_default();
         }
         
