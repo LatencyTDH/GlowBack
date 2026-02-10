@@ -3,7 +3,7 @@
 
 use gb_types::{
     GbResult, BacktestConfig, BacktestResult, Portfolio, Bar, Symbol, Strategy,
-    StrategyContext, Order, Fill, MarketEvent,
+    StrategyContext, Order, Fill, MarketEvent, EquityCurvePoint,
     StrategyMetrics, Side
 };
 use gb_data::DataManager;
@@ -21,6 +21,8 @@ pub struct Engine {
     market_data: HashMap<Symbol, Vec<Bar>>,
     pending_orders: Vec<Order>,
     strategy_metrics: StrategyMetrics,
+    equity_curve: Vec<EquityCurvePoint>,
+    equity_peak: Decimal,
 }
 
 impl Engine {
@@ -69,6 +71,8 @@ impl Engine {
             market_data,
             pending_orders: Vec::new(),
             strategy_metrics,
+            equity_curve: Vec::new(),
+            equity_peak: config.initial_capital,
         })
     }
 
@@ -392,18 +396,45 @@ impl Engine {
     /// Update daily returns
     async fn update_daily_returns(&mut self) -> GbResult<()> {
         let total_value = self.portfolio.total_equity;
-        let daily_return = if let Some(previous_value) = self.portfolio.daily_returns.last() {
+        let (daily_return, daily_return_opt) = if let Some(previous_value) = self.portfolio.daily_returns.last() {
             if previous_value.portfolio_value > Decimal::ZERO {
-                (total_value - previous_value.portfolio_value) / previous_value.portfolio_value
+                let dr = (total_value - previous_value.portfolio_value) / previous_value.portfolio_value;
+                (dr, Some(dr))
             } else {
-                Decimal::ZERO
+                (Decimal::ZERO, Some(Decimal::ZERO))
             }
+        } else {
+            (Decimal::ZERO, None)
+        };
+
+        self.portfolio.add_daily_return(self.current_time, daily_return);
+
+        let positions_value: Decimal = self.portfolio.positions.values()
+            .map(|position| position.market_value)
+            .sum();
+
+        if total_value > self.equity_peak {
+            self.equity_peak = total_value;
+        }
+        let drawdown = if self.equity_peak > Decimal::ZERO {
+            (self.equity_peak - total_value) / self.equity_peak
         } else {
             Decimal::ZERO
         };
-        
-        self.portfolio.add_daily_return(self.current_time, daily_return);
-        
+
+        let point = EquityCurvePoint {
+            timestamp: self.current_time,
+            portfolio_value: total_value,
+            cash: self.portfolio.cash,
+            positions_value,
+            total_pnl: self.portfolio.total_pnl,
+            daily_return: daily_return_opt,
+            cumulative_return: self.portfolio.get_total_return(),
+            drawdown,
+        };
+
+        self.equity_curve.push(point);
+
         Ok(())
     }
 
@@ -477,6 +508,7 @@ impl Engine {
         
         // Mark result as completed with final portfolio and metrics
         result.mark_completed(self.portfolio.clone(), self.strategy_metrics.clone());
+        result.equity_curve = self.equity_curve.clone();
         
         info!("Final portfolio value: {}", self.portfolio.total_equity);
         info!("Total return: {:.2}%", total_return * Decimal::from(100));
