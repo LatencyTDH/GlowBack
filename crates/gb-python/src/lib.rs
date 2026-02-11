@@ -471,12 +471,12 @@ impl PyBacktestResult {
 #[pymethods]
 impl PyBacktestResult {
     #[getter]
-    fn metrics_summary(&self, py: Python) -> PyObject {
-        self.metrics_summary.clone().into_py(py)
+    fn metrics_summary(&self, py: Python) -> PyResult<PyObject> {
+        Ok(self.metrics_summary.clone().into_pyobject(py)?.into())
     }
 
     #[getter]
-    fn equity_curve(&self, py: Python) -> PyObject {
+    fn equity_curve(&self, py: Python) -> PyResult<PyObject> {
         let list = PyList::empty(py);
         for point in &self.equity_curve {
             let dict = PyDict::new(py);
@@ -497,7 +497,7 @@ impl PyBacktestResult {
             let _ = dict.set_item("drawdown", point.drawdown);
             let _ = list.append(dict);
         }
-        list.into_py(py)
+        Ok(list.unbind().into())
     }
 
     fn __repr__(&self) -> String {
