@@ -363,6 +363,59 @@ impl PyBacktestResult {
                 "max_drawdown".to_string(),
                 decimal_to_f64(performance.max_drawdown) * 100.0,
             );
+            metrics_summary.insert(
+                "max_drawdown_duration_days".to_string(),
+                performance
+                    .max_drawdown_duration_days
+                    .map(|days| days as f64)
+                    .unwrap_or(0.0),
+            );
+            metrics_summary.insert(
+                "sortino_ratio".to_string(),
+                performance
+                    .sortino_ratio
+                    .map(decimal_to_f64)
+                    .unwrap_or(0.0),
+            );
+            metrics_summary.insert(
+                "calmar_ratio".to_string(),
+                performance
+                    .calmar_ratio
+                    .map(decimal_to_f64)
+                    .unwrap_or(0.0),
+            );
+            metrics_summary.insert(
+                "var_95".to_string(),
+                performance
+                    .var_95
+                    .map(decimal_to_f64)
+                    .unwrap_or(0.0),
+            );
+            metrics_summary.insert(
+                "cvar_95".to_string(),
+                performance
+                    .cvar_95
+                    .map(decimal_to_f64)
+                    .unwrap_or(0.0),
+            );
+            metrics_summary.insert(
+                "skewness".to_string(),
+                performance
+                    .skewness
+                    .map(decimal_to_f64)
+                    .unwrap_or(0.0),
+            );
+            metrics_summary.insert(
+                "kurtosis".to_string(),
+                performance
+                    .kurtosis
+                    .map(decimal_to_f64)
+                    .unwrap_or(0.0),
+            );
+            metrics_summary.insert(
+                "total_commissions".to_string(),
+                decimal_to_f64(performance.total_commissions),
+            );
             metrics_summary.insert("total_trades".to_string(), performance.total_trades as f64);
             metrics_summary.insert(
                 "win_rate".to_string(),
@@ -382,6 +435,14 @@ impl PyBacktestResult {
             metrics_summary.insert(
                 "average_loss".to_string(),
                 decimal_to_f64(performance.average_loss),
+            );
+            metrics_summary.insert(
+                "largest_win".to_string(),
+                decimal_to_f64(performance.largest_win),
+            );
+            metrics_summary.insert(
+                "largest_loss".to_string(),
+                decimal_to_f64(performance.largest_loss),
             );
         }
 

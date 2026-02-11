@@ -34,8 +34,17 @@ for point in result.equity_curve[:5]:
 
 Contains the results of a backtest run.
 
-- `metrics_summary`: Dictionary of performance metrics (Sharpe, Returns, Drawdown, etc.)
-- `equity_curve`: List of daily snapshots (value, cash, positions, returns, drawdown).
+- `metrics_summary`: Dictionary of performance metrics. Common keys include:
+  - `initial_capital`, `final_value`
+  - `total_return`, `annualized_return`, `volatility`
+  - `sharpe_ratio`, `sortino_ratio`, `calmar_ratio`
+  - `max_drawdown`, `max_drawdown_duration_days`
+  - `var_95`, `cvar_95`
+  - `skewness`, `kurtosis`
+  - `total_trades`, `win_rate`, `profit_factor`
+  - `average_win`, `average_loss`, `largest_win`, `largest_loss`
+  - `total_commissions`
+- `equity_curve`: List of daily snapshots (`value`, `cash`, `positions`, `total_pnl`, `returns`, `daily_return`, `drawdown`).
 
 ### `PyDataManager`
 

@@ -33,6 +33,7 @@ def _build_sample_results(initial_capital: float, start_date: datetime, end_date
         cash = equity * 0.05
         positions = equity - cash
         cumulative_return = (equity - initial_capital) / initial_capital * 100
+        total_pnl = equity - initial_capital
 
         equity_curve.append(
             {
@@ -40,6 +41,7 @@ def _build_sample_results(initial_capital: float, start_date: datetime, end_date
                 "value": equity,
                 "cash": cash,
                 "positions": positions,
+                "total_pnl": total_pnl,
                 "returns": cumulative_return,
                 "daily_return": daily_return * 100,
                 "drawdown": drawdown * 100,
@@ -49,6 +51,15 @@ def _build_sample_results(initial_capital: float, start_date: datetime, end_date
 
     total_return = (equity - initial_capital) / initial_capital * 100
     max_drawdown = max(point["drawdown"] for point in equity_curve)
+
+    max_drawdown_duration_days = 0
+    current_drawdown_duration = 0
+    for point in equity_curve:
+        if point["drawdown"] > 0:
+            current_drawdown_duration += 1
+            max_drawdown_duration_days = max(max_drawdown_duration_days, current_drawdown_duration)
+        else:
+            current_drawdown_duration = 0
 
     if len(daily_returns) > 1:
         mean_return = statistics.mean(daily_returns)
@@ -64,6 +75,10 @@ def _build_sample_results(initial_capital: float, start_date: datetime, end_date
     if steps > 1:
         annualized_return = ((1 + total_return / 100) ** (252 / steps) - 1) * 100
 
+    calmar_ratio = 0.0
+    if max_drawdown > 0:
+        calmar_ratio = annualized_return / max_drawdown
+
     metrics_summary = {
         "initial_capital": initial_capital,
         "final_value": equity,
@@ -72,6 +87,8 @@ def _build_sample_results(initial_capital: float, start_date: datetime, end_date
         "volatility": volatility,
         "sharpe_ratio": sharpe_ratio,
         "max_drawdown": max_drawdown,
+        "max_drawdown_duration_days": float(max_drawdown_duration_days),
+        "calmar_ratio": calmar_ratio,
         "total_trades": 0.0,
     }
 
