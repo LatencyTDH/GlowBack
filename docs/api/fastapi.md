@@ -81,6 +81,17 @@ POST /backtests
 }
 ```
 
+Common `metrics_summary` keys include:
+- `initial_capital`, `final_value`
+- `total_return`, `annualized_return`, `volatility`
+- `sharpe_ratio`, `sortino_ratio`, `calmar_ratio`
+- `max_drawdown`, `max_drawdown_duration_days`
+- `var_95`, `cvar_95`
+- `skewness`, `kurtosis`
+- `total_trades`, `win_rate`, `profit_factor`
+- `average_win`, `average_loss`, `largest_win`, `largest_loss`
+- `total_commissions`
+
 Notes:
 - `returns`, `daily_return`, `max_drawdown`, and `volatility` are expressed as percentages.
 - `total_pnl` is an absolute value in account currency.

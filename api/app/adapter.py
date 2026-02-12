@@ -71,6 +71,39 @@ def _build_sample_results(initial_capital: float, start_date: datetime, end_date
     volatility = stdev_return * math.sqrt(252) * 100 if stdev_return > 0 else 0.0
     sharpe_ratio = (mean_return / stdev_return) * math.sqrt(252) if stdev_return > 0 else 0.0
 
+    downside_returns = [r for r in daily_returns if r < 0]
+    if downside_returns:
+        downside_deviation = math.sqrt(sum(r * r for r in downside_returns) / len(downside_returns))
+    else:
+        downside_deviation = 0.0
+    sortino_ratio = (
+        (mean_return / downside_deviation) * math.sqrt(252)
+        if downside_deviation > 0
+        else 0.0
+    )
+
+    var_95 = 0.0
+    cvar_95 = 0.0
+    skewness = 0.0
+    kurtosis = 0.0
+    if daily_returns:
+        sorted_returns = sorted(daily_returns)
+        var_index = min(len(sorted_returns) - 1, int(len(sorted_returns) * 0.05))
+        var_95 = -sorted_returns[var_index]
+        tail_returns = sorted_returns[: var_index + 1]
+        cvar_95 = -statistics.mean(tail_returns) if tail_returns else 0.0
+
+        if stdev_return > 0 and len(daily_returns) >= 3:
+            skewness = sum(
+                ((r - mean_return) / stdev_return) ** 3 for r in daily_returns
+            ) / len(daily_returns)
+        if stdev_return > 0 and len(daily_returns) >= 4:
+            kurtosis = (
+                sum(((r - mean_return) / stdev_return) ** 4 for r in daily_returns)
+                / len(daily_returns)
+                - 3
+            )
+
     annualized_return = 0.0
     if steps > 1:
         annualized_return = ((1 + total_return / 100) ** (252 / steps) - 1) * 100
@@ -86,10 +119,22 @@ def _build_sample_results(initial_capital: float, start_date: datetime, end_date
         "annualized_return": annualized_return,
         "volatility": volatility,
         "sharpe_ratio": sharpe_ratio,
+        "sortino_ratio": sortino_ratio,
         "max_drawdown": max_drawdown,
         "max_drawdown_duration_days": float(max_drawdown_duration_days),
         "calmar_ratio": calmar_ratio,
+        "var_95": var_95,
+        "cvar_95": cvar_95,
+        "skewness": skewness,
+        "kurtosis": kurtosis,
         "total_trades": 0.0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "average_win": 0.0,
+        "average_loss": 0.0,
+        "largest_win": 0.0,
+        "largest_loss": 0.0,
+        "total_commissions": 0.0,
     }
 
     return equity_curve, metrics_summary

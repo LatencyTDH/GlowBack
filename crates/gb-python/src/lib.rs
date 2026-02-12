@@ -446,6 +446,33 @@ impl PyBacktestResult {
             );
         }
 
+        if let Some(strategy_metrics) = result.strategy_metrics.as_ref() {
+            metrics_summary.insert(
+                "total_trades".to_string(),
+                strategy_metrics.total_trades as f64,
+            );
+            metrics_summary.insert(
+                "win_rate".to_string(),
+                decimal_to_f64(strategy_metrics.win_rate) * 100.0,
+            );
+            metrics_summary.insert(
+                "profit_factor".to_string(),
+                decimal_to_f64(strategy_metrics.profit_factor),
+            );
+            metrics_summary.insert(
+                "average_win".to_string(),
+                decimal_to_f64(strategy_metrics.average_win),
+            );
+            metrics_summary.insert(
+                "average_loss".to_string(),
+                decimal_to_f64(strategy_metrics.average_loss),
+            );
+            metrics_summary.insert(
+                "total_commissions".to_string(),
+                decimal_to_f64(strategy_metrics.total_commissions),
+            );
+        }
+
         let equity_curve = result
             .equity_curve
             .into_iter()
