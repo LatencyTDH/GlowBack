@@ -87,15 +87,62 @@ impl BacktestEngine {
         
         // For now, just mark it as completed successfully
         // Use run_with_strategy for actual strategy execution
-        let portfolio = gb_types::Portfolio::new(
+        let mut portfolio = gb_types::Portfolio::new(
             "demo_portfolio".to_string(),
             self.config.initial_capital,
         );
         
         // Create empty strategy metrics for the placeholder
         let strategy_metrics = gb_types::StrategyMetrics::new("placeholder_strategy".to_string());
+
+        // Build a flat equity curve so analytics outputs are populated
+        let mut equity_curve: Vec<gb_types::EquityCurvePoint> = Vec::new();
+        let mut current_date = self.config.start_date;
+        let mut previous_value: Option<rust_decimal::Decimal> = None;
+        let mut equity_peak = portfolio.total_equity;
+
+        while current_date <= self.config.end_date {
+            let total_value = portfolio.total_equity;
+            let daily_return = if let Some(prev) = previous_value {
+                if prev > rust_decimal::Decimal::ZERO {
+                    (total_value - prev) / prev
+                } else {
+                    rust_decimal::Decimal::ZERO
+                }
+            } else {
+                rust_decimal::Decimal::ZERO
+            };
+
+            portfolio.add_daily_return(current_date, daily_return);
+
+            if total_value > equity_peak {
+                equity_peak = total_value;
+            }
+
+            let drawdown = if equity_peak > rust_decimal::Decimal::ZERO {
+                (equity_peak - total_value) / equity_peak
+            } else {
+                rust_decimal::Decimal::ZERO
+            };
+
+            let point = gb_types::EquityCurvePoint {
+                timestamp: current_date,
+                portfolio_value: total_value,
+                cash: portfolio.cash,
+                positions_value: rust_decimal::Decimal::ZERO,
+                total_pnl: portfolio.total_pnl,
+                daily_return: previous_value.map(|_| daily_return),
+                cumulative_return: portfolio.get_total_return(),
+                drawdown,
+            };
+
+            equity_curve.push(point);
+            previous_value = Some(total_value);
+            current_date += chrono::Duration::days(1);
+        }
         
         result.mark_completed(portfolio, strategy_metrics);
+        result.equity_curve = equity_curve;
         
         info!("Simple backtest completed");
         Ok(result)
@@ -173,6 +220,7 @@ mod tests {
         assert!(backtest_result.final_portfolio.is_some());
         assert!(backtest_result.performance_metrics.is_some());
         assert!(backtest_result.strategy_metrics.is_some());
+        assert!(!backtest_result.equity_curve.is_empty());
         
         // Verify the portfolio was initialized correctly
         let portfolio = backtest_result.final_portfolio.as_ref().unwrap();
