@@ -394,7 +394,7 @@ impl PerformanceMetrics {
         let mut current_duration = 0u32;
 
         for daily_return in daily_returns {
-            if daily_return.portfolio_value > peak {
+            if daily_return.portfolio_value >= peak {
                 peak = daily_return.portfolio_value;
                 current_duration = 0;
             } else {
@@ -641,4 +641,50 @@ pub enum BacktestEvent {
     TradeExecuted { backtest_id: BacktestId, trade: TradeRecord },
     Completed { backtest_id: BacktestId, result: BacktestResult },
     Failed { backtest_id: BacktestId, error: String },
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::portfolio::DailyReturn;
+    use chrono::{Duration, Utc};
+    use rust_decimal::Decimal;
+
+    fn make_daily_return(base: chrono::DateTime<Utc>, day_offset: i64, value: i64) -> DailyReturn {
+        DailyReturn {
+            date: base + Duration::days(day_offset),
+            portfolio_value: Decimal::from(value),
+            daily_return: Decimal::ZERO,
+            cumulative_return: Decimal::ZERO,
+        }
+    }
+
+    #[test]
+    fn max_drawdown_duration_flat_equity_is_none() {
+        let base = Utc::now();
+        let daily_returns = vec![
+            make_daily_return(base, 0, 100),
+            make_daily_return(base, 1, 100),
+            make_daily_return(base, 2, 100),
+        ];
+
+        let duration = PerformanceMetrics::calculate_max_drawdown_duration(&daily_returns);
+        assert_eq!(duration, None);
+    }
+
+    #[test]
+    fn max_drawdown_duration_counts_underwater_streak() {
+        let base = Utc::now();
+        let daily_returns = vec![
+            make_daily_return(base, 0, 100),
+            make_daily_return(base, 1, 105),
+            make_daily_return(base, 2, 103),
+            make_daily_return(base, 3, 102),
+            make_daily_return(base, 4, 110),
+            make_daily_return(base, 5, 108),
+        ];
+
+        let duration = PerformanceMetrics::calculate_max_drawdown_duration(&daily_returns);
+        assert_eq!(duration, Some(2));
+    }
+}
