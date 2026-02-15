@@ -297,17 +297,22 @@ impl PerformanceMetrics {
         if daily_returns.is_empty() {
             return Decimal::ZERO;
         }
-        
+
         let total_return = daily_returns.last().unwrap().cumulative_return;
-        let years = Decimal::from(daily_returns.len()) / Decimal::from(252); // Trading days per year
-        
-        if years > Decimal::ZERO {
-            // (1 + total_return)^(1/years) - 1
-            // Simplified calculation
-            total_return / years
-        } else {
-            Decimal::ZERO
+        let years = daily_returns.len() as f64 / 252.0; // Trading days per year
+
+        if years <= 0.0 {
+            return Decimal::ZERO;
         }
+
+        let total_return_f = total_return.to_f64().unwrap_or(0.0);
+        let base = 1.0 + total_return_f;
+        if base <= 0.0 {
+            return Decimal::ZERO;
+        }
+
+        let annualized = base.powf(1.0 / years) - 1.0;
+        Decimal::from_f64_retain(annualized).unwrap_or_default()
     }
     
     fn calculate_volatility(daily_returns: &[crate::portfolio::DailyReturn]) -> Decimal {
@@ -641,4 +646,61 @@ pub enum BacktestEvent {
     TradeExecuted { backtest_id: BacktestId, trade: TradeRecord },
     Completed { backtest_id: BacktestId, result: BacktestResult },
     Failed { backtest_id: BacktestId, error: String },
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::portfolio::DailyReturn;
+    use chrono::{Duration, Utc};
+    use rust_decimal::prelude::ToPrimitive;
+    use rust_decimal::Decimal;
+
+    fn make_daily_return(base: chrono::DateTime<Utc>, day_offset: i64, cumulative_return: f64) -> DailyReturn {
+        DailyReturn {
+            date: base + Duration::days(day_offset),
+            portfolio_value: Decimal::from(100_000),
+            daily_return: Decimal::ZERO,
+            cumulative_return: Decimal::from_f64_retain(cumulative_return).unwrap(),
+        }
+    }
+
+    #[test]
+    fn annualized_return_one_year_matches_total_return() {
+        let base = Utc::now();
+        let days = 252;
+        let mut daily_returns = Vec::new();
+        for day in 0..days {
+            let cumulative = if day == days - 1 { 0.25 } else { 0.0 };
+            daily_returns.push(make_daily_return(base, day as i64, cumulative));
+        }
+
+        let annualized = PerformanceMetrics::calculate_annualized_return(&daily_returns);
+        let actual = annualized.to_f64().unwrap();
+        assert!((actual - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn annualized_return_compounds_over_multiple_years() {
+        let base = Utc::now();
+        let days = 504;
+        let total_return = 0.21;
+        let mut daily_returns = Vec::new();
+        for day in 0..days {
+            let cumulative = if day == days - 1 { total_return } else { 0.0 };
+            daily_returns.push(make_daily_return(base, day as i64, cumulative));
+        }
+
+        let annualized = PerformanceMetrics::calculate_annualized_return(&daily_returns);
+        let actual = annualized.to_f64().unwrap();
+        let expected = (1.0 + total_return).powf(1.0 / 2.0) - 1.0;
+        assert!((actual - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn annualized_return_empty_is_zero() {
+        let annualized = PerformanceMetrics::calculate_annualized_return(&[]);
+        assert_eq!(annualized, Decimal::ZERO);
+    }
+}
+ 
