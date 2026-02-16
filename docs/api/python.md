@@ -46,6 +46,14 @@ Contains the results of a backtest run.
   - `total_commissions`
 - `equity_curve`: List of daily snapshots (`value`, `cash`, `positions`, `total_pnl`, `returns`, `daily_return`, `drawdown`).
 
+Notebook helpers (requires pandas/matplotlib):
+
+```python
+curve = result.to_dataframe()
+metrics = result.metrics_dataframe()
+ax = result.plot_equity()
+```
+
 ### `PyDataManager`
 
 Used for data ingestion and management.

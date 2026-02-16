@@ -527,6 +527,69 @@ impl PyBacktestResult {
         Ok(list.unbind().into())
     }
 
+    /// Convert the equity curve to a pandas DataFrame (Jupyter-friendly)
+    fn to_dataframe(&self, py: Python) -> PyResult<PyObject> {
+        let pandas = py.import("pandas").map_err(|_| {
+            pyo3::exceptions::PyImportError::new_err(
+                "pandas is required for to_dataframe(). Install with `pip install pandas`.",
+            )
+        })?;
+
+        let data = self.equity_curve(py)?;
+        let df = pandas.call_method1("DataFrame", (data,))?;
+
+        let columns = df.getattr("columns")?;
+        let has_timestamp = columns
+            .call_method1("__contains__", ("timestamp",))?
+            .is_truthy()?;
+        if has_timestamp {
+            let to_datetime = pandas.getattr("to_datetime")?;
+            let ts = df.call_method1("__getitem__", ("timestamp",))?;
+            let ts_dt = to_datetime.call1((ts,))?;
+            df.call_method1("__setitem__", ("timestamp", ts_dt))?;
+        }
+
+        Ok(df.into())
+    }
+
+    /// Convert metrics summary to a pandas DataFrame (Jupyter-friendly)
+    fn metrics_dataframe(&self, py: Python) -> PyResult<PyObject> {
+        let pandas = py.import("pandas").map_err(|_| {
+            pyo3::exceptions::PyImportError::new_err(
+                "pandas is required for metrics_dataframe(). Install with `pip install pandas`.",
+            )
+        })?;
+
+        let metrics = self.metrics_summary(py)?;
+        let series = pandas.getattr("Series")?.call1((metrics,))?;
+        let df = series.call_method1("to_frame", ("value",))?;
+        let df = df.call_method0("sort_index")?;
+        Ok(df.into())
+    }
+
+    /// Plot the equity curve using matplotlib (returns Axes)
+    fn plot_equity(&self, py: Python, show: Option<bool>) -> PyResult<PyObject> {
+        let df = self.to_dataframe(py)?;
+        let plt = py.import("matplotlib.pyplot").map_err(|_| {
+            pyo3::exceptions::PyImportError::new_err(
+                "matplotlib is required for plot_equity(). Install with `pip install matplotlib`.",
+            )
+        })?;
+
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("x", "timestamp")?;
+        kwargs.set_item("y", "value")?;
+        kwargs.set_item("title", "GlowBack Equity Curve")?;
+        let plot = df.getattr(py, "plot")?;
+        let ax = plot.call(py, (), Some(&kwargs))?;
+
+        if show.unwrap_or(false) {
+            let _ = plt.call_method0("show")?;
+        }
+
+        Ok(ax.into())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "PyBacktestResult(metrics_summary_keys={:?}, equity_points={})",

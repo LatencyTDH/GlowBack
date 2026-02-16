@@ -36,6 +36,7 @@ nav:
       - CSV Data: tutorials/csv-data.md
       - Alpha Vantage: tutorials/alpha-vantage.md
       - Strategy Templates: tutorials/strategy-templates.md
+      - Notebook Workflow: tutorials/notebook.md
       - UI Workflow: tutorials/ui-workflow.md
   - Examples: examples/index.md
   - Architecture: architecture.md
