@@ -2,9 +2,22 @@
 
 Python bindings are provided via `gb-python` (PyO3).
 
+## Quick Helper
+
+```python
+import glowback
+
+result = glowback.run_buy_and_hold(
+    symbols=["AAPL", "MSFT"],
+    start_date="2024-01-01T00:00:00Z",
+    end_date="2024-12-31T23:59:59Z",
+    initial_capital=100000.0
+)
+```
+
 ## Classes
 
-### `PyBacktestEngine`
+### `BacktestEngine` (alias: `PyBacktestEngine`)
 
 Used to configure and run backtests from Python.
 
@@ -12,7 +25,7 @@ Used to configure and run backtests from Python.
 import glowback
 
 # Initialize engine
-engine = glowback.PyBacktestEngine(
+engine = glowback.BacktestEngine(
     symbols=["AAPL", "MSFT"],
     start_date="2024-01-01T00:00:00Z",
     end_date="2024-12-31T23:59:59Z",
@@ -30,7 +43,7 @@ for point in result.equity_curve[:5]:
     print(f"{point['timestamp']}: {point['value']}")
 ```
 
-### `PyBacktestResult`
+### `BacktestResult` (alias: `PyBacktestResult`)
 
 Contains the results of a backtest run.
 
@@ -49,16 +62,17 @@ Contains the results of a backtest run.
 Notebook helpers (requires pandas/matplotlib):
 
 ```python
-curve = result.to_dataframe()
+curve = result.to_dataframe(index="timestamp")
 metrics = result.metrics_dataframe()
+summary = result.summary(plot=True, index="timestamp")
 ax = result.plot_equity()
 ```
 
-### `PyDataManager`
+### `DataManager` (alias: `PyDataManager`)
 
 Used for data ingestion and management.
 
 ```python
-manager = glowback.PyDataManager()
+manager = glowback.DataManager()
 manager.add_sample_provider()
 ```
