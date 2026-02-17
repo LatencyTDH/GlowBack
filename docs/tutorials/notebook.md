@@ -13,13 +13,21 @@ pip install jupyter pandas matplotlib
 ```python
 import glowback
 
-engine = glowback.PyBacktestEngine(
+# One-liner helper
+result = glowback.run_buy_and_hold(
     symbols=["AAPL", "MSFT"],
     start_date="2024-01-01T00:00:00Z",
     end_date="2024-12-31T23:59:59Z",
     initial_capital=100000.0,
 )
 
+# Or use the engine directly for more control
+engine = glowback.BacktestEngine(
+    symbols=["AAPL", "MSFT"],
+    start_date="2024-01-01T00:00:00Z",
+    end_date="2024-12-31T23:59:59Z",
+    initial_capital=100000.0,
+)
 result = engine.run_buy_and_hold()
 ```
 
@@ -27,12 +35,15 @@ result = engine.run_buy_and_hold()
 
 ```python
 # Equity curve as a DataFrame
-curve = result.to_dataframe()
+curve = result.to_dataframe(index="timestamp")
 curve.head()
 
 # Metrics summary table
 metrics = result.metrics_dataframe()
 metrics
+
+# Quick notebook summary (metrics + curve, optional plot)
+summary = result.summary(plot=True, index="timestamp")
 
 # Plot the equity curve
 ax = result.plot_equity()
@@ -40,6 +51,7 @@ ax = result.plot_equity()
 
 ## Notes
 
+- `BacktestEngine`/`BacktestResult` are friendly aliases for `PyBacktestEngine`/`PyBacktestResult`.
 - `to_dataframe()` and `metrics_dataframe()` require **pandas**.
 - `plot_equity()` requires **matplotlib**.
 - For custom visualizations, you can also use `result.equity_curve` directly (list of dicts).

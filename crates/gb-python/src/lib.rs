@@ -1,13 +1,13 @@
+use num_traits::cast::ToPrimitive;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use num_traits::cast::ToPrimitive;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
 
 use gb_engine::BacktestEngine as RustBacktestEngine;
 use gb_types::{
-    BacktestConfig, BuyAndHoldStrategy, Resolution, StrategyConfig, Symbol,
-    BacktestResult as RustBacktestResult,
+    BacktestConfig, BacktestResult as RustBacktestResult, BuyAndHoldStrategy, Resolution,
+    StrategyConfig, Symbol,
 };
 
 /// GlowBack Python module
@@ -20,6 +20,15 @@ fn glowback(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyCatalogStats>()?;
     m.add_class::<PyBacktestEngine>()?;
     m.add_class::<PyBacktestResult>()?;
+    m.add_function(wrap_pyfunction!(run_buy_and_hold, m)?)?;
+
+    // Backwards-compatible aliases (Py* names)
+    m.add("PySymbol", m.getattr("Symbol")?)?;
+    m.add("PyDataManager", m.getattr("DataManager")?)?;
+    m.add("PyBar", m.getattr("Bar")?)?;
+    m.add("PyCatalogStats", m.getattr("CatalogStats")?)?;
+    m.add("PyBacktestEngine", m.getattr("BacktestEngine")?)?;
+    m.add("PyBacktestResult", m.getattr("BacktestResult")?)?;
     Ok(())
 }
 
@@ -39,8 +48,29 @@ fn parse_resolution(resolution: &str) -> PyResult<Resolution> {
     }
 }
 
+#[pyfunction]
+#[pyo3(signature = (symbols, start_date, end_date, resolution=None, initial_capital=None, name=None))]
+fn run_buy_and_hold(
+    symbols: Vec<String>,
+    start_date: &str,
+    end_date: &str,
+    resolution: Option<&str>,
+    initial_capital: Option<f64>,
+    name: Option<&str>,
+) -> PyResult<PyBacktestResult> {
+    let mut engine = PyBacktestEngine::new(
+        symbols,
+        start_date,
+        end_date,
+        resolution,
+        initial_capital,
+        name,
+    )?;
+    engine.run_buy_and_hold()
+}
+
 /// Python wrapper for Symbol
-#[pyclass]
+#[pyclass(name = "Symbol")]
 struct PySymbol {
     inner: gb_types::Symbol,
 }
@@ -56,34 +86,36 @@ impl PySymbol {
             "bond" => gb_types::AssetClass::Bond,
             _ => gb_types::AssetClass::Equity,
         };
-        
+
         Self {
             inner: gb_types::Symbol::new(symbol, exchange, asset_class),
         }
     }
-    
+
     #[getter]
     fn symbol(&self) -> String {
         self.inner.symbol.clone()
     }
-    
+
     #[getter]
     fn exchange(&self) -> String {
         self.inner.exchange.clone()
     }
-    
+
     fn __str__(&self) -> String {
         self.inner.to_string()
     }
-    
+
     fn __repr__(&self) -> String {
-        format!("Symbol(symbol='{}', exchange='{}', asset_class='{:?}')", 
-                self.inner.symbol, self.inner.exchange, self.inner.asset_class)
+        format!(
+            "Symbol(symbol='{}', exchange='{}', asset_class='{:?}')",
+            self.inner.symbol, self.inner.exchange, self.inner.asset_class
+        )
     }
 }
 
 /// Python wrapper for DataManager
-#[pyclass]
+#[pyclass(name = "DataManager")]
 struct PyDataManager {
     inner: std::sync::Mutex<gb_data::DataManager>,
     runtime: tokio::runtime::Runtime,
@@ -94,17 +126,26 @@ impl PyDataManager {
     #[new]
     fn new() -> PyResult<Self> {
         // Create tokio runtime for async operations
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create async runtime: {}", e)))?;
-        
-        // Create data manager
-        let inner = runtime.block_on(async {
-            gb_data::DataManager::new().await
-        }).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create data manager: {}", e)))?;
+        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to create async runtime: {}",
+                e
+            ))
+        })?;
 
-        Ok(Self { 
-            inner: std::sync::Mutex::new(inner), 
-            runtime 
+        // Create data manager
+        let inner = runtime
+            .block_on(async { gb_data::DataManager::new().await })
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to create data manager: {}",
+                    e
+                ))
+            })?;
+
+        Ok(Self {
+            inner: std::sync::Mutex::new(inner),
+            runtime,
         })
     }
 
@@ -118,11 +159,15 @@ impl PyDataManager {
     ) -> PyResult<Vec<PyBar>> {
         // Parse dates
         let start_date = chrono::DateTime::parse_from_rfc3339(start_date)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid start_date format: {}", e)))?
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("Invalid start_date format: {}", e))
+            })?
             .with_timezone(&chrono::Utc);
-        
+
         let end_date = chrono::DateTime::parse_from_rfc3339(end_date)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid end_date format: {}", e)))?
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("Invalid end_date format: {}", e))
+            })?
             .with_timezone(&chrono::Utc);
 
         // Parse resolution
@@ -130,14 +175,25 @@ impl PyDataManager {
             "minute" | "1m" => gb_types::Resolution::Minute,
             "hour" | "1h" => gb_types::Resolution::Hour,
             "day" | "1d" => gb_types::Resolution::Day,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(format!("Invalid resolution: {}", resolution))),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid resolution: {}",
+                    resolution
+                )))
+            }
         };
 
         // Load data asynchronously
         let bars = self.runtime.block_on(async {
-            let mut inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
-            inner.load_data(&symbol.inner, start_date, end_date, resolution).await
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to load data: {}", e)))
+            let mut inner = self.inner.lock().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+            })?;
+            inner
+                .load_data(&symbol.inner, start_date, end_date, resolution)
+                .await
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to load data: {}", e))
+                })
         })?;
 
         // Convert to Python bars
@@ -148,7 +204,9 @@ impl PyDataManager {
     /// Add a sample data provider
     fn add_sample_provider(&mut self) -> PyResult<()> {
         let provider = Box::new(gb_data::SampleDataProvider::new());
-        let mut inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+        let mut inner = self.inner.lock().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+        })?;
         inner.add_provider(provider);
         Ok(())
     }
@@ -156,7 +214,9 @@ impl PyDataManager {
     /// Add a CSV data provider
     fn add_csv_provider(&mut self, base_path: &str) -> PyResult<()> {
         let provider = Box::new(gb_data::CsvDataProvider::new(base_path));
-        let mut inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+        let mut inner = self.inner.lock().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+        })?;
         inner.add_provider(provider);
         Ok(())
     }
@@ -164,7 +224,9 @@ impl PyDataManager {
     /// Add an Alpha Vantage provider
     fn add_alpha_vantage_provider(&mut self, api_key: &str) -> PyResult<()> {
         let provider = Box::new(gb_data::AlphaVantageProvider::new(api_key.to_string()));
-        let mut inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+        let mut inner = self.inner.lock().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+        })?;
         inner.add_provider(provider);
         Ok(())
     }
@@ -172,9 +234,15 @@ impl PyDataManager {
     /// Get catalog statistics
     fn get_catalog_stats(&self) -> PyResult<PyCatalogStats> {
         let stats = self.runtime.block_on(async {
-            let inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
-            inner.catalog.get_catalog_stats().await
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to get catalog stats: {}", e)))
+            let inner = self.inner.lock().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+            })?;
+            inner.catalog.get_catalog_stats().await.map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to get catalog stats: {}",
+                    e
+                ))
+            })
         })?;
 
         Ok(PyCatalogStats {
@@ -187,13 +255,15 @@ impl PyDataManager {
 
     /// Get number of configured data providers
     fn get_provider_count(&self) -> PyResult<usize> {
-        let inner = self.inner.lock().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+        let inner = self.inner.lock().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+        })?;
         Ok(inner.providers.len())
     }
 }
 
 /// Python wrapper for Bar (OHLCV data)
-#[pyclass]
+#[pyclass(name = "Bar")]
 struct PyBar {
     inner: gb_types::Bar,
 }
@@ -202,7 +272,9 @@ struct PyBar {
 impl PyBar {
     #[getter]
     fn symbol(&self) -> PySymbol {
-        PySymbol { inner: self.inner.symbol.clone() }
+        PySymbol {
+            inner: self.inner.symbol.clone(),
+        }
     }
 
     #[getter]
@@ -241,7 +313,8 @@ impl PyBar {
     }
 
     fn __str__(&self) -> String {
-        format!("Bar({} {} O:{} H:{} L:{} C:{} V:{})",
+        format!(
+            "Bar({} {} O:{} H:{} L:{} C:{} V:{})",
             self.inner.symbol,
             self.inner.timestamp.format("%Y-%m-%d %H:%M:%S"),
             self.inner.open,
@@ -253,7 +326,8 @@ impl PyBar {
     }
 
     fn __repr__(&self) -> String {
-        format!("PyBar(symbol='{}', timestamp='{}', open={}, high={}, low={}, close={}, volume={})",
+        format!(
+            "PyBar(symbol='{}', timestamp='{}', open={}, high={}, low={}, close={}, volume={})",
             self.inner.symbol,
             self.inner.timestamp.to_rfc3339(),
             self.inner.open,
@@ -266,7 +340,7 @@ impl PyBar {
 }
 
 /// Python wrapper for catalog statistics
-#[pyclass]
+#[pyclass(name = "CatalogStats")]
 struct PyCatalogStats {
     #[pyo3(get)]
     total_symbols: usize,
@@ -289,11 +363,18 @@ impl PyCatalogStats {
     }
 
     fn __str__(&self) -> String {
-        format!("CatalogStats(symbols: {}, records: {}, date_range: {} to {})",
+        format!(
+            "CatalogStats(symbols: {}, records: {}, date_range: {} to {})",
             self.total_symbols,
             self.total_records,
-            self.date_range_start.as_ref().map(|s| s.as_str()).unwrap_or("None"),
-            self.date_range_end.as_ref().map(|s| s.as_str()).unwrap_or("None")
+            self.date_range_start
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("None"),
+            self.date_range_end
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("None")
         )
     }
 
@@ -318,7 +399,7 @@ struct EquityPoint {
     drawdown: f64,
 }
 
-#[pyclass]
+#[pyclass(name = "BacktestResult")]
 struct PyBacktestResult {
     metrics_summary: std::collections::HashMap<String, f64>,
     equity_curve: Vec<EquityPoint>,
@@ -354,10 +435,7 @@ impl PyBacktestResult {
             );
             metrics_summary.insert(
                 "sharpe_ratio".to_string(),
-                performance
-                    .sharpe_ratio
-                    .map(decimal_to_f64)
-                    .unwrap_or(0.0),
+                performance.sharpe_ratio.map(decimal_to_f64).unwrap_or(0.0),
             );
             metrics_summary.insert(
                 "max_drawdown".to_string(),
@@ -372,45 +450,27 @@ impl PyBacktestResult {
             );
             metrics_summary.insert(
                 "sortino_ratio".to_string(),
-                performance
-                    .sortino_ratio
-                    .map(decimal_to_f64)
-                    .unwrap_or(0.0),
+                performance.sortino_ratio.map(decimal_to_f64).unwrap_or(0.0),
             );
             metrics_summary.insert(
                 "calmar_ratio".to_string(),
-                performance
-                    .calmar_ratio
-                    .map(decimal_to_f64)
-                    .unwrap_or(0.0),
+                performance.calmar_ratio.map(decimal_to_f64).unwrap_or(0.0),
             );
             metrics_summary.insert(
                 "var_95".to_string(),
-                performance
-                    .var_95
-                    .map(decimal_to_f64)
-                    .unwrap_or(0.0),
+                performance.var_95.map(decimal_to_f64).unwrap_or(0.0),
             );
             metrics_summary.insert(
                 "cvar_95".to_string(),
-                performance
-                    .cvar_95
-                    .map(decimal_to_f64)
-                    .unwrap_or(0.0),
+                performance.cvar_95.map(decimal_to_f64).unwrap_or(0.0),
             );
             metrics_summary.insert(
                 "skewness".to_string(),
-                performance
-                    .skewness
-                    .map(decimal_to_f64)
-                    .unwrap_or(0.0),
+                performance.skewness.map(decimal_to_f64).unwrap_or(0.0),
             );
             metrics_summary.insert(
                 "kurtosis".to_string(),
-                performance
-                    .kurtosis
-                    .map(decimal_to_f64)
-                    .unwrap_or(0.0),
+                performance.kurtosis.map(decimal_to_f64).unwrap_or(0.0),
             );
             metrics_summary.insert(
                 "total_commissions".to_string(),
@@ -423,10 +483,7 @@ impl PyBacktestResult {
             );
             metrics_summary.insert(
                 "profit_factor".to_string(),
-                performance
-                    .profit_factor
-                    .map(decimal_to_f64)
-                    .unwrap_or(0.0),
+                performance.profit_factor.map(decimal_to_f64).unwrap_or(0.0),
             );
             metrics_summary.insert(
                 "average_win".to_string(),
@@ -528,7 +585,8 @@ impl PyBacktestResult {
     }
 
     /// Convert the equity curve to a pandas DataFrame (Jupyter-friendly)
-    fn to_dataframe(&self, py: Python) -> PyResult<PyObject> {
+    #[pyo3(signature = (index=None))]
+    fn to_dataframe(&self, py: Python, index: Option<&str>) -> PyResult<PyObject> {
         let pandas = py.import("pandas").map_err(|_| {
             pyo3::exceptions::PyImportError::new_err(
                 "pandas is required for to_dataframe(). Install with `pip install pandas`.",
@@ -536,7 +594,7 @@ impl PyBacktestResult {
         })?;
 
         let data = self.equity_curve(py)?;
-        let df = pandas.call_method1("DataFrame", (data,))?;
+        let mut df = pandas.call_method1("DataFrame", (data,))?;
 
         let columns = df.getattr("columns")?;
         let has_timestamp = columns
@@ -547,6 +605,16 @@ impl PyBacktestResult {
             let ts = df.call_method1("__getitem__", ("timestamp",))?;
             let ts_dt = to_datetime.call1((ts,))?;
             df.call_method1("__setitem__", ("timestamp", ts_dt))?;
+        }
+
+        if let Some(index_col) = index {
+            let columns = df.getattr("columns")?;
+            let has_index = columns
+                .call_method1("__contains__", (index_col,))?
+                .is_truthy()?;
+            if has_index {
+                df = df.call_method1("set_index", (index_col,))?;
+            }
         }
 
         Ok(df.into())
@@ -569,7 +637,7 @@ impl PyBacktestResult {
 
     /// Plot the equity curve using matplotlib (returns Axes)
     fn plot_equity(&self, py: Python, show: Option<bool>) -> PyResult<PyObject> {
-        let df = self.to_dataframe(py)?;
+        let df = self.to_dataframe(py, None)?;
         let plt = py.import("matplotlib.pyplot").map_err(|_| {
             pyo3::exceptions::PyImportError::new_err(
                 "matplotlib is required for plot_equity(). Install with `pip install matplotlib`.",
@@ -590,6 +658,22 @@ impl PyBacktestResult {
         Ok(ax.into())
     }
 
+    /// Notebook-friendly summary with optional plot
+    #[pyo3(signature = (plot=false, index=None))]
+    fn summary(&self, py: Python, plot: Option<bool>, index: Option<&str>) -> PyResult<PyObject> {
+        let metrics = self.metrics_dataframe(py)?;
+        let curve = self.to_dataframe(py, index)?;
+
+        if plot.unwrap_or(false) {
+            let _ = self.plot_equity(py, Some(false))?;
+        }
+
+        let summary = PyDict::new(py);
+        summary.set_item("metrics", metrics)?;
+        summary.set_item("equity_curve", curve)?;
+        Ok(summary.into())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "PyBacktestResult(metrics_summary_keys={:?}, equity_points={})",
@@ -600,7 +684,7 @@ impl PyBacktestResult {
 }
 
 /// Python wrapper for running backtests
-#[pyclass]
+#[pyclass(name = "BacktestEngine")]
 struct PyBacktestEngine {
     inner: std::sync::Mutex<RustBacktestEngine>,
     runtime: tokio::runtime::Runtime,
@@ -624,23 +708,28 @@ impl PyBacktestEngine {
         }
 
         let start_date = chrono::DateTime::parse_from_rfc3339(start_date)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid start_date format: {}", e)))?
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("Invalid start_date format: {}", e))
+            })?
             .with_timezone(&chrono::Utc);
 
         let end_date = chrono::DateTime::parse_from_rfc3339(end_date)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid end_date format: {}", e)))?
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("Invalid end_date format: {}", e))
+            })?
             .with_timezone(&chrono::Utc);
 
         let resolution = parse_resolution(resolution.unwrap_or("day"))?;
         let initial_capital = Decimal::from_f64(initial_capital.unwrap_or(100_000.0))
             .unwrap_or_else(|| Decimal::from(100_000));
 
-        let rust_symbols: Vec<Symbol> = symbols.iter().map(|symbol| Symbol::equity(symbol)).collect();
+        let rust_symbols: Vec<Symbol> = symbols
+            .iter()
+            .map(|symbol| Symbol::equity(symbol))
+            .collect();
 
-        let mut strategy_config = StrategyConfig::new(
-            "buy_and_hold".to_string(),
-            "Buy and Hold".to_string(),
-        );
+        let mut strategy_config =
+            StrategyConfig::new("buy_and_hold".to_string(), "Buy and Hold".to_string());
         strategy_config.symbols = rust_symbols.clone();
         strategy_config.initial_capital = initial_capital;
 
@@ -655,12 +744,21 @@ impl PyBacktestEngine {
         config.symbols = rust_symbols;
         config.strategy_config = strategy_config;
 
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create async runtime: {}", e)))?;
+        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to create async runtime: {}",
+                e
+            ))
+        })?;
 
         let inner = runtime
             .block_on(async { RustBacktestEngine::new(config).await })
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create backtest engine: {}", e)))?;
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to create backtest engine: {}",
+                    e
+                ))
+            })?;
 
         Ok(Self {
             inner: std::sync::Mutex::new(inner),
@@ -671,10 +769,9 @@ impl PyBacktestEngine {
     /// Run a backtest using the built-in buy-and-hold strategy
     fn run_buy_and_hold(&mut self) -> PyResult<PyBacktestResult> {
         let result: Result<RustBacktestResult, PyErr> = self.runtime.block_on(async {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e)))?;
+            let mut inner = self.inner.lock().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+            })?;
             inner
                 .run_with_strategy(Box::new(BuyAndHoldStrategy::new()))
                 .await
