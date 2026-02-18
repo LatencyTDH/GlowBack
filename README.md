@@ -91,6 +91,17 @@ cd ui && python setup.py
 # Opens http://localhost:8501
 ```
 
+### Docker (Compose)
+
+```bash
+docker compose up --build
+```
+
+Services:
+- UI: http://localhost:8501
+- API: http://localhost:8000 (set `GLOWBACK_API_KEY` to require auth)
+- Engine: http://localhost:8081 (health JSON)
+
 ## Python Bindings
 
 ```python

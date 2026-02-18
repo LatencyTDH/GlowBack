@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "GlowBack backtesting engine"
 
+[[bin]]
+name = "gb-engine-service"
+path = "src/bin/engine_service.rs"
+
 [dependencies]
 gb-types = { path = "../gb-types" }
 gb-data = { path = "../gb-data" }
