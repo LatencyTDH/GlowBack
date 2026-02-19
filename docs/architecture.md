@@ -5,7 +5,7 @@ GlowBack is a Rust‑first backtesting platform with a Python SDK and local UI.
 ## Core Crates
 
 - **gb-types**: core data structures, orders, portfolio, strategies
-- **gb-data**: data ingestion, providers, DuckDB catalog, Parquet storage/loader
+- **gb-data**: data ingestion, providers, SQLite catalog, Parquet storage/loader
 - **gb-engine**: event‑driven backtesting engine and market simulation
 - **gb-python**: PyO3 Python bindings
 

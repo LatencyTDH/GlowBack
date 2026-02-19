@@ -22,8 +22,8 @@ parking_lot = { workspace = true }
 rayon = { workspace = true }
 async-trait = "0.1"
 
-# DuckDB integration (re-enabled - testing compatibility with Arrow 55.2)
-duckdb = { version = "1.3", features = ["bundled"] }
+# SQLite for lightweight catalog metadata (replaces DuckDB bundled — saves ~1.5GB build + 20min compile)
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 # CSV and data format support
 csv = "1.3"
