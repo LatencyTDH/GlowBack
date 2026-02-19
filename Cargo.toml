@@ -27,6 +27,9 @@ num-traits = "0.2"
 rust_decimal = { version = "1.33", features = ["serde"] }
 pyo3 = { version = "0.25", features = ["extension-module"] }
 
+[profile.dev]
+debug = "line-tables-only"  # Reduces debug build size ~50%; backtraces still work
+
 [profile.release]
 opt-level = 3
 lto = true
