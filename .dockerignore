@@ -1,0 +1,14 @@
+.git
+.github
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/.env
+**/*.pyc
+target
+data
+assets
+node_modules
+ui/.streamlit

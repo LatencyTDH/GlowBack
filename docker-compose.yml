@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: docker/engine.Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - GLOWBACK_ENGINE_ADDR=0.0.0.0:8081
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GLOWBACK_ENGINE_URL=http://engine:8081
+      - GLOWBACK_API_KEY=${GLOWBACK_API_KEY:-}
+    depends_on:
+      - engine
+
+  ui:
+    build:
+      context: .
+      dockerfile: docker/ui.Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      - GLOWBACK_API_URL=http://api:8000
+    depends_on:
+      - api
