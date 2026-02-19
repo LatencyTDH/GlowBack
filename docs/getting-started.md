@@ -33,6 +33,8 @@ python setup.py
 docker compose up --build
 ```
 
+Note: The engine image builds with `rust:stable-slim` to match `rust-toolchain.toml`.
+
 Services:
 - UI: http://localhost:8501
 - API: http://localhost:8000 (set `GLOWBACK_API_KEY` to require auth)
