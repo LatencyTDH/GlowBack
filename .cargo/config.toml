@@ -1,0 +1,5 @@
+[env]
+# Use pre-built DuckDB library instead of compiling from C++ source.
+# Saves ~20 min build time and ~2 GB of artifacts.
+# See: https://github.com/duckdb/duckdb-rs#build-configuration
+DUCKDB_DOWNLOAD_LIB = "1"

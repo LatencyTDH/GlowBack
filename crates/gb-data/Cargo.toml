@@ -22,8 +22,10 @@ parking_lot = { workspace = true }
 rayon = { workspace = true }
 async-trait = "0.1"
 
-# SQLite for lightweight catalog metadata (replaces DuckDB bundled — saves ~1.5GB build + 20min compile)
-rusqlite = { version = "0.34", features = ["bundled"] }
+# DuckDB without bundled — links against pre-built library (no C++ compilation)
+# Build with: DUCKDB_DOWNLOAD_LIB=1 cargo build
+# Parquet/JSON features omitted (they force bundled); pre-built lib includes them.
+duckdb = { version = "1.4" }
 
 # CSV and data format support
 csv = "1.3"

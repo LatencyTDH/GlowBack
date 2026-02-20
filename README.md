@@ -19,7 +19,7 @@ GlowBack provides a fast, realistic backtesting engine with data management, sto
 
 - Event‑driven simulation engine with slippage/latency/commission models
 - Data ingestion (CSV, Alpha Vantage, sample data)
-- Arrow/Parquet columnar storage and SQLite metadata catalog
+- Arrow/Parquet columnar storage and DuckDB metadata catalog
 - Strategy library (4 built‑in strategies)
 - Python bindings (async support)
 - Streamlit UI for strategy development and analysis
@@ -35,7 +35,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 | Crate | Description |
 |------|-------------|
 | **gb-types** | Core data structures, orders, portfolio, strategy library |
-| **gb-data** | Data ingestion, providers, SQLite catalog, Parquet storage/loader |
+| **gb-data** | Data ingestion, providers, DuckDB catalog, Parquet storage/loader |
 | **gb-engine** | Event‑driven backtesting engine and market simulation |
 | **gb-python** | Python bindings with async support |
 
@@ -51,7 +51,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
 - Strategy library: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, RSI
 - Storage: Arrow/Parquet with batch loading and round‑trip I/O
-- Catalog: SQLite metadata with indexed queries
+- Catalog: DuckDB metadata with indexed queries
 
 ## Getting Started
 

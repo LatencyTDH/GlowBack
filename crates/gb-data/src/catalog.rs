@@ -2,9 +2,9 @@ use std::path::Path;
 use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use gb_types::{Symbol, Resolution, GbResult, DataError};
-use rusqlite::Connection;
+use duckdb::Connection;
 
-/// Data catalog for managing metadata with SQLite backend
+/// Data catalog for managing metadata with DuckDB backend
 #[derive(Debug)]
 pub struct DataCatalog {
     connection: Connection,
@@ -71,21 +71,22 @@ impl DataCatalog {
         // Update in-memory cache
         self.symbols.insert(key.clone(), info);
         
-        // Update SQLite
-        self.connection.execute(
+        // Update DuckDB
+        let mut stmt = self.connection.prepare(
             "INSERT OR REPLACE INTO symbol_metadata 
              (id, symbol, exchange, asset_class, resolution, start_date, end_date, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)",
-            rusqlite::params![
-                key,
-                symbol.symbol,
-                symbol.exchange,
-                format!("{:?}", symbol.asset_class),
-                format!("{:?}", resolution),
-                start_date.to_rfc3339(),
-                end_date.to_rfc3339(),
-            ],
+             VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
         ).map_err(|e| DataError::DatabaseConnection { message: e.to_string() })?;
+        
+        stmt.execute([
+            &key,
+            &symbol.symbol,
+            &symbol.exchange,
+            &format!("{:?}", symbol.asset_class),
+            &format!("{:?}", resolution),
+            &start_date.to_rfc3339(),
+            &end_date.to_rfc3339(),
+        ]).map_err(|e| DataError::DatabaseConnection { message: e.to_string() })?;
         
         tracing::debug!("Registered symbol data: {} from {} to {}", symbol, start_date, end_date);
         Ok(())
@@ -167,4 +168,4 @@ pub struct CatalogStats {
     pub total_records: u64,
     pub earliest_date: Option<DateTime<Utc>>,
     pub latest_date: Option<DateTime<Utc>>,
-}
+} 

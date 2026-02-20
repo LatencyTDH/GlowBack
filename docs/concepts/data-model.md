@@ -13,4 +13,4 @@ Symbols identify instruments (equities, later crypto/FX). Resolution specifies t
 ## Storage
 
 - **Arrow/Parquet** for columnar storage
-- **SQLite** for metadata and queryable catalogs
+- **DuckDB** for metadata and queryable catalogs

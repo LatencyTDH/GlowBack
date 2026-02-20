@@ -6,7 +6,7 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 
 - Event‑driven simulation engine with realistic execution models
 - Data ingestion (CSV, Alpha Vantage, sample data)
-- Arrow/Parquet storage with SQLite metadata catalog
+- Arrow/Parquet storage with DuckDB metadata catalog
 - Strategy library (4 built‑in strategies)
 - Python bindings with async support
 - Streamlit UI for strategy development and analysis
