@@ -17,11 +17,27 @@ Interactive docs are available at `/docs`.
 
 ## Authentication (stub)
 
-If `GLOWBACK_API_KEY` is set in the environment, requests must include:
+If `GLOWBACK_API_KEY` is set in the environment, requests must include either:
 
 ```
 Authorization: Bearer <token>
 ```
+
+or
+
+```
+X-API-Key: <token>
+```
+
+Multiple keys are supported via a comma-separated `GLOWBACK_API_KEY` value.
+
+WebSocket clients that cannot set headers (e.g., browsers) can pass `?api_key=<token>` in the URL.
+
+## Request IDs & Security Headers
+
+HTTP responses include `X-Request-ID` (use the header from your client to correlate logs).
+The gateway also sets basic security headers (`X-Content-Type-Options`, `X-Frame-Options`,
+`Referrer-Policy`, `Permissions-Policy`, `Cache-Control: no-store`).
 
 ## REST Endpoints
 

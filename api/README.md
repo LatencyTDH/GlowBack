@@ -11,7 +11,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# optional: require an API key
+# optional: require an API key (comma-separated keys supported)
 export GLOWBACK_API_KEY="dev-secret"
 
 uvicorn app.main:app --reload
@@ -31,4 +31,6 @@ The server will be available at http://127.0.0.1:8000 with interactive docs at `
 
 - Storage is in‑memory (process‑local).
 - The engine adapter is a mock that emits progress events and a sample result.
-- `GLOWBACK_API_KEY` enables a stub auth check (`Authorization: Bearer <token>`).
+- `GLOWBACK_API_KEY` enables a stub auth check (`Authorization: Bearer <token>` or `X-API-Key: <token>`).
+  WebSocket clients can pass `?api_key=<token>`.
+- HTTP responses include `X-Request-ID` for log correlation.
