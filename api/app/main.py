@@ -113,12 +113,13 @@ async def stream_backtest(
 
     authorized, provided = validate_api_key(websocket.headers, websocket.query_params)
     if not authorized:
+        redacted = f"***{provided[-4:]}" if provided and len(provided) > 4 else "***"
         logger.warning(
             "ws_api_key_rejected request_id=%s path=%s client_ip=%s provided=%s",
             request_id,
             websocket.url.path,
             client_host,
-            provided,
+            redacted,
         )
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return

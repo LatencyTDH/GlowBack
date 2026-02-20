@@ -59,13 +59,14 @@ async def require_api_key(request: Request) -> None:
     if not authorized:
         request_id = getattr(request.state, "request_id", None)
         client_host = request.client.host if request.client else "unknown"
+        redacted = f"***{provided[-4:]}" if provided and len(provided) > 4 else "***"
         logger.warning(
             "api_key_rejected request_id=%s method=%s path=%s client_ip=%s provided=%s",
             request_id,
             request.method,
             request.url.path,
             client_host,
-            provided,
+            redacted,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
