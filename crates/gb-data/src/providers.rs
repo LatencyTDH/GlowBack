@@ -1,17 +1,17 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use gb_types::{Bar, Symbol, Resolution, GbResult, DataError};
-use rust_decimal::Decimal;
-use std::path::Path;
 use csv::ReaderBuilder;
+use gb_types::{Bar, DataError, GbResult, Resolution, Symbol};
+use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::path::Path;
 
 /// Trait for data providers (CSV, APIs, databases, etc.)
 #[async_trait]
 pub trait DataProvider: Send + Sync + std::fmt::Debug {
     /// Check if this provider supports the given symbol
     fn supports_symbol(&self, symbol: &Symbol) -> bool;
-    
+
     /// Fetch bar data for the given parameters
     async fn fetch_bars(
         &mut self,
@@ -20,10 +20,10 @@ pub trait DataProvider: Send + Sync + std::fmt::Debug {
         end_date: DateTime<Utc>,
         resolution: Resolution,
     ) -> GbResult<Vec<Bar>>;
-    
+
     /// Get provider name
     fn name(&self) -> &str;
-    
+
     /// Get provider configuration
     fn config(&self) -> serde_json::Value;
 }
@@ -60,18 +60,19 @@ impl CsvDataProvider {
             file_pattern: "{symbol}_{resolution}.csv".to_string(),
         }
     }
-    
+
     pub fn with_pattern(mut self, pattern: &str) -> Self {
         self.file_pattern = pattern.to_string();
         self
     }
-    
+
     fn get_file_path(&self, symbol: &Symbol, resolution: Resolution) -> std::path::PathBuf {
-        let filename = self.file_pattern
+        let filename = self
+            .file_pattern
             .replace("{symbol}", &symbol.symbol)
             .replace("{resolution}", &resolution.to_string())
             .replace("{exchange}", &symbol.exchange);
-        
+
         self.data_directory.join(filename)
     }
 }
@@ -82,7 +83,7 @@ impl DataProvider for CsvDataProvider {
         let path = self.get_file_path(symbol, Resolution::Day);
         path.exists()
     }
-    
+
     async fn fetch_bars(
         &mut self,
         symbol: &Symbol,
@@ -91,37 +92,35 @@ impl DataProvider for CsvDataProvider {
         resolution: Resolution,
     ) -> GbResult<Vec<Bar>> {
         let file_path = self.get_file_path(symbol, resolution);
-        
+
         if !file_path.exists() {
-            return Err(DataError::SourceNotFound(
-                file_path.to_string_lossy().to_string()
-            ).into());
+            return Err(DataError::SourceNotFound(file_path.to_string_lossy().to_string()).into());
         }
-        
+
         let file = std::fs::File::open(&file_path)?;
-        let mut reader = ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(file);
-        
+        let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
+
         let mut bars = Vec::new();
-        
+
         for result in reader.deserialize() {
-            let record: CsvRecord = result.map_err(|e| {
-                DataError::ParseError {
-                    message: format!("CSV parsing error: {}", e),
-                }
+            let record: CsvRecord = result.map_err(|e| DataError::ParseError {
+                message: format!("CSV parsing error: {}", e),
             })?;
-            
+
             let timestamp = chrono::DateTime::parse_from_rfc3339(&record.timestamp)
-                .or_else(|_| chrono::NaiveDateTime::parse_from_str(&record.timestamp, "%Y-%m-%d")
-                    .map(|dt| dt.and_utc().into()))
-                .or_else(|_| chrono::NaiveDateTime::parse_from_str(&record.timestamp, "%Y-%m-%d %H:%M:%S")
-                    .map(|dt| dt.and_utc().into()))
+                .or_else(|_| {
+                    chrono::NaiveDateTime::parse_from_str(&record.timestamp, "%Y-%m-%d")
+                        .map(|dt| dt.and_utc().into())
+                })
+                .or_else(|_| {
+                    chrono::NaiveDateTime::parse_from_str(&record.timestamp, "%Y-%m-%d %H:%M:%S")
+                        .map(|dt| dt.and_utc().into())
+                })
                 .map_err(|e| DataError::ParseError {
                     message: format!("Date parsing error: {}", e),
                 })?
                 .with_timezone(&Utc);
-            
+
             if timestamp >= start_date && timestamp <= end_date {
                 let bar = Bar::new(
                     symbol.clone(),
@@ -136,15 +135,15 @@ impl DataProvider for CsvDataProvider {
                 bars.push(bar);
             }
         }
-        
+
         bars.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
         Ok(bars)
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn config(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "csv",
@@ -177,10 +176,27 @@ impl Default for SampleDataProvider {
 #[async_trait]
 impl DataProvider for SampleDataProvider {
     fn supports_symbol(&self, symbol: &Symbol) -> bool {
-        // Support common test symbols
-        matches!(symbol.symbol.as_str(), "AAPL" | "GOOGL" | "MSFT" | "TSLA" | "SPY" | "BTC-USD" | "ETH-USD")
+        // Support common test symbols for equities and crypto
+        matches!(
+            symbol.symbol.as_str(),
+            "AAPL"
+                | "GOOGL"
+                | "MSFT"
+                | "TSLA"
+                | "SPY"
+                | "BTC-USD"
+                | "ETH-USD"
+                | "SOL-USD"
+                | "DOGE-USD"
+                | "ADA-USD"
+                | "BTCUSDT"
+                | "ETHUSDT"
+                | "SOLUSDT"
+                | "DOGEUSDT"
+                | "ADAUSDT"
+        )
     }
-    
+
     async fn fetch_bars(
         &mut self,
         symbol: &Symbol,
@@ -191,9 +207,10 @@ impl DataProvider for SampleDataProvider {
         if !self.supports_symbol(symbol) {
             return Err(DataError::SymbolNotFound {
                 symbol: symbol.to_string(),
-            }.into());
+            }
+            .into());
         }
-        
+
         // Generate synthetic data for demo
         let mut bars = Vec::new();
         let mut current_date = start_date;
@@ -203,11 +220,14 @@ impl DataProvider for SampleDataProvider {
             "MSFT" => Decimal::from(300),
             "TSLA" => Decimal::from(800),
             "SPY" => Decimal::from(400),
-            "BTC-USD" => Decimal::from(45000),
-            "ETH-USD" => Decimal::from(3000),
+            "BTC-USD" | "BTCUSDT" => Decimal::from(45000),
+            "ETH-USD" | "ETHUSDT" => Decimal::from(3000),
+            "SOL-USD" | "SOLUSDT" => Decimal::from(120),
+            "DOGE-USD" | "DOGEUSDT" => Decimal::new(8, 2), // $0.08
+            "ADA-USD" | "ADAUSDT" => Decimal::new(45, 2),  // $0.45
             _ => Decimal::from(100),
         };
-        
+
         let increment = match resolution {
             Resolution::Minute => chrono::Duration::minutes(1),
             Resolution::FiveMinute => chrono::Duration::minutes(5),
@@ -219,28 +239,32 @@ impl DataProvider for SampleDataProvider {
             Resolution::Month => chrono::Duration::days(30),
             _ => chrono::Duration::days(1),
         };
-        
+
         let mut rng_state = 12345u64; // Simple PRNG
-        
+
         while current_date <= end_date {
             // Simple random walk
             rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
             let random = (rng_state >> 16) as f64 / 65536.0 - 0.5; // -0.5 to 0.5
-            
+
             let change_pct = Decimal::from_f64_retain(random * 0.02).unwrap_or_default(); // ±2%
             let new_price = price * (Decimal::ONE + change_pct);
-            
+
             let volatility = Decimal::from_f64_retain(0.01).unwrap_or_default(); // 1% intraday volatility
             let high = new_price * (Decimal::ONE + volatility);
             let low = new_price * (Decimal::ONE - volatility);
-            
+
             let volume = match symbol.symbol.as_str() {
                 "AAPL" => Decimal::from(80000000),
                 "SPY" => Decimal::from(50000000),
-                "BTC-USD" => Decimal::from(1000),
+                "BTC-USD" | "BTCUSDT" => Decimal::from(25000),
+                "ETH-USD" | "ETHUSDT" => Decimal::from(150000),
+                "SOL-USD" | "SOLUSDT" => Decimal::from(500000),
+                "DOGE-USD" | "DOGEUSDT" => Decimal::from(2000000000u64),
+                "ADA-USD" | "ADAUSDT" => Decimal::from(800000000u64),
                 _ => Decimal::from(10000000),
             };
-            
+
             let bar = Bar::new(
                 symbol.clone(),
                 current_date,
@@ -251,23 +275,27 @@ impl DataProvider for SampleDataProvider {
                 volume,
                 resolution,
             );
-            
+
             bars.push(bar);
             price = new_price;
             current_date += increment;
         }
-        
+
         Ok(bars)
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn config(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "sample",
-            "supported_symbols": ["AAPL", "GOOGL", "MSFT", "TSLA", "SPY", "BTC-USD", "ETH-USD"]
+            "supported_symbols": [
+                "AAPL", "GOOGL", "MSFT", "TSLA", "SPY",
+                "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "ADA-USD",
+                "BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "ADAUSDT"
+            ]
         })
     }
 }
@@ -290,7 +318,11 @@ impl AlphaVantageProvider {
     }
 
     /// Parse Alpha Vantage daily response
-    fn parse_daily_response(&self, response: serde_json::Value, symbol: &Symbol) -> GbResult<Vec<Bar>> {
+    fn parse_daily_response(
+        &self,
+        response: serde_json::Value,
+        symbol: &Symbol,
+    ) -> GbResult<Vec<Bar>> {
         let time_series = response
             .get("Time Series (Daily)")
             .ok_or_else(|| DataError::ParseError {
@@ -346,7 +378,11 @@ impl AlphaVantageProvider {
     }
 
     /// Parse a price field from Alpha Vantage response
-    fn parse_price_field(&self, data: &serde_json::Map<String, serde_json::Value>, field: &str) -> GbResult<rust_decimal::Decimal> {
+    fn parse_price_field(
+        &self,
+        data: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> GbResult<rust_decimal::Decimal> {
         let value_str = data
             .get(field)
             .ok_or_else(|| DataError::ParseError {
@@ -357,14 +393,20 @@ impl AlphaVantageProvider {
                 message: format!("Field '{}' is not a string", field),
             })?;
 
-        value_str.parse::<rust_decimal::Decimal>()
-            .map_err(|e| DataError::ParseError {
+        value_str.parse::<rust_decimal::Decimal>().map_err(|e| {
+            DataError::ParseError {
                 message: format!("Failed to parse {} value '{}': {}", field, value_str, e),
-            }.into())
+            }
+            .into()
+        })
     }
 
     /// Parse a volume field from Alpha Vantage response
-    fn parse_volume_field(&self, data: &serde_json::Map<String, serde_json::Value>, field: &str) -> GbResult<rust_decimal::Decimal> {
+    fn parse_volume_field(
+        &self,
+        data: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> GbResult<rust_decimal::Decimal> {
         let value_str = data
             .get(field)
             .ok_or_else(|| DataError::ParseError {
@@ -375,10 +417,12 @@ impl AlphaVantageProvider {
                 message: format!("Field '{}' is not a string", field),
             })?;
 
-        value_str.parse::<rust_decimal::Decimal>()
-            .map_err(|e| DataError::ParseError {
+        value_str.parse::<rust_decimal::Decimal>().map_err(|e| {
+            DataError::ParseError {
                 message: format!("Failed to parse {} value '{}': {}", field, value_str, e),
-            }.into())
+            }
+            .into()
+        })
     }
 }
 
@@ -388,7 +432,7 @@ impl DataProvider for AlphaVantageProvider {
         // Alpha Vantage supports most US equities
         matches!(symbol.asset_class, gb_types::AssetClass::Equity)
     }
-    
+
     async fn fetch_bars(
         &mut self,
         symbol: &Symbol,
@@ -396,16 +440,25 @@ impl DataProvider for AlphaVantageProvider {
         end_date: DateTime<Utc>,
         resolution: Resolution,
     ) -> GbResult<Vec<Bar>> {
-        tracing::info!("Fetching data from Alpha Vantage for {} ({:?}) from {} to {}", 
-            symbol, resolution, start_date, end_date);
+        tracing::info!(
+            "Fetching data from Alpha Vantage for {} ({:?}) from {} to {}",
+            symbol,
+            resolution,
+            start_date,
+            end_date
+        );
 
         // Alpha Vantage mainly supports daily data for free tier
         let function = match resolution {
             Resolution::Day => "TIME_SERIES_DAILY",
             _ => {
                 return Err(DataError::LoadingFailed {
-                    message: format!("Resolution {:?} not supported by Alpha Vantage free tier", resolution),
-                }.into());
+                    message: format!(
+                        "Resolution {:?} not supported by Alpha Vantage free tier",
+                        resolution
+                    ),
+                }
+                .into());
             }
         };
 
@@ -413,39 +466,44 @@ impl DataProvider for AlphaVantageProvider {
             "https://www.alphavantage.co/query?function={}&symbol={}&apikey={}&outputsize=full",
             function, symbol.symbol, self.api_key
         );
-        
-        let response = self.client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| DataError::LoadingFailed {
-                message: format!("HTTP request failed: {}", e),
-            })?;
+
+        let response =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| DataError::LoadingFailed {
+                    message: format!("HTTP request failed: {}", e),
+                })?;
 
         if !response.status().is_success() {
             return Err(DataError::LoadingFailed {
                 message: format!("HTTP error: {}", response.status()),
-            }.into());
+            }
+            .into());
         }
 
-        let json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| DataError::LoadingFailed {
-                message: format!("Failed to parse JSON response: {}", e),
-            })?;
+        let json: serde_json::Value =
+            response
+                .json()
+                .await
+                .map_err(|e| DataError::LoadingFailed {
+                    message: format!("Failed to parse JSON response: {}", e),
+                })?;
 
         // Check for API errors
         if let Some(error) = json.get("Error Message") {
             return Err(DataError::LoadingFailed {
                 message: format!("API error: {}", error),
-            }.into());
+            }
+            .into());
         }
 
         if let Some(note) = json.get("Note") {
             return Err(DataError::LoadingFailed {
                 message: format!("API limit exceeded: {}", note),
-            }.into());
+            }
+            .into());
         }
 
         let mut bars = self.parse_daily_response(json, symbol)?;
@@ -454,27 +512,34 @@ impl DataProvider for AlphaVantageProvider {
         // Filter by date range
         bars.retain(|bar| bar.timestamp >= start_date && bar.timestamp <= end_date);
 
-        tracing::info!("Retrieved {} bars from Alpha Vantage for {} (filtered from {} total bars)", 
-            bars.len(), symbol, total_bars);
-        
+        tracing::info!(
+            "Retrieved {} bars from Alpha Vantage for {} (filtered from {} total bars)",
+            bars.len(),
+            symbol,
+            total_bars
+        );
+
         if bars.is_empty() {
             return Err(DataError::LoadingFailed {
-                message: format!("No data found for {} in date range {} to {}", 
-                    symbol, start_date, end_date),
-            }.into());
+                message: format!(
+                    "No data found for {} in date range {} to {}",
+                    symbol, start_date, end_date
+                ),
+            }
+            .into());
         }
 
         Ok(bars)
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn config(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "alpha_vantage",
             "api_key_set": !self.api_key.is_empty()
         })
     }
-} 
+}

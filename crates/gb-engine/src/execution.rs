@@ -1,11 +1,41 @@
 // Order execution engine - realistic implementation
 // Provides realistic execution with slippage and commission models
 
-use gb_types::{Order, Fill, Bar, Symbol, Side, GbResult};
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Duration, Utc};
+use gb_types::{Bar, Fill, GbResult, Order, Side, Symbol};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
+
+/// Fee model used by the execution engine.
+///
+/// Equity markets typically charge per-share commissions, while crypto
+/// exchanges use a percentage-based maker/taker fee schedule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FeeModel {
+    /// Traditional per-share + percentage commission (equities, commodities).
+    PerShare {
+        per_share: Decimal,
+        percentage: Decimal,
+        minimum: Decimal,
+    },
+    /// Maker/taker percentage fee schedule (crypto, some FX).
+    MakerTaker {
+        maker_fee_pct: Decimal,
+        taker_fee_pct: Decimal,
+    },
+}
+
+impl Default for FeeModel {
+    fn default() -> Self {
+        FeeModel::PerShare {
+            per_share: Decimal::new(1, 3),  // $0.001 per share
+            percentage: Decimal::new(5, 3), // 0.005%
+            minimum: Decimal::new(1, 0),    // $1.00 minimum
+        }
+    }
+}
 
 /// Execution configuration
 #[derive(Debug, Clone)]
@@ -15,6 +45,11 @@ pub struct ExecutionConfig {
     pub minimum_commission: Decimal,
     pub slippage_bps: Decimal,
     pub latency_ms: u64,
+    /// Fee model (supersedes the flat commission fields when used via
+    /// `calculate_commission_from_model`).
+    pub fee_model: FeeModel,
+    /// Whether the target asset supports fractional quantities.
+    pub fractional_quantities: bool,
 }
 
 impl Default for ExecutionConfig {
@@ -22,9 +57,45 @@ impl Default for ExecutionConfig {
         Self {
             commission_per_share: Decimal::new(1, 3), // $0.001 per share
             commission_percentage: Decimal::new(5, 3), // 0.005%
-            minimum_commission: Decimal::new(1, 0), // $1.00 minimum
-            slippage_bps: Decimal::from(5), // 5 basis points
-            latency_ms: 50, // 50ms latency
+            minimum_commission: Decimal::new(1, 0),   // $1.00 minimum
+            slippage_bps: Decimal::from(5),           // 5 basis points
+            latency_ms: 50,                           // 50ms latency
+            fee_model: FeeModel::default(),
+            fractional_quantities: false,
+        }
+    }
+}
+
+impl ExecutionConfig {
+    /// Build an `ExecutionConfig` tuned for a given asset class.
+    pub fn for_asset_class(asset_class: gb_types::AssetClass) -> Self {
+        match asset_class {
+            gb_types::AssetClass::Crypto => Self {
+                // Crypto: no per-share commission, use maker/taker
+                commission_per_share: Decimal::ZERO,
+                commission_percentage: Decimal::new(1, 1), // 0.1% (taker)
+                minimum_commission: Decimal::ZERO,
+                slippage_bps: Decimal::from(3), // tighter spreads on major pairs
+                latency_ms: 10,                 // exchange co-location
+                fee_model: FeeModel::MakerTaker {
+                    maker_fee_pct: Decimal::new(1, 1), // 0.1%
+                    taker_fee_pct: Decimal::new(1, 1), // 0.1%
+                },
+                fractional_quantities: true,
+            },
+            gb_types::AssetClass::Forex => Self {
+                commission_per_share: Decimal::ZERO,
+                commission_percentage: Decimal::new(2, 3), // 0.002%
+                minimum_commission: Decimal::ZERO,
+                slippage_bps: Decimal::from(2),
+                latency_ms: 20,
+                fee_model: FeeModel::MakerTaker {
+                    maker_fee_pct: Decimal::new(2, 3),
+                    taker_fee_pct: Decimal::new(3, 3),
+                },
+                fractional_quantities: true,
+            },
+            _ => Self::default(), // Equity, Commodity, Bond
         }
     }
 }
@@ -53,8 +124,15 @@ impl ExecutionEngine {
     }
 
     /// Execute an order with realistic market conditions
-    pub async fn execute_order(&mut self, order: &Order, current_time: DateTime<Utc>) -> GbResult<Option<Fill>> {
-        debug!("Attempting to execute order: {:?} {} {} shares", order.side, order.symbol, order.quantity);
+    pub async fn execute_order(
+        &mut self,
+        order: &Order,
+        current_time: DateTime<Utc>,
+    ) -> GbResult<Option<Fill>> {
+        debug!(
+            "Attempting to execute order: {:?} {} {} shares",
+            order.side, order.symbol, order.quantity
+        );
 
         // Check if we have market data for this symbol
         let market_bar = match self.current_market_data.get(&order.symbol) {
@@ -69,7 +147,7 @@ impl ExecutionEngine {
         if let Some(last_exec) = self.last_execution_time {
             let time_since_last = current_time.signed_duration_since(last_exec);
             let required_latency = Duration::milliseconds(self.config.latency_ms as i64);
-            
+
             if time_since_last < required_latency {
                 debug!("Order delayed due to latency model");
                 return Ok(None);
@@ -104,8 +182,10 @@ impl ExecutionEngine {
         // Update execution time
         self.last_execution_time = Some(current_time);
 
-        info!("Executed order: {:?} {} {} shares at {} (commission: {})", 
-            order.side, order.symbol, order.quantity, slipped_price, commission);
+        info!(
+            "Executed order: {:?} {} {} shares at {} (commission: {})",
+            order.side, order.symbol, order.quantity, slipped_price, commission
+        );
 
         Ok(Some(fill))
     }
@@ -139,17 +219,22 @@ impl ExecutionEngine {
             }
             gb_types::OrderType::Stop { stop_price } => {
                 // Stop orders become market orders when triggered
-                if (order.side == Side::Buy && market_bar.high >= stop_price) ||
-                   (order.side == Side::Sell && market_bar.low <= stop_price) {
+                if (order.side == Side::Buy && market_bar.high >= stop_price)
+                    || (order.side == Side::Sell && market_bar.low <= stop_price)
+                {
                     market_bar.close
                 } else {
                     return Ok(Decimal::ZERO); // Not triggered
                 }
             }
-            gb_types::OrderType::StopLimit { stop_price, limit_price } => {
+            gb_types::OrderType::StopLimit {
+                stop_price,
+                limit_price,
+            } => {
                 // Stop-limit orders become limit orders when triggered
-                if (order.side == Side::Buy && market_bar.high >= stop_price) ||
-                   (order.side == Side::Sell && market_bar.low <= stop_price) {
+                if (order.side == Side::Buy && market_bar.high >= stop_price)
+                    || (order.side == Side::Sell && market_bar.low <= stop_price)
+                {
                     // Now check if limit price can be filled
                     if limit_price >= market_bar.low && limit_price <= market_bar.high {
                         limit_price
@@ -172,22 +257,37 @@ impl ExecutionEngine {
         let slippage_amount = base_price * slippage_factor;
 
         let slipped_price = match order.side {
-            Side::Buy => base_price + slippage_amount,  // Pay more when buying
+            Side::Buy => base_price + slippage_amount, // Pay more when buying
             Side::Sell => base_price - slippage_amount, // Receive less when selling
         };
 
-        debug!("Applied slippage: {} bps, {} -> {}", self.config.slippage_bps, base_price, slipped_price);
+        debug!(
+            "Applied slippage: {} bps, {} -> {}",
+            self.config.slippage_bps, base_price, slipped_price
+        );
         Ok(slipped_price)
     }
 
     /// Calculate commission for order execution
     fn calculate_commission(&self, order: &Order, execution_price: Decimal) -> GbResult<Decimal> {
         let notional_value = order.quantity * execution_price;
-        
-        let commission = self.config.commission_per_share * order.quantity +
-                        (notional_value * self.config.commission_percentage / Decimal::from(100));
 
-        Ok(commission.max(self.config.minimum_commission))
+        // Use the typed fee model when available
+        match &self.config.fee_model {
+            FeeModel::MakerTaker { taker_fee_pct, .. } => {
+                // For backtesting we conservatively assume taker fills
+                Ok(notional_value * *taker_fee_pct / Decimal::from(100))
+            }
+            FeeModel::PerShare {
+                per_share,
+                percentage,
+                minimum,
+            } => {
+                let commission = *per_share * order.quantity
+                    + (notional_value * *percentage / Decimal::from(100));
+                Ok(commission.max(*minimum))
+            }
+        }
     }
 
     /// Set execution latency
@@ -215,4 +315,4 @@ impl Default for ExecutionEngine {
     fn default() -> Self {
         Self::new(ExecutionConfig::default())
     }
-} 
+}
