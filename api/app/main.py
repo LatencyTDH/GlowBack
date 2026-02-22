@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from .adapter import MockEngineAdapter
 from .auth import require_api_key
@@ -15,6 +16,14 @@ app = FastAPI(
     title="GlowBack Gateway API",
     version="0.1.0",
     dependencies=[Depends(require_api_key)],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

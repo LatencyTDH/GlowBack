@@ -41,7 +41,8 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 
 ### UI
 
-- Streamlit interface for data loading, strategy editing, running backtests, and result analysis
+- **React Dashboard** — modern web interface for launching backtests, real-time progress tracking, equity curve & drawdown charts, full performance metrics
+- **Streamlit UI** — local interface for data loading, strategy editing, running backtests, and result analysis
 
 ## Features
 
@@ -84,7 +85,18 @@ cargo test -p gb-engine simulator
 cargo test -p gb-data parquet
 ```
 
-### Launch the UI
+### Launch the React Dashboard
+
+```bash
+# Terminal 1 — API
+cd api && pip install -r requirements.txt && uvicorn app.main:app --reload
+
+# Terminal 2 — Dashboard
+cd dashboard && npm install && npm run dev
+# Opens http://localhost:5173
+```
+
+### Launch the Streamlit UI
 
 ```bash
 cd ui && python setup.py

@@ -39,6 +39,7 @@ nav:
       - Notebook Workflow: tutorials/notebook.md
       - UI Workflow: tutorials/ui-workflow.md
   - Examples: examples/index.md
+  - Dashboard: dashboard.md
   - Architecture: architecture.md
   - API Reference:
       - Rust: api/rust.md
