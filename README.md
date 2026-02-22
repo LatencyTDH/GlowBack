@@ -7,7 +7,7 @@
 High‑performance quantitative backtesting platform built in Rust with Python bindings and a Streamlit UI.
 
 [![CI](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml)
-[![Tests](https://img.shields.io/badge/tests-25%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-56%20passing-brightgreen)](#testing)
 [![Docs](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs.yml/badge.svg?branch=main)](https://latencytdh.github.io/GlowBack/)
 [![Rust Version](https://img.shields.io/badge/rust-stable-blue)](#development-setup)
 [![Python Support](https://img.shields.io/badge/python-3.8%2B-blue)](#python-bindings)
@@ -46,6 +46,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 ## Features
 
 - Realistic market simulation with configurable market hours and resolution
+- Multi‑asset backtesting: equities and crypto (spot) with asset-class-aware fees, market hours, and fractional quantities
 - Multi‑symbol backtesting with chronological event ordering
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)

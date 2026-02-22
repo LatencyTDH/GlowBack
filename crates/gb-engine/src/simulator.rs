@@ -1,8 +1,8 @@
 // Market simulator - comprehensive implementation for realistic backtesting
-use std::collections::{HashMap, BTreeMap, VecDeque};
-use chrono::{DateTime, Utc, Datelike, Timelike};
-use gb_types::{Bar, Symbol, Resolution, GbResult, MarketEvent, DataError};
-use tracing::{info, debug};
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use gb_types::{Bar, DataError, GbResult, MarketEvent, Resolution, Symbol};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use tracing::{debug, info};
 
 /// Market data event with timestamp for chronological ordering
 #[derive(Debug, Clone)]
@@ -28,7 +28,8 @@ impl PartialOrd for TimestampedEvent {
 
 impl Ord for TimestampedEvent {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.timestamp.cmp(&other.timestamp)
+        self.timestamp
+            .cmp(&other.timestamp)
             .then_with(|| self.symbol.symbol.cmp(&other.symbol.symbol))
     }
 }
@@ -65,14 +66,42 @@ pub struct MarketHours {
     pub close_hour: u32,
     /// Weekend trading enabled
     pub weekend_trading: bool,
+    /// True when the asset trades 24 hours on active days
+    pub round_the_clock: bool,
 }
 
 impl Default for MarketHours {
     fn default() -> Self {
         Self {
-            open_hour: 14, // 9:30 AM EST = 14:30 UTC
+            open_hour: 14,  // 9:30 AM EST = 14:30 UTC
             close_hour: 21, // 4:00 PM EST = 21:00 UTC
             weekend_trading: false,
+            round_the_clock: false,
+        }
+    }
+}
+
+impl MarketHours {
+    /// Return `MarketHours` appropriate for the given asset class.
+    ///
+    /// * **Crypto** – 24/7, no market close, weekends active.
+    /// * **Forex** – 24h Sun evening – Fri evening; weekends off.
+    /// * Everything else – US equity defaults (14–21 UTC, weekdays).
+    pub fn for_asset_class(asset_class: gb_types::AssetClass) -> Self {
+        match asset_class {
+            gb_types::AssetClass::Crypto => Self {
+                open_hour: 0,
+                close_hour: 24,
+                weekend_trading: true,
+                round_the_clock: true,
+            },
+            gb_types::AssetClass::Forex => Self {
+                open_hour: 0,
+                close_hour: 24,
+                weekend_trading: false,
+                round_the_clock: true,
+            },
+            _ => Self::default(),
         }
     }
 }
@@ -109,8 +138,9 @@ impl MarketSimulator {
     pub fn add_data_feed(&mut self, symbol: Symbol, bars: Vec<Bar>) -> GbResult<()> {
         if bars.is_empty() {
             return Err(DataError::InsufficientData {
-                message: format!("No data provided for symbol {}", symbol)
-            }.into());
+                message: format!("No data provided for symbol {}", symbol),
+            }
+            .into());
         }
 
         info!("Adding data feed for {} with {} bars", symbol, bars.len());
@@ -128,7 +158,8 @@ impl MarketSimulator {
                 event: MarketEvent::Bar(bar.clone()),
             };
 
-            self.events.entry(bar.timestamp)
+            self.events
+                .entry(bar.timestamp)
                 .or_insert_with(Vec::new)
                 .push(event);
 
@@ -141,9 +172,13 @@ impl MarketSimulator {
             }
         }
 
-        debug!("Data feed added: {} events between {:?} and {:?}", 
-               self.events.len(), self.start_time, self.end_time);
-        
+        debug!(
+            "Data feed added: {} events between {:?} and {:?}",
+            self.events.len(),
+            self.start_time,
+            self.end_time
+        );
+
         Ok(())
     }
 
@@ -151,16 +186,25 @@ impl MarketSimulator {
     pub fn initialize(&mut self) -> GbResult<()> {
         if self.events.is_empty() {
             return Err(DataError::InsufficientData {
-                message: "No market data available for simulation".to_string()
-            }.into());
+                message: "No market data available for simulation".to_string(),
+            }
+            .into());
         }
 
         // Set current time to just before start time so we can capture the first events
-        self.current_time = self.start_time.map(|start| start - chrono::Duration::nanoseconds(1));
-        
-        info!("Market simulator initialized: {} symbols, {} time points", 
-              self.symbols.len(), self.events.len());
-        info!("Simulation period: {:?} to {:?}", self.start_time, self.end_time);
+        self.current_time = self
+            .start_time
+            .map(|start| start - chrono::Duration::nanoseconds(1));
+
+        info!(
+            "Market simulator initialized: {} symbols, {} time points",
+            self.symbols.len(),
+            self.events.len()
+        );
+        info!(
+            "Simulation period: {:?} to {:?}",
+            self.start_time, self.end_time
+        );
 
         Ok(())
     }
@@ -170,17 +214,26 @@ impl MarketSimulator {
         // If we have events queued for current time, return them
         if !self.current_events.is_empty() {
             let events: Vec<_> = self.current_events.drain(..).collect();
-            debug!("Returning {} queued events for {:?}", events.len(), self.current_time);
+            debug!(
+                "Returning {} queued events for {:?}",
+                events.len(),
+                self.current_time
+            );
             return Ok(events);
         }
 
         // Find next time with events
         let current_time = self.current_time.ok_or_else(|| DataError::LoadingFailed {
-            message: "Simulation not initialized".to_string()
+            message: "Simulation not initialized".to_string(),
         })?;
 
         // Find next timestamp with events (use Excluded to find events after current time)
-        let next_time = self.events.range((std::ops::Bound::Excluded(current_time), std::ops::Bound::Unbounded))
+        let next_time = self
+            .events
+            .range((
+                std::ops::Bound::Excluded(current_time),
+                std::ops::Bound::Unbounded,
+            ))
             .next()
             .map(|(time, _)| *time);
 
@@ -199,7 +252,7 @@ impl MarketSimulator {
             // Get events for this time
             if let Some(events) = self.events.get(&next_time) {
                 let events = events.clone();
-                
+
                 // Update current market data state
                 for event in &events {
                     if let MarketEvent::Bar(bar) = &event.event {
@@ -207,7 +260,11 @@ impl MarketSimulator {
                     }
                 }
 
-                debug!("Advanced to {:?}, returning {} events", next_time, events.len());
+                debug!(
+                    "Advanced to {:?}, returning {} events",
+                    next_time,
+                    events.len()
+                );
                 Ok(events)
             } else {
                 Ok(Vec::new())
@@ -245,12 +302,15 @@ impl MarketSimulator {
 
     /// Get simulation progress (0.0 to 1.0)
     pub fn progress(&self) -> f64 {
-        if let (Some(start), Some(current), Some(end)) = (self.start_time, self.current_time, self.end_time) {
+        if let (Some(start), Some(current), Some(end)) =
+            (self.start_time, self.current_time, self.end_time)
+        {
             let total_duration = end.signed_duration_since(start);
             let current_duration = current.signed_duration_since(start);
-            
+
             if total_duration.num_milliseconds() > 0 {
-                current_duration.num_milliseconds() as f64 / total_duration.num_milliseconds() as f64
+                current_duration.num_milliseconds() as f64
+                    / total_duration.num_milliseconds() as f64
             } else {
                 1.0
             }
@@ -264,7 +324,10 @@ impl MarketSimulator {
         self.current_time = self.start_time;
         self.current_events.clear();
         self.current_data.clear();
-        info!("Market simulator reset to start time: {:?}", self.start_time);
+        info!(
+            "Market simulator reset to start time: {:?}",
+            self.start_time
+        );
     }
 
     /// Get simulation statistics
@@ -272,7 +335,9 @@ impl MarketSimulator {
         SimulationStats {
             total_symbols: self.symbols.len(),
             total_events: self.events.values().map(|v| v.len()).sum(),
-            time_span_days: self.start_time.zip(self.end_time)
+            time_span_days: self
+                .start_time
+                .zip(self.end_time)
                 .map(|(start, end)| end.signed_duration_since(start).num_days())
                 .unwrap_or(0),
             current_progress: self.progress(),
@@ -287,35 +352,42 @@ impl MarketSimulator {
         Fut: std::future::Future<Output = GbResult<()>>,
     {
         self.initialize()?;
-        
+
         info!("Starting market simulation");
         let start_time = std::time::Instant::now();
         let mut event_count = 0;
 
         while !self.is_complete() {
             let events = self.next_events()?;
-            
+
             if events.is_empty() {
                 break;
             }
 
             let current_time = self.current_time().unwrap();
             event_count += events.len();
-            
+
             // Call the provided callback
             callback(current_time, events).await?;
 
             // Log progress periodically
             if event_count % 10000 == 0 {
                 let progress = self.progress();
-                debug!("Simulation progress: {:.1}% ({} events processed)", 
-                       progress * 100.0, event_count);
+                debug!(
+                    "Simulation progress: {:.1}% ({} events processed)",
+                    progress * 100.0,
+                    event_count
+                );
             }
         }
 
         let duration = start_time.elapsed();
-        info!("Market simulation completed: {} events in {:?} ({:.0} events/sec)", 
-              event_count, duration, event_count as f64 / duration.as_secs_f64());
+        info!(
+            "Market simulation completed: {} events in {:?} ({:.0} events/sec)",
+            event_count,
+            duration,
+            event_count as f64 / duration.as_secs_f64()
+        );
 
         Ok(())
     }
@@ -328,6 +400,11 @@ impl MarketSimulator {
             if weekday == chrono::Weekday::Sat || weekday == chrono::Weekday::Sun {
                 return false;
             }
+        }
+
+        // 24-hour assets skip intraday hour gating
+        if self.market_hours.round_the_clock {
+            return true;
         }
 
         // Market hours check
@@ -361,20 +438,18 @@ mod tests {
     #[tokio::test]
     async fn test_market_simulator_basic() {
         let mut simulator = MarketSimulator::new();
-        
+
         let symbol = Symbol::new("AAPL", "NASDAQ", AssetClass::Equity);
-        let bars = vec![
-            Bar::new(
-                symbol.clone(),
-                Utc::now(),
-                Decimal::from(100),
-                Decimal::from(105),
-                Decimal::from(99),
-                Decimal::from(102),
-                Decimal::from(1000),
-                Resolution::Day,
-            ),
-        ];
+        let bars = vec![Bar::new(
+            symbol.clone(),
+            Utc::now(),
+            Decimal::from(100),
+            Decimal::from(105),
+            Decimal::from(99),
+            Decimal::from(102),
+            Decimal::from(1000),
+            Resolution::Day,
+        )];
 
         simulator.add_data_feed(symbol.clone(), bars).unwrap();
         simulator.initialize().unwrap();
@@ -384,16 +459,34 @@ mod tests {
         assert_eq!(events[0].symbol, symbol);
     }
 
-    #[tokio::test] 
+    #[tokio::test]
     async fn test_market_simulator_multi_symbol() {
         let mut simulator = MarketSimulator::new();
-        
+
         let symbol1 = Symbol::new("AAPL", "NASDAQ", AssetClass::Equity);
         let symbol2 = Symbol::new("GOOGL", "NASDAQ", AssetClass::Equity);
-        
+
         let time = Utc::now();
-        let bars1 = vec![Bar::new(symbol1.clone(), time, Decimal::from(100), Decimal::from(105), Decimal::from(99), Decimal::from(102), Decimal::from(1000), Resolution::Day)];
-        let bars2 = vec![Bar::new(symbol2.clone(), time, Decimal::from(200), Decimal::from(205), Decimal::from(199), Decimal::from(202), Decimal::from(2000), Resolution::Day)];
+        let bars1 = vec![Bar::new(
+            symbol1.clone(),
+            time,
+            Decimal::from(100),
+            Decimal::from(105),
+            Decimal::from(99),
+            Decimal::from(102),
+            Decimal::from(1000),
+            Resolution::Day,
+        )];
+        let bars2 = vec![Bar::new(
+            symbol2.clone(),
+            time,
+            Decimal::from(200),
+            Decimal::from(205),
+            Decimal::from(199),
+            Decimal::from(202),
+            Decimal::from(2000),
+            Resolution::Day,
+        )];
 
         simulator.add_data_feed(symbol1.clone(), bars1).unwrap();
         simulator.add_data_feed(symbol2.clone(), bars2).unwrap();
@@ -401,9 +494,79 @@ mod tests {
 
         let events = simulator.next_events().unwrap();
         assert_eq!(events.len(), 2);
-        
+
         let stats = simulator.get_stats();
         assert_eq!(stats.total_symbols, 2);
         assert_eq!(stats.total_events, 2);
     }
-} 
+
+    #[test]
+    fn test_market_hours_for_crypto() {
+        let hours = MarketHours::for_asset_class(AssetClass::Crypto);
+        assert!(hours.weekend_trading, "Crypto should trade on weekends");
+        assert!(hours.round_the_clock, "Crypto should be 24h");
+    }
+
+    #[test]
+    fn test_market_hours_for_equity() {
+        let hours = MarketHours::for_asset_class(AssetClass::Equity);
+        assert!(
+            !hours.weekend_trading,
+            "Equities should not trade on weekends"
+        );
+        assert!(!hours.round_the_clock, "Equities are not 24h");
+        assert_eq!(hours.open_hour, 14);
+        assert_eq!(hours.close_hour, 21);
+    }
+
+    #[test]
+    fn test_market_hours_for_forex() {
+        let hours = MarketHours::for_asset_class(AssetClass::Forex);
+        assert!(!hours.weekend_trading, "Forex should not trade on weekends");
+        assert!(hours.round_the_clock, "Forex should be 24h on weekdays");
+    }
+
+    #[test]
+    fn test_crypto_market_open_on_weekend() {
+        let simulator = MarketSimulator::new()
+            .with_market_hours(MarketHours::for_asset_class(AssetClass::Crypto));
+
+        // Saturday 3 AM UTC
+        let saturday = chrono::NaiveDate::from_ymd_opt(2026, 2, 21)
+            .unwrap()
+            .and_hms_opt(3, 0, 0)
+            .unwrap()
+            .and_utc();
+        assert!(
+            simulator.is_market_open(saturday),
+            "Crypto should be open Saturday"
+        );
+
+        // Sunday 23:59 UTC
+        let sunday = chrono::NaiveDate::from_ymd_opt(2026, 2, 22)
+            .unwrap()
+            .and_hms_opt(23, 59, 0)
+            .unwrap()
+            .and_utc();
+        assert!(
+            simulator.is_market_open(sunday),
+            "Crypto should be open Sunday"
+        );
+    }
+
+    #[test]
+    fn test_equity_market_closed_on_weekend() {
+        let simulator = MarketSimulator::new()
+            .with_market_hours(MarketHours::for_asset_class(AssetClass::Equity));
+
+        let saturday = chrono::NaiveDate::from_ymd_opt(2026, 2, 21)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap()
+            .and_utc();
+        assert!(
+            !simulator.is_market_open(saturday),
+            "Equities should be closed Saturday"
+        );
+    }
+}

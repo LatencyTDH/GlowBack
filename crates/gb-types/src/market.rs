@@ -19,11 +19,11 @@ impl Symbol {
             asset_class,
         }
     }
-    
+
     pub fn equity(symbol: &str) -> Self {
         Self::new(symbol, "NASDAQ", AssetClass::Equity)
     }
-    
+
     pub fn crypto(symbol: &str) -> Self {
         Self::new(symbol, "BINANCE", AssetClass::Crypto)
     }
@@ -43,6 +43,42 @@ pub enum AssetClass {
     Forex,
     Commodity,
     Bond,
+}
+
+impl AssetClass {
+    /// Returns true if this asset class trades 24/7 (no market close/weekends).
+    pub fn is_24_7(&self) -> bool {
+        matches!(self, AssetClass::Crypto)
+    }
+
+    /// Returns true if this asset class supports fractional quantities natively.
+    pub fn supports_fractional_quantities(&self) -> bool {
+        matches!(self, AssetClass::Crypto | AssetClass::Forex)
+    }
+
+    /// Default exchange identifier for this asset class.
+    pub fn default_exchange(&self) -> &'static str {
+        match self {
+            AssetClass::Equity => "NASDAQ",
+            AssetClass::Crypto => "BINANCE",
+            AssetClass::Forex => "FOREX",
+            AssetClass::Commodity => "CME",
+            AssetClass::Bond => "NYSE",
+        }
+    }
+}
+
+impl fmt::Display for AssetClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            AssetClass::Equity => "Equity",
+            AssetClass::Crypto => "Crypto",
+            AssetClass::Forex => "Forex",
+            AssetClass::Commodity => "Commodity",
+            AssetClass::Bond => "Bond",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 /// OHLCV bar data with volume and timestamp
@@ -80,12 +116,12 @@ impl Bar {
             resolution,
         }
     }
-    
+
     /// Calculate typical price (HLC/3)
     pub fn typical_price(&self) -> Decimal {
         (self.high + self.low + self.close) / Decimal::from(3)
     }
-    
+
     /// Calculate true range
     pub fn true_range(&self, prev_close: Option<Decimal>) -> Decimal {
         let high_low = self.high - self.low;
@@ -173,7 +209,14 @@ impl fmt::Display for Resolution {
 pub enum MarketEvent {
     Bar(Bar),
     Tick(Tick),
-    Quote { symbol: Symbol, timestamp: DateTime<Utc>, bid: Decimal, ask: Decimal, bid_size: Decimal, ask_size: Decimal },
+    Quote {
+        symbol: Symbol,
+        timestamp: DateTime<Utc>,
+        bid: Decimal,
+        ask: Decimal,
+        bid_size: Decimal,
+        ask_size: Decimal,
+    },
 }
 
 impl MarketEvent {
@@ -184,7 +227,7 @@ impl MarketEvent {
             MarketEvent::Quote { timestamp, .. } => *timestamp,
         }
     }
-    
+
     pub fn symbol(&self) -> &Symbol {
         match self {
             MarketEvent::Bar(bar) => &bar.symbol,
@@ -192,4 +235,43 @@ impl MarketEvent {
             MarketEvent::Quote { symbol, .. } => symbol,
         }
     }
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_asset_class_is_24_7() {
+        assert!(AssetClass::Crypto.is_24_7());
+        assert!(!AssetClass::Equity.is_24_7());
+        assert!(!AssetClass::Forex.is_24_7());
+    }
+
+    #[test]
+    fn test_asset_class_fractional() {
+        assert!(AssetClass::Crypto.supports_fractional_quantities());
+        assert!(AssetClass::Forex.supports_fractional_quantities());
+        assert!(!AssetClass::Equity.supports_fractional_quantities());
+    }
+
+    #[test]
+    fn test_asset_class_default_exchange() {
+        assert_eq!(AssetClass::Crypto.default_exchange(), "BINANCE");
+        assert_eq!(AssetClass::Equity.default_exchange(), "NASDAQ");
+    }
+
+    #[test]
+    fn test_asset_class_display() {
+        assert_eq!(format!("{}", AssetClass::Crypto), "Crypto");
+        assert_eq!(format!("{}", AssetClass::Equity), "Equity");
+    }
+
+    #[test]
+    fn test_symbol_crypto_constructor() {
+        let s = Symbol::crypto("BTC-USD");
+        assert_eq!(s.symbol, "BTC-USD");
+        assert_eq!(s.exchange, "BINANCE");
+        assert_eq!(s.asset_class, AssetClass::Crypto);
+    }
+}
