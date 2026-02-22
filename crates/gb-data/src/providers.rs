@@ -463,18 +463,19 @@ impl DataProvider for AlphaVantageProvider {
         };
 
         let url = format!(
-            "https://www.alphavantage.co/query?function={}&symbol={}&apikey={}&outputsize=full",
-            function, symbol.symbol, self.api_key
+            "https://www.alphavantage.co/query?function={}&symbol={}&outputsize=full",
+            function, symbol.symbol
         );
 
-        let response =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| DataError::LoadingFailed {
-                    message: format!("HTTP request failed: {}", e),
-                })?;
+        let response = self
+            .client
+            .get(&url)
+            .query(&[("apikey", &self.api_key)])
+            .send()
+            .await
+            .map_err(|e| DataError::LoadingFailed {
+                message: format!("HTTP request failed: {}", e),
+            })?;
 
         if !response.status().is_success() {
             return Err(DataError::LoadingFailed {
