@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+import logging
+import time
+import uuid
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 
 from .adapter import MockEngineAdapter
-from .auth import require_api_key
+from .auth import require_api_key, validate_api_key
 from .models import BacktestRequest, BacktestResult, BacktestStatus, RunState
 from .store import RunStore
+
+logger = logging.getLogger("glowback.api")
 
 store = RunStore()
 adapter = MockEngineAdapter(store)
@@ -16,6 +22,49 @@ app = FastAPI(
     version="0.1.0",
     dependencies=[Depends(require_api_key)],
 )
+
+
+def _apply_security_headers(response) -> None:
+    headers = response.headers
+    headers.setdefault("X-Content-Type-Options", "nosniff")
+    headers.setdefault("X-Frame-Options", "DENY")
+    headers.setdefault("Referrer-Policy", "no-referrer")
+    headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    headers.setdefault("Cache-Control", "no-store")
+
+
+@app.middleware("http")
+async def audit_middleware(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    client_host = request.client.host if request.client else "unknown"
+    start = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        logger.exception(
+            "request_failed request_id=%s method=%s path=%s client_ip=%s duration_ms=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            client_host,
+            duration_ms,
+        )
+        raise
+    duration_ms = int((time.monotonic() - start) * 1000)
+    response.headers.setdefault("X-Request-ID", request_id)
+    _apply_security_headers(response)
+    logger.info(
+        "request_completed request_id=%s method=%s path=%s status=%s client_ip=%s duration_ms=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        client_host,
+        duration_ms,
+    )
+    return response
 
 
 @app.post("/backtests", response_model=BacktestStatus, status_code=status.HTTP_201_CREATED)
@@ -58,26 +107,78 @@ async def stream_backtest(
     run_id: str,
     last_event_id: int | None = Query(default=None),
 ) -> None:
+    request_id = websocket.headers.get("x-request-id") or str(uuid.uuid4())
+    websocket.state.request_id = request_id
+    client_host = websocket.client.host if websocket.client else "unknown"
+
+    authorized, provided = validate_api_key(websocket.headers, websocket.query_params)
+    if not authorized:
+        key_status = "present" if provided else "absent"
+        logger.warning(
+            "ws_api_key_rejected request_id=%s path=%s client_ip=%s key_status=%s",
+            request_id,
+            websocket.url.path,
+            client_host,
+            key_status,
+        )
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await websocket.accept()
-    status_obj = await store.get_status(run_id)
-    if not status_obj:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
+    logger.info(
+        "ws_connected request_id=%s path=%s client_ip=%s run_id=%s",
+        request_id,
+        websocket.url.path,
+        client_host,
+        run_id,
+    )
 
-    backlog = await store.get_events_after(run_id, last_event_id)
-    for event in backlog:
-        await websocket.send_json(event.model_dump())
-
-    queue = await store.subscribe(run_id)
-    if not queue:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
+    queue = None
+    disconnect_reason = "server"
     try:
+        status_obj = await store.get_status(run_id)
+        if not status_obj:
+            disconnect_reason = "run_not_found"
+            logger.warning(
+                "ws_run_not_found request_id=%s path=%s client_ip=%s run_id=%s",
+                request_id,
+                websocket.url.path,
+                client_host,
+                run_id,
+            )
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        backlog = await store.get_events_after(run_id, last_event_id)
+        for event in backlog:
+            await websocket.send_json(event.model_dump())
+
+        queue = await store.subscribe(run_id)
+        if not queue:
+            disconnect_reason = "subscribe_failed"
+            logger.warning(
+                "ws_subscribe_failed request_id=%s path=%s client_ip=%s run_id=%s",
+                request_id,
+                websocket.url.path,
+                client_host,
+                run_id,
+            )
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
         while True:
             event = await queue.get()
             await websocket.send_json(event.model_dump())
     except WebSocketDisconnect:
-        return
+        disconnect_reason = "client"
     finally:
-        await store.unsubscribe(run_id, queue)
+        if queue:
+            await store.unsubscribe(run_id, queue)
+        logger.info(
+            "ws_disconnected request_id=%s path=%s client_ip=%s run_id=%s reason=%s",
+            request_id,
+            websocket.url.path,
+            client_host,
+            run_id,
+            disconnect_reason,
+        )
