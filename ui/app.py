@@ -13,7 +13,7 @@ parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
 
 # Import pages
-from pages import data_loader, strategy_editor, backtest_runner, results_dashboard, portfolio_analyzer
+from pages import data_loader, strategy_editor, backtest_runner, results_dashboard, portfolio_analyzer, advanced_analytics
 
 # Configure Streamlit page
 st.set_page_config(
@@ -23,37 +23,50 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
-st.markdown("""
+# Dark-mode support — persisted in session state
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = False
+
+_dark = st.session_state.dark_mode
+
+# Custom CSS — adapts to light / dark preference
+_bg = "#1e1e2f" if _dark else "#ffffff"
+_fg = "#e0e0e0" if _dark else "#1f1f1f"
+_card_bg = "#2a2a3d" if _dark else "#f0f2f6"
+_success_bg = "#1b3a2a" if _dark else "#d4edda"
+_warning_bg = "#3a351b" if _dark else "#fff3cd"
+_sidebar_bg = "#16161f" if _dark else "#f8f9fa"
+
+st.markdown(f"""
 <style>
-    .main-header {
+    .main-header {{
         font-size: 2.5rem;
         font-weight: bold;
-        color: #1f1f1f;
+        color: {_fg};
         margin-bottom: 1rem;
         text-align: center;
-    }
-    .metric-card {
-        background-color: #f0f2f6;
+    }}
+    .metric-card {{
+        background-color: {_card_bg};
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 4px solid #ff6b6b;
-    }
-    .success-card {
-        background-color: #d4edda;
+    }}
+    .success-card {{
+        background-color: {_success_bg};
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 4px solid #28a745;
-    }
-    .warning-card {
-        background-color: #fff3cd;
+    }}
+    .warning-card {{
+        background-color: {_warning_bg};
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 4px solid #ffc107;
-    }
-    .sidebar .sidebar-content {
-        background-color: #f8f9fa;
-    }
+    }}
+    .sidebar .sidebar-content {{
+        background-color: {_sidebar_bg};
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -73,16 +86,32 @@ def main():
         st.session_state.backtest_results = None
     if 'portfolio_data' not in st.session_state:
         st.session_state.portfolio_data = None
+    if 'saved_runs' not in st.session_state:
+        st.session_state.saved_runs = {}
     
     # Main navigation
     with st.sidebar:
         st.image("https://via.placeholder.com/150x50/4CAF50/FFFFFF?text=GlowBack", width=150)
+
+        # Dark mode toggle
+        dark_toggle = st.toggle("🌙 Dark Mode", value=st.session_state.dark_mode, key="dark_toggle")
+        if dark_toggle != st.session_state.dark_mode:
+            st.session_state.dark_mode = dark_toggle
+            st.rerun()
+
         st.markdown("---")
         
         selected = option_menu(
             menu_title="Navigation",
-            options=["📊 Data Loader", "⚙️ Strategy Editor", "🚀 Backtest Runner", "📈 Results Dashboard", "💼 Portfolio Analyzer"],
-            icons=["database", "code-slash", "play-circle", "graph-up", "briefcase"],
+            options=[
+                "📊 Data Loader",
+                "⚙️ Strategy Editor",
+                "🚀 Backtest Runner",
+                "📈 Results Dashboard",
+                "💼 Portfolio Analyzer",
+                "🔬 Advanced Analytics",
+            ],
+            icons=["database", "code-slash", "play-circle", "graph-up", "briefcase", "bar-chart-line"],
             menu_icon="list",
             default_index=0,
             orientation="vertical",
@@ -132,6 +161,8 @@ def main():
         results_dashboard.show()
     elif selected == "💼 Portfolio Analyzer":
         portfolio_analyzer.show()
+    elif selected == "🔬 Advanced Analytics":
+        advanced_analytics.show()
     
     # Footer
     st.markdown("---")
