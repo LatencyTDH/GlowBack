@@ -8,7 +8,13 @@ from pydantic import BaseModel, Field
 
 
 class StrategyConfig(BaseModel):
-    name: str = Field(default="buy_and_hold", description="Strategy identifier")
+    name: str = Field(
+        default="buy_and_hold",
+        description="Strategy identifier",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-z0-9_]+$",
+    )
     params: dict[str, Any] = Field(default_factory=dict, description="Strategy parameters")
 
 
@@ -19,15 +25,19 @@ class ExecutionConfig(BaseModel):
 
 
 class BacktestRequest(BaseModel):
-    symbols: list[str] = Field(min_length=1)
+    symbols: list[str] = Field(min_length=1, max_length=100)
     start_date: datetime
     end_date: datetime
-    resolution: str = Field(default="day", description="tick|second|minute|hour|day")
+    resolution: str = Field(
+        default="day",
+        description="tick|second|minute|hour|day",
+        pattern=r"^(tick|second|minute|hour|day)$",
+    )
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
-    initial_capital: float = Field(default=1_000_000.0)
-    currency: str = Field(default="USD")
-    timezone: str = Field(default="UTC")
+    initial_capital: float = Field(default=1_000_000.0, gt=0, le=1e12)
+    currency: str = Field(default="USD", min_length=3, max_length=5, pattern=r"^[A-Z]{3,5}$")
+    timezone: str = Field(default="UTC", max_length=64)
 
 
 class RunState(str, Enum):

@@ -1,27 +1,96 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import sys
 import time
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from .adapter import MockEngineAdapter
 from .auth import require_api_key, validate_api_key
 from .models import BacktestRequest, BacktestResult, BacktestStatus, RunState
+from .rate_limit import rate_limit_check
 from .store import RunStore
 
+# ---------------------------------------------------------------------------
+# Structured JSON logging (SOC2: machine-parseable audit trail)
+# ---------------------------------------------------------------------------
+
+_LOG_FORMAT = os.getenv("GLOWBACK_LOG_FORMAT", "json")  # "json" or "text"
+
+
+class _JsonFormatter(logging.Formatter):
+    """Emit log records as single-line JSON objects."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S.%fZ"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[0] is not None:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str)
+
+
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(os.getenv("GLOWBACK_LOG_LEVEL", "INFO").upper())
+    handler = logging.StreamHandler(sys.stdout)
+    if _LOG_FORMAT == "json":
+        handler.setFormatter(_JsonFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+    root.handlers = [handler]
+
+
+_configure_logging()
 logger = logging.getLogger("glowback.api")
+
+# ---------------------------------------------------------------------------
+# Application setup
+# ---------------------------------------------------------------------------
+
+_MAX_BODY_BYTES = int(os.getenv("GLOWBACK_MAX_BODY_BYTES", str(1024 * 1024)))  # 1 MiB default
 
 store = RunStore()
 adapter = MockEngineAdapter(store)
 
 app = FastAPI(
     title="GlowBack Gateway API",
-    version="0.1.0",
-    dependencies=[Depends(require_api_key)],
+    version="0.2.0",
+    dependencies=[Depends(require_api_key), Depends(rate_limit_check)],
 )
+
+# ---------------------------------------------------------------------------
+# CORS (SOC2: restrict cross-origin access)
+# ---------------------------------------------------------------------------
+
+_CORS_ORIGINS = os.getenv("GLOWBACK_CORS_ORIGINS", "").split(",")
+_CORS_ORIGINS = [o.strip() for o in _CORS_ORIGINS if o.strip()]
+
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "X-API-Key", "X-Request-ID", "Content-Type"],
+        expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+        max_age=600,
+    )
+
+# ---------------------------------------------------------------------------
+# Security headers helper
+# ---------------------------------------------------------------------------
 
 
 def _apply_security_headers(response) -> None:
@@ -31,6 +100,17 @@ def _apply_security_headers(response) -> None:
     headers.setdefault("Referrer-Policy", "no-referrer")
     headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
     headers.setdefault("Cache-Control", "no-store")
+    headers.setdefault(
+        "Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload"
+    )
+    headers.setdefault(
+        "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Audit middleware
+# ---------------------------------------------------------------------------
 
 
 @app.middleware("http")
@@ -39,6 +119,23 @@ async def audit_middleware(request: Request, call_next):
     request.state.request_id = request_id
     client_host = request.client.host if request.client else "unknown"
     start = time.monotonic()
+
+    # --- Enforce request body size limit (SOC2: prevent abuse) ---
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > _MAX_BODY_BYTES:
+        logger.warning(
+            "request_body_too_large request_id=%s client_ip=%s content_length=%s max=%s",
+            request_id,
+            client_host,
+            content_length,
+            _MAX_BODY_BYTES,
+        )
+        return Response(
+            content='{"detail":"Request body too large"}',
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            media_type="application/json",
+        )
+
     try:
         response = await call_next(request)
     except Exception:
@@ -52,9 +149,17 @@ async def audit_middleware(request: Request, call_next):
             duration_ms,
         )
         raise
+
     duration_ms = int((time.monotonic() - start) * 1000)
     response.headers.setdefault("X-Request-ID", request_id)
     _apply_security_headers(response)
+
+    # Apply rate-limit headers if present
+    rate_headers = getattr(request.state, "rate_limit_headers", None)
+    if rate_headers:
+        for key, value in rate_headers.items():
+            response.headers.setdefault(key, value)
+
     logger.info(
         "request_completed request_id=%s method=%s path=%s status=%s client_ip=%s duration_ms=%s",
         request_id,
@@ -65,6 +170,22 @@ async def audit_middleware(request: Request, call_next):
         duration_ms,
     )
     return response
+
+
+# ---------------------------------------------------------------------------
+# Health check (unauthenticated, excluded from rate limiting via path guard)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/healthz", include_in_schema=True, dependencies=[])
+async def health_check() -> dict:
+    """Liveness probe — no auth required."""
+    return {"status": "healthy", "version": app.version}
+
+
+# ---------------------------------------------------------------------------
+# Backtest endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.post("/backtests", response_model=BacktestStatus, status_code=status.HTTP_201_CREATED)
