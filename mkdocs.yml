@@ -48,4 +48,7 @@ nav:
   - Roadmap: roadmap.md
   - FAQ: faq.md
   - Changelog: changelog.md
-  - Contributing: contributing.md
+  - Community:
+      - Contributing: contributing.md
+      - Code of Conduct: community/code-of-conduct.md
+      - Security Policy: community/security.md
