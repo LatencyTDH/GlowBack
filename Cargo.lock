@@ -875,6 +875,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gb-optimizer"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gb-types",
+ "rand",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "gb-python"
 version = "0.1.0"
 dependencies = [

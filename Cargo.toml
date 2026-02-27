@@ -3,6 +3,7 @@ members = [
     "crates/gb-engine",
     "crates/gb-data", 
     "crates/gb-types",
+    "crates/gb-optimizer",
     "crates/gb-python"
 ]
 resolver = "2"
@@ -25,6 +26,7 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 num-traits = "0.2"
 rust_decimal = { version = "1.33", features = ["serde"] }
+rand = "0.8"
 pyo3 = { version = "0.25", features = ["extension-module"] }
 
 [profile.dev]

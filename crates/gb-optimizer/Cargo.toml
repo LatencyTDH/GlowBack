@@ -1,0 +1,15 @@
+[package]
+name = "gb-optimizer"
+version = "0.1.0"
+edition = "2021"
+description = "Parameter search and distributed optimization orchestration for GlowBack"
+
+[dependencies]
+gb-types = { path = "../gb-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+rust_decimal = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }

@@ -32,6 +32,7 @@ nav:
       - Data Model: concepts/data-model.md
       - Execution Model: concepts/execution-model.md
       - Results & Metrics: concepts/results-metrics.md
+      - Optimization: concepts/optimization.md
       - Security: concepts/security.md
   - Tutorials:
       - CSV Data: tutorials/csv-data.md
