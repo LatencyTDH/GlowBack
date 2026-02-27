@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .adapter import MockEngineAdapter
 from .auth import require_api_key, validate_api_key
 from .models import BacktestRequest, BacktestResult, BacktestStatus, RunState
+from .optimization_models import OptimizationRequest, OptimizationResult, OptimizationState, OptimizationStatus
+from .optimization_store import OptimizationStore
 from .rate_limit import rate_limit_check
 from .store import RunStore
 
@@ -63,6 +65,7 @@ _MAX_BODY_BYTES = int(os.getenv("GLOWBACK_MAX_BODY_BYTES", str(1024 * 1024)))  #
 
 store = RunStore()
 adapter = MockEngineAdapter(store)
+opt_store = OptimizationStore()
 
 app = FastAPI(
     title="GlowBack Gateway API",
@@ -303,3 +306,68 @@ async def stream_backtest(
             run_id,
             disconnect_reason,
         )
+
+
+# ---------------------------------------------------------------------------
+# Optimization endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/optimizations",
+    response_model=OptimizationStatus,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_optimization(request: OptimizationRequest) -> OptimizationStatus:
+    """Create and start a new parameter-search optimization run."""
+    status_obj = await opt_store.create(request)
+    asyncio.create_task(opt_store.run_optimization(status_obj.optimization_id))
+    return status_obj
+
+
+@app.get("/optimizations", response_model=list[OptimizationStatus])
+async def list_optimizations(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[OptimizationStatus]:
+    """List optimization runs (most recent first)."""
+    return await opt_store.list_optimizations(limit=limit)
+
+
+@app.get("/optimizations/{opt_id}", response_model=OptimizationStatus)
+async def get_optimization(opt_id: str) -> OptimizationStatus:
+    """Get current status of an optimization run."""
+    status_obj = await opt_store.get_status(opt_id)
+    if not status_obj:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Optimization not found"
+        )
+    return status_obj
+
+
+@app.get("/optimizations/{opt_id}/results", response_model=OptimizationResult)
+async def get_optimization_results(opt_id: str) -> OptimizationResult:
+    """Get full results of a completed optimization run."""
+    result = await opt_store.get_result(opt_id)
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Optimization not found",
+        )
+    if result.state not in {OptimizationState.completed, OptimizationState.cancelled}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Optimization not yet completed",
+        )
+    return result
+
+
+@app.post("/optimizations/{opt_id}/cancel")
+async def cancel_optimization(opt_id: str) -> dict:
+    """Cancel a running optimization."""
+    cancelled = await opt_store.cancel(opt_id)
+    if not cancelled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot cancel — optimization not found or already finished",
+        )
+    return {"optimization_id": opt_id, "state": "cancelled"}
