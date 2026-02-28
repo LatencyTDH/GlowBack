@@ -1,0 +1,21 @@
+[package]
+name = "gb-risk"
+version = "0.1.0"
+edition = "2021"
+description = "Real-time risk metrics and monitoring pipeline for GlowBack"
+
+[dependencies]
+gb-types = { path = "../gb-types" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rust_decimal = { workspace = true }
+crossbeam-channel = { workspace = true }
+
+[dev-dependencies]
+rust_decimal_macros = "1.37"
+tokio-test = "0.4"
