@@ -3,6 +3,7 @@ members = [
     "crates/gb-engine",
     "crates/gb-data", 
     "crates/gb-types",
+    "crates/gb-options",
     "crates/gb-optimizer",
     "crates/gb-python"
 ]
