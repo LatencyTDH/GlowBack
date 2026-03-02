@@ -875,6 +875,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "gb-live"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "gb-types",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "gb-optimizer"
 version = "0.1.0"
 dependencies = [
