@@ -6,7 +6,8 @@ members = [
     "crates/gb-options",
     "crates/gb-optimizer",
     "crates/gb-python",
-    "crates/gb-risk"
+    "crates/gb-risk",
+    "crates/gb-live"
 ]
 resolver = "2"
 

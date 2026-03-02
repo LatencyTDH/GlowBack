@@ -1,0 +1,22 @@
+[package]
+name = "gb-live"
+version = "0.1.0"
+edition = "2021"
+description = "Live/paper trading module with broker abstraction, risk controls, and sandbox mode"
+
+[dependencies]
+gb-types = { path = "../gb-types" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rust_decimal = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+rust_decimal_macros = "1.37"
