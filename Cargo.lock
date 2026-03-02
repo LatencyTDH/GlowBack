@@ -889,6 +889,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gb-options"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gb-types",
+ "num-traits",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "gb-python"
 version = "0.1.0"
 dependencies = [
