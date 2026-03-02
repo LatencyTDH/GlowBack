@@ -905,6 +905,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "gb-risk"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossbeam-channel",
+ "gb-types",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "gb-types"
 version = "0.1.0"
 dependencies = [

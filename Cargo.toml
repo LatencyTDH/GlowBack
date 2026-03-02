@@ -4,7 +4,8 @@ members = [
     "crates/gb-data", 
     "crates/gb-types",
     "crates/gb-optimizer",
-    "crates/gb-python"
+    "crates/gb-python",
+    "crates/gb-risk"
 ]
 resolver = "2"
 
