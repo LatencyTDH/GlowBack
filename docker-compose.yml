@@ -1,34 +1,85 @@
-version: "3.9"
-
 services:
   engine:
     build:
       context: .
       dockerfile: docker/engine.Dockerfile
     ports:
-      - "8081:8081"
+      - "${GLOWBACK_ENGINE_PORT:-8081}:8081"
     environment:
       - GLOWBACK_ENGINE_ADDR=0.0.0.0:8081
+      - RUST_LOG=${RUST_LOG:-info}
+    volumes:
+      - engine-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/gb-engine-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
 
   api:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
     ports:
-      - "8000:8000"
+      - "${GLOWBACK_API_PORT:-8000}:8000"
     environment:
       - GLOWBACK_ENGINE_URL=http://engine:8081
       - GLOWBACK_API_KEY=${GLOWBACK_API_KEY:-}
+      - GLOWBACK_RATE_LIMIT=${GLOWBACK_RATE_LIMIT:-100}
+      - GLOWBACK_RATE_WINDOW=${GLOWBACK_RATE_WINDOW:-60}
+      - GLOWBACK_CORS_ORIGINS=${GLOWBACK_CORS_ORIGINS:-*}
+      - GLOWBACK_LOG_FORMAT=${GLOWBACK_LOG_FORMAT:-json}
+      - GLOWBACK_LOG_LEVEL=${GLOWBACK_LOG_LEVEL:-info}
+      - GLOWBACK_MAX_BODY_BYTES=${GLOWBACK_MAX_BODY_BYTES:-1048576}
+    volumes:
+      - api-data:/app/data
+    restart: unless-stopped
     depends_on:
-      - engine
+      engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
 
   ui:
     build:
       context: .
       dockerfile: docker/ui.Dockerfile
     ports:
-      - "8501:8501"
+      - "${GLOWBACK_UI_PORT:-8501}:8501"
     environment:
       - GLOWBACK_API_URL=http://api:8000
+    restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
+
+volumes:
+  engine-data:
+  api-data:

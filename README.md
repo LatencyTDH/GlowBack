@@ -95,13 +95,17 @@ cd ui && python setup.py
 ### Docker (Compose)
 
 ```bash
-docker compose up --build
+cp .env.example .env   # configure ports, API key, etc.
+docker compose up --build -d
 ```
 
 Services:
 - UI: http://localhost:8501
 - API: http://localhost:8000 (set `GLOWBACK_API_KEY` to require auth)
 - Engine: http://localhost:8081 (health JSON)
+
+All services include health checks, restart policies, and resource limits.
+See the [Deployment Guide](docs/deployment.md) for production configuration.
 
 ## Python Bindings
 
