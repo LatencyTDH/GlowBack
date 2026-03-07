@@ -30,7 +30,11 @@ python setup.py
 ## Docker (Compose)
 
 ```bash
-docker compose up --build
+# Copy environment template and customize
+cp .env.example .env
+
+# Build and start all services
+docker compose up --build -d
 ```
 
 Note: The engine image builds with `rust:stable-slim` to match `rust-toolchain.toml`.
@@ -39,6 +43,9 @@ Services:
 - UI: http://localhost:8501
 - API: http://localhost:8000 (set `GLOWBACK_API_KEY` to require auth)
 - Engine: http://localhost:8081 (health JSON)
+
+All services include health checks, restart policies, and resource limits.
+For production deployment details, see the [Deployment Guide](deployment.md).
 
 ## Next Steps
 

@@ -12,3 +12,9 @@ data
 assets
 node_modules
 ui/.streamlit
+site
+*.md
+!README.md
+.env
+.env.example
+docs
