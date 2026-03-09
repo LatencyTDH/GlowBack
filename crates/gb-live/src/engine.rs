@@ -183,6 +183,11 @@ impl<B: Broker, S: Strategy> LiveEngine<B, S> {
 
         let symbol = event.symbol().clone();
 
+        self.broker
+            .on_market_event(&event)
+            .await
+            .map_err(|e| format!("broker market data update failed: {e}"))?;
+
         // Update strategy context's market data buffer.
         {
             let buffer = self
@@ -371,8 +376,8 @@ impl<B: Broker, S: Strategy> LiveEngine<B, S> {
         &self.context
     }
 
-    /// Mutable access to the broker (e.g. for feeding market events on a paper
-    /// broker).
+    /// Mutable access to the broker for direct inspection or advanced manual
+    /// control in tests/integrations.
     pub fn broker_mut(&mut self) -> &mut B {
         &mut self.broker
     }
@@ -484,13 +489,28 @@ mod tests {
         engine.start().await.unwrap();
         engine.drain_events(); // clear started event
 
-        // Seed price on the paper broker
-        engine
-            .broker_mut()
-            .process_market_event(&make_bar(dec!(150)));
-
-        // Feed event to engine
+        // Feeding the event through the engine should also update the paper
+        // broker's latest price / fill path.
         engine.on_market_event(make_bar(dec!(150))).await.unwrap();
+
+        assert_eq!(
+            engine.broker().get_latest_price(&test_symbol()),
+            Some(dec!(150))
+        );
+
+        let open_orders = engine.broker().get_open_orders().await.unwrap();
+        assert!(
+            open_orders.is_empty(),
+            "expected market order to fill immediately once the broker saw the event"
+        );
+
+        let positions = engine.broker().get_positions().await.unwrap();
+        assert!(
+            positions
+                .iter()
+                .any(|position| position.quantity > Decimal::ZERO),
+            "expected filled long position after market event, got: {positions:?}"
+        );
 
         // Buy-and-hold should have placed an order
         let events = engine.drain_events();

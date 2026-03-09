@@ -406,6 +406,11 @@ impl Broker for PaperBroker {
     fn get_all_prices(&self) -> HashMap<Symbol, Decimal> {
         self.latest_prices.clone()
     }
+
+    async fn on_market_event(&mut self, event: &MarketEvent) -> BrokerResult<()> {
+        self.process_market_event(event);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

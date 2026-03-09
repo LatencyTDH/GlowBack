@@ -122,4 +122,13 @@ pub trait Broker: Send + Sync {
 
     /// Get all latest prices.
     fn get_all_prices(&self) -> HashMap<Symbol, Decimal>;
+
+    /// Notify the broker about an incoming market event.
+    ///
+    /// Real broker adapters can ignore this by default, while in-process
+    /// paper/sandbox brokers can use it to keep their internal marks and
+    /// pending-order fills in sync with the engine's event stream.
+    async fn on_market_event(&mut self, _event: &MarketEvent) -> BrokerResult<()> {
+        Ok(())
+    }
 }
