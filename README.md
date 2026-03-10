@@ -23,6 +23,7 @@ GlowBack provides a fast, realistic backtesting engine with data management, sto
 - Strategy library (4 built‑in strategies)
 - Python bindings (async support)
 - Streamlit UI for strategy development and analysis
+- Sandbox paper broker rejects sell orders that exceed held inventory (no implicit naked shorts)
 
 ## Project Status
 

@@ -11,7 +11,7 @@ use gb_types::orders::{Fill, Order, OrderId, OrderStatus, OrderType, Side};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::broker::{
     AccountBalance, Broker, BrokerError, BrokerPosition, BrokerResult, ConnectionStatus,
@@ -107,6 +107,21 @@ impl PaperBroker {
         }
     }
 
+    fn available_quantity(&self, symbol: &Symbol) -> Decimal {
+        self.positions
+            .get(symbol)
+            .map(|position| position.quantity.max(Decimal::ZERO))
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    fn reject_order(&mut self, order_id: OrderId, reason: &str) {
+        if let Some(order) = self.orders.get_mut(&order_id) {
+            order.status = OrderStatus::Rejected;
+        }
+
+        warn!(order_id = %order_id, reason, "paper broker: order rejected");
+    }
+
     /// Attempt to fill an order at `market_price`.  Returns `true` if filled.
     fn try_fill_order(&mut self, order_id: OrderId, market_price: Decimal) -> bool {
         let order = match self.orders.get(&order_id) {
@@ -152,15 +167,24 @@ impl PaperBroker {
         let quantity = order.remaining_quantity;
         let commission = quantity * self.config.commission_per_share;
 
+        if order.side == Side::Sell {
+            let available_quantity = self.available_quantity(&order.symbol);
+            if quantity > available_quantity {
+                self.reject_order(
+                    order_id,
+                    "paper broker does not support short sales; sell quantity exceeds current inventory",
+                );
+                return false;
+            }
+        }
+
         // Update cash
         match order.side {
             Side::Buy => {
                 let cost = quantity * fill_price + commission;
                 if cost > self.cash {
                     // Insufficient funds — reject
-                    if let Some(o) = self.orders.get_mut(&order_id) {
-                        o.status = OrderStatus::Rejected;
-                    }
+                    self.reject_order(order_id, "insufficient funds");
                     return false;
                 }
                 self.cash -= cost;
@@ -266,6 +290,22 @@ impl Broker for PaperBroker {
 
         let order_id = order.id;
         order.status = OrderStatus::Submitted;
+
+        if order.side == Side::Sell {
+            let available_quantity = self.available_quantity(&order.symbol);
+            if order.remaining_quantity > available_quantity {
+                order.status = OrderStatus::Rejected;
+                self.orders.insert(order_id, order);
+                warn!(
+                    order_id = %order_id,
+                    symbol = %self.orders[&order_id].symbol,
+                    requested_quantity = %self.orders[&order_id].remaining_quantity,
+                    available_quantity = %available_quantity,
+                    "paper broker rejected sell order that exceeds current inventory"
+                );
+                return Ok(order_id);
+            }
+        }
 
         // For market orders with immediate fill, try to fill now.
         if self.config.fill_market_orders_immediately
@@ -550,6 +590,47 @@ mod tests {
 
         let status = broker.get_order_status(oid).await.unwrap();
         assert_eq!(status, OrderStatus::Rejected);
+    }
+
+    #[tokio::test]
+    async fn test_paper_broker_rejects_naked_sell_orders() {
+        let mut broker = PaperBroker::with_defaults();
+        broker.connect().await.unwrap();
+        broker.process_market_event(&make_bar(test_symbol(), dec!(150)));
+
+        let order = Order::market_order(test_symbol(), Side::Sell, dec!(5), "s".into());
+        let oid = broker.submit_order(order).await.unwrap();
+
+        let status = broker.get_order_status(oid).await.unwrap();
+        assert_eq!(status, OrderStatus::Rejected);
+        assert!(broker.get_position(&test_symbol()).await.unwrap().is_none());
+
+        let balance = broker.get_account_balance().await.unwrap();
+        assert_eq!(balance.cash, dec!(100_000));
+        assert_eq!(balance.equity, dec!(100_000));
+    }
+
+    #[tokio::test]
+    async fn test_paper_broker_rejects_sell_orders_that_exceed_inventory() {
+        let mut broker = PaperBroker::with_defaults();
+        broker.connect().await.unwrap();
+        broker.process_market_event(&make_bar(test_symbol(), dec!(150)));
+
+        let buy = Order::market_order(test_symbol(), Side::Buy, dec!(10), "s".into());
+        broker.submit_order(buy).await.unwrap();
+
+        let sell = Order::market_order(test_symbol(), Side::Sell, dec!(15), "s".into());
+        let sell_id = broker.submit_order(sell).await.unwrap();
+
+        let status = broker.get_order_status(sell_id).await.unwrap();
+        assert_eq!(status, OrderStatus::Rejected);
+
+        let position = broker.get_position(&test_symbol()).await.unwrap().unwrap();
+        assert_eq!(position.quantity, dec!(10));
+
+        let balance = broker.get_account_balance().await.unwrap();
+        assert!(balance.cash < dec!(100_000));
+        assert!(balance.equity > Decimal::ZERO);
     }
 
     #[tokio::test]
