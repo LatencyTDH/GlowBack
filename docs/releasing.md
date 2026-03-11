@@ -36,7 +36,9 @@ versioned GitHub Release.
 - `artifact_name` *(optional)* — artifact to attach; defaults to
   `glowback-engine-linux-x86_64`
 - `prerelease` *(optional)* — mark the release as a prerelease
-- `notes` *(optional)* — custom release notes; if omitted, GitHub generates them
+- `notes` *(optional)* — custom release notes; if omitted, the workflow asks the
+  GitHub Releases API to generate notes anchored to the previous published
+  release tag
 
 ### Selection behavior
 
@@ -63,6 +65,19 @@ If you provide `run_id`, the workflow uses that exact build — as long as it:
 
 The release workflow never rebuilds the binary. It reuses the artifact that CI
 already produced.
+
+### How automatic release-note deltas work
+
+When `notes` is left blank, the workflow resolves the previous published release
+from GitHub, sorted by version, and sends that tag to the
+`releases/generate-notes` API as `previous_tag_name`.
+
+That means:
+
+- `v0.2.0` notes are generated from the delta since `v0.1.0`, not from the
+  beginning of the repository, and
+- the very first published release has no previous tag, so its generated notes
+  legitimately cover the full history up to that release.
 
 ## Recommended release process
 
