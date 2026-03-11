@@ -5,12 +5,14 @@ release time.
 
 ## What the build pipeline produces
 
-The Rust build pipeline (`.github/workflows/rust.yml`) now uploads a release-ready
-artifact named `glowback-engine-linux-x86_64` whenever a `main` branch build
-succeeds from either:
+The Rust build pipeline (`.github/workflows/rust.yml`) uploads a release-ready
+artifact named `glowback-engine-linux-x86_64` whenever an eligible `main` branch
+build succeeds from either:
 
 - a normal `push` to `main`, or
 - a manual `workflow_dispatch` run of `rust.yml` on `main`
+
+Pull request builds are never eligible release sources.
 
 That artifact contains:
 
@@ -38,14 +40,25 @@ versioned GitHub Release.
 
 ### Selection behavior
 
-If you leave `run_id` empty, the workflow searches for the **latest successful
-`rust.yml` run on `main`** from a `push` or manual build that contains the
-selected artifact name.
+If you leave `run_id` empty, the workflow now:
+
+1. snapshots the current upstream `main` HEAD commit when the release is
+   dispatched,
+2. finds the matching upstream `rust.yml` run for that exact commit,
+3. prefers the `push` build for that commit (falling back to a manual
+   `workflow_dispatch` build only when needed), and
+4. waits up to 30 minutes for that run to finish successfully and expose the
+   selected artifact.
+
+It does **not** fall back to an older successful run from a different commit, so
+releases cannot silently publish stale assets.
 
 If you provide `run_id`, the workflow uses that exact build — as long as it:
 
-- ran on `main`
-- came from `push` or `workflow_dispatch`
+- belongs to the upstream repository running the release,
+- is a `rust.yml` run,
+- ran on `main`,
+- came from `push` or `workflow_dispatch`, and
 - still has the requested artifact available
 
 The release workflow never rebuilds the binary. It reuses the artifact that CI
@@ -54,11 +67,12 @@ already produced.
 ## Recommended release process
 
 1. Merge the changes you want onto `main`.
-2. Wait for the Rust build pipeline to finish, or manually run `rust.yml` on
-   `main` if you need a fresh artifact without a new commit.
-3. Run **Manual Release** with a new semver tag such as `v0.2.0`.
-4. Leave `run_id` blank to use the latest eligible build, or set it explicitly
-   if you want to pin the release to a specific CI run.
+2. Run **Manual Release** with a new semver tag such as `v0.2.0`.
+3. Leave `run_id` blank to release from the exact `main` commit that was current
+   when you started the workflow. If the Rust pipeline for that commit is still
+   running, the release job waits for it automatically.
+4. Use `run_id` only when you intentionally want to pin the release to a known
+   successful upstream `main` build.
 5. After the workflow completes, verify the assets and notes on the GitHub
    Releases page.
 
@@ -69,3 +83,5 @@ already produced.
 - Build artifacts are retained for 30 days by GitHub Actions.
 - If the artifact you want has expired, rerun `rust.yml` on `main` and then cut
   the release from the fresh run.
+- If the current `main` build fails, the release workflow fails too; fix the
+  build first rather than releasing from a PR artifact or an older commit.
