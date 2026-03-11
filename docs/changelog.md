@@ -6,3 +6,4 @@
 - Added `[profile.dev] debug = "line-tables-only"` to reduce debug build size.
 - Docs site created and expanded
 - CI and workflow improvements
+- Added a manual GitHub release workflow that publishes versioned releases from a previously built CI artifact.

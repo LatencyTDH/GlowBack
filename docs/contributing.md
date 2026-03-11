@@ -40,6 +40,12 @@ streamlit run app.py
 5. Run the full test suite before pushing.
 6. Open a pull request with a clear summary and test notes.
 
+## Releases
+
+GlowBack releases are cut manually from a previously built CI artifact so a
+maintainer can publish a version without rebuilding during the release step.
+See [Releasing GlowBack](releasing.md) for the exact workflow and inputs.
+
 ## Repository Layout
 
 | Directory       | Description                             |

@@ -51,6 +51,7 @@ nav:
   - Roadmap: roadmap.md
   - FAQ: faq.md
   - Changelog: changelog.md
+  - Releasing: releasing.md
   - Community:
       - Contributing: contributing.md
       - Code of Conduct: community/code-of-conduct.md

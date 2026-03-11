@@ -1,0 +1,216 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (for example v0.2.0)"
+        required: true
+        type: string
+      release_name:
+        description: "Optional release title (defaults to the tag)"
+        required: false
+        type: string
+      run_id:
+        description: "Optional rust.yml run ID to publish from"
+        required: false
+        type: string
+      artifact_name:
+        description: "Artifact name to publish from the selected run"
+        required: false
+        default: glowback-engine-linux-x86_64
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: false
+        default: false
+        type: boolean
+      notes:
+        description: "Optional release notes. Leave blank to auto-generate notes."
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: manual-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      DEFAULT_BRANCH: main
+      DEFAULT_WORKFLOW: rust.yml
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Resolve source run
+        id: resolve
+        env:
+          INPUT_ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          artifact_name="${INPUT_ARTIFACT_NAME}"
+          run_id="${INPUT_RUN_ID}"
+
+          if [[ -z "${run_id}" ]]; then
+            mapfile -t candidate_run_ids < <(
+              gh api "/repos/${REPO}/actions/workflows/${DEFAULT_WORKFLOW}/runs?branch=${DEFAULT_BRANCH}&status=success&per_page=100" \
+                | jq -r '.workflow_runs[]
+                    | select(.event == "push" or .event == "workflow_dispatch")
+                    | .id'
+            )
+
+            if [[ ${#candidate_run_ids[@]} -eq 0 ]]; then
+              echo "No successful ${DEFAULT_WORKFLOW} runs were found on ${DEFAULT_BRANCH}." >&2
+              exit 1
+            fi
+
+            for candidate in "${candidate_run_ids[@]}"; do
+              artifact_id="$({
+                gh api "/repos/${REPO}/actions/runs/${candidate}/artifacts?per_page=100" \
+                  | jq -r --arg artifact_name "${artifact_name}" '.artifacts[]
+                      | select(.name == $artifact_name and .expired == false)
+                      | .id' \
+                  | head -n 1
+              } || true)"
+
+              if [[ -n "${artifact_id}" ]]; then
+                run_id="${candidate}"
+                break
+              fi
+            done
+          fi
+
+          if [[ -z "${run_id}" ]]; then
+            echo "Could not find a recent successful main-branch build with artifact '${artifact_name}'." >&2
+            echo "Run rust.yml manually on main to refresh the artifact, or provide an explicit run_id." >&2
+            exit 1
+          fi
+
+          run_json="$(gh api "/repos/${REPO}/actions/runs/${run_id}")"
+          head_sha="$(jq -r '.head_sha' <<<"${run_json}")"
+          head_branch="$(jq -r '.head_branch' <<<"${run_json}")"
+          event_name="$(jq -r '.event' <<<"${run_json}")"
+          run_url="$(jq -r '.html_url' <<<"${run_json}")"
+
+          if [[ "${head_branch}" != "${DEFAULT_BRANCH}" ]]; then
+            echo "Run ${run_id} is on branch '${head_branch}', but releases must come from ${DEFAULT_BRANCH}." >&2
+            exit 1
+          fi
+
+          if [[ "${event_name}" != "push" && "${event_name}" != "workflow_dispatch" ]]; then
+            echo "Run ${run_id} came from event '${event_name}', but releases only accept push or workflow_dispatch builds." >&2
+            exit 1
+          fi
+
+          artifact_id="$({
+            gh api "/repos/${REPO}/actions/runs/${run_id}/artifacts?per_page=100" \
+              | jq -r --arg artifact_name "${artifact_name}" '.artifacts[]
+                  | select(.name == $artifact_name and .expired == false)
+                  | .id' \
+              | head -n 1
+          } || true)"
+
+          if [[ -z "${artifact_id}" ]]; then
+            echo "Run ${run_id} does not contain a non-expired artifact named '${artifact_name}'." >&2
+            exit 1
+          fi
+
+          {
+            echo "artifact_id=${artifact_id}"
+            echo "artifact_name=${artifact_name}"
+            echo "head_sha=${head_sha}"
+            echo "run_id=${run_id}"
+            echo "run_url=${run_url}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Guard existing release/tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists." >&2
+            exit 1
+          fi
+
+          encoded_tag="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${TAG}")"
+          if gh api "/repos/${REPO}/git/ref/tags/${encoded_tag}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists." >&2
+            exit 1
+          fi
+
+      - name: Download selected artifact
+        run: |
+          set -euo pipefail
+
+          mkdir -p release-assets
+          gh run download "${{ steps.resolve.outputs.run_id }}" \
+            --repo "${REPO}" \
+            --name "${{ steps.resolve.outputs.artifact_name }}" \
+            --dir release-assets
+
+          echo "Downloaded assets:"
+          find release-assets -maxdepth 1 -type f -printf ' - %f\n'
+
+      - name: Create GitHub release
+        env:
+          NOTES: ${{ inputs.notes }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_NAME: ${{ inputs.release_name }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          title="${RELEASE_NAME:-${TAG}}"
+          assets=(release-assets/*)
+
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "No release assets were downloaded." >&2
+            exit 1
+          fi
+
+          args=(
+            release create "${TAG}"
+            --repo "${REPO}"
+            --title "${title}"
+            --target "${{ steps.resolve.outputs.head_sha }}"
+          )
+
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          if [[ -n "${NOTES}" ]]; then
+            args+=(--notes "${NOTES}")
+          else
+            args+=(--generate-notes)
+          fi
+
+          args+=("${assets[@]}")
+
+          gh "${args[@]}"
+
+      - name: Summarize release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "### Manual release published"
+            echo
+            echo "- Tag: \`${TAG}\`"
+            echo "- Source run: ${{ steps.resolve.outputs.run_url }}"
+            echo "- Source commit: \`${{ steps.resolve.outputs.head_sha }}\`"
+            echo "- Artifact: \`${{ steps.resolve.outputs.artifact_name }}\`"
+            echo "- Release: https://github.com/${REPO}/releases/tag/${TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"
