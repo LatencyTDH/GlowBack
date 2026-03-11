@@ -8,6 +8,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust.yml"
+      - ".github/workflows/release.yml"
+      - "scripts/package-engine-release.sh"
   pull_request:
     branches: [ "main" ]
     paths:
@@ -15,6 +17,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust.yml"
+      - ".github/workflows/release.yml"
+      - "scripts/package-engine-release.sh"
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
@@ -30,6 +34,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_ARTIFACT_NAME: glowback-engine-linux-x86_64
 
 jobs:
   changes:
@@ -119,3 +124,48 @@ jobs:
         run: cargo build --workspace --verbose
       - name: Run tests (workspace)
         run: cargo test --workspace --verbose
+
+  release-artifact:
+    name: Build release artifact
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      github.event_name != 'schedule' &&
+      (needs.test.result == 'success' || needs.full-workspace.result == 'success')
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - full-workspace
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Build release binary
+        run: cargo build -p gb-engine --bin gb-engine-service --release --locked --verbose
+      - name: Package release bundle
+        run: ./scripts/package-engine-release.sh dist
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE_ARTIFACT_NAME }}
+          path: |
+            dist/${{ env.RELEASE_ARTIFACT_NAME }}.tar.gz
+            dist/${{ env.RELEASE_ARTIFACT_NAME }}.tar.gz.sha256
+            dist/${{ env.RELEASE_ARTIFACT_NAME }}.metadata.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Summarize release artifact
+        run: |
+          {
+            echo "### Release artifact"
+            echo
+            echo "- Artifact: \`${RELEASE_ARTIFACT_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Assets:"
+            echo "  - \`${RELEASE_ARTIFACT_NAME}.tar.gz\`"
+            echo "  - \`${RELEASE_ARTIFACT_NAME}.tar.gz.sha256\`"
+            echo "  - \`${RELEASE_ARTIFACT_NAME}.metadata.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
