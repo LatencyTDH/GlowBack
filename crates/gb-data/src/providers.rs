@@ -245,14 +245,14 @@ impl DataProvider for SampleDataProvider {
         while current_date <= end_date {
             // Simple random walk
             rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-            let random = (rng_state >> 16) as f64 / 65536.0 - 0.5; // -0.5 to 0.5
+            let change_bps = ((rng_state >> 16) % 401) as i64 - 200; // ±2.00%
 
-            let change_pct = Decimal::from_f64_retain(random * 0.02).unwrap_or_default(); // ±2%
-            let new_price = price * (Decimal::ONE + change_pct);
+            let change_pct = Decimal::new(change_bps, 4);
+            let new_price = (price * (Decimal::ONE + change_pct)).round_dp(4);
 
             let volatility = Decimal::from_f64_retain(0.01).unwrap_or_default(); // 1% intraday volatility
-            let high = new_price * (Decimal::ONE + volatility);
-            let low = new_price * (Decimal::ONE - volatility);
+            let high = (new_price * (Decimal::ONE + volatility)).round_dp(4);
+            let low = (new_price * (Decimal::ONE - volatility)).round_dp(4);
 
             let volume = match symbol.symbol.as_str() {
                 "AAPL" => Decimal::from(80000000),
