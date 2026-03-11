@@ -44,6 +44,7 @@ jobs:
     env:
       DEFAULT_BRANCH: main
       DEFAULT_WORKFLOW: rust.yml
+      DEFAULT_WORKFLOW_PATH: .github/workflows/rust.yml
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
@@ -52,83 +53,149 @@ jobs:
         env:
           INPUT_ARTIFACT_NAME: ${{ inputs.artifact_name }}
           INPUT_RUN_ID: ${{ inputs.run_id }}
+          POLL_INTERVAL_SECONDS: 15
+          RESOLVE_TIMEOUT_SECONDS: 1800
         run: |
           set -euo pipefail
 
           artifact_name="${INPUT_ARTIFACT_NAME}"
-          run_id="${INPUT_RUN_ID}"
+          requested_run_id="${INPUT_RUN_ID}"
+          run_id="${requested_run_id}"
 
-          if [[ -z "${run_id}" ]]; then
-            mapfile -t candidate_run_ids < <(
-              gh api "/repos/${REPO}/actions/workflows/${DEFAULT_WORKFLOW}/runs?branch=${DEFAULT_BRANCH}&status=success&per_page=100" \
-                | jq -r '.workflow_runs[]
-                    | select(.event == "push" or .event == "workflow_dispatch")
-                    | .id'
-            )
+          artifact_id_for_run() {
+            local run_id="$1"
+            local artifact_name="$2"
 
-            if [[ ${#candidate_run_ids[@]} -eq 0 ]]; then
-              echo "No successful ${DEFAULT_WORKFLOW} runs were found on ${DEFAULT_BRANCH}." >&2
-              exit 1
-            fi
-
-            for candidate in "${candidate_run_ids[@]}"; do
-              artifact_id="$({
-                gh api "/repos/${REPO}/actions/runs/${candidate}/artifacts?per_page=100" \
-                  | jq -r --arg artifact_name "${artifact_name}" '.artifacts[]
-                      | select(.name == $artifact_name and .expired == false)
-                      | .id' \
-                  | head -n 1
-              } || true)"
-
-              if [[ -n "${artifact_id}" ]]; then
-                run_id="${candidate}"
-                break
-              fi
-            done
-          fi
-
-          if [[ -z "${run_id}" ]]; then
-            echo "Could not find a recent successful main-branch build with artifact '${artifact_name}'." >&2
-            echo "Run rust.yml manually on main to refresh the artifact, or provide an explicit run_id." >&2
-            exit 1
-          fi
-
-          run_json="$(gh api "/repos/${REPO}/actions/runs/${run_id}")"
-          head_sha="$(jq -r '.head_sha' <<<"${run_json}")"
-          head_branch="$(jq -r '.head_branch' <<<"${run_json}")"
-          event_name="$(jq -r '.event' <<<"${run_json}")"
-          run_url="$(jq -r '.html_url' <<<"${run_json}")"
-
-          if [[ "${head_branch}" != "${DEFAULT_BRANCH}" ]]; then
-            echo "Run ${run_id} is on branch '${head_branch}', but releases must come from ${DEFAULT_BRANCH}." >&2
-            exit 1
-          fi
-
-          if [[ "${event_name}" != "push" && "${event_name}" != "workflow_dispatch" ]]; then
-            echo "Run ${run_id} came from event '${event_name}', but releases only accept push or workflow_dispatch builds." >&2
-            exit 1
-          fi
-
-          artifact_id="$({
             gh api "/repos/${REPO}/actions/runs/${run_id}/artifacts?per_page=100" \
               | jq -r --arg artifact_name "${artifact_name}" '.artifacts[]
                   | select(.name == $artifact_name and .expired == false)
                   | .id' \
               | head -n 1
-          } || true)"
+          }
 
-          if [[ -z "${artifact_id}" ]]; then
-            echo "Run ${run_id} does not contain a non-expired artifact named '${artifact_name}'." >&2
-            exit 1
+          load_run_json() {
+            local run_id="$1"
+            gh api "/repos/${REPO}/actions/runs/${run_id}"
+          }
+
+          load_target_run_json() {
+            local target_sha="$1"
+
+            gh api "/repos/${REPO}/actions/workflows/${DEFAULT_WORKFLOW}/runs?branch=${DEFAULT_BRANCH}&per_page=100" \
+              | jq -cer --arg target_sha "${target_sha}" --arg workflow_path "${DEFAULT_WORKFLOW_PATH}" '
+                  [.workflow_runs[]
+                    | select(.head_sha == $target_sha)
+                    | select(.path == $workflow_path)
+                    | select(.event == "push" or .event == "workflow_dispatch")
+                  ]
+                  | sort_by(.created_at)
+                  | reverse
+                  | ((map(select(.event == "push"))) + (map(select(.event == "workflow_dispatch"))))
+                  | .[0]'
+          }
+
+          resolve_target_sha() {
+            gh api "/repos/${REPO}/branches/${DEFAULT_BRANCH}" --jq '.commit.sha'
+          }
+
+          target_sha=""
+          if [[ -z "${requested_run_id}" ]]; then
+            target_sha="$(resolve_target_sha)"
+            echo "Resolving release artifact from ${REPO}@${DEFAULT_BRANCH} (${target_sha})"
+          else
+            echo "Resolving release artifact from explicit run ${requested_run_id}"
           fi
 
-          {
-            echo "artifact_id=${artifact_id}"
-            echo "artifact_name=${artifact_name}"
-            echo "head_sha=${head_sha}"
-            echo "run_id=${run_id}"
-            echo "run_url=${run_url}"
-          } >> "$GITHUB_OUTPUT"
+          deadline=$(( $(date +%s) + RESOLVE_TIMEOUT_SECONDS ))
+
+          while true; do
+            if [[ -n "${requested_run_id}" ]]; then
+              run_json="$(load_run_json "${run_id}")"
+            else
+              run_json="$(load_target_run_json "${target_sha}" || true)"
+              if [[ -n "${run_json}" ]]; then
+                run_id="$(jq -r '.id' <<<"${run_json}")"
+              else
+                echo "No ${DEFAULT_WORKFLOW} run exists yet for ${REPO}@${DEFAULT_BRANCH} (${target_sha}); waiting ${POLL_INTERVAL_SECONDS}s..."
+              fi
+            fi
+
+            if [[ -n "${run_json:-}" ]]; then
+              workflow_path="$(jq -r '.path' <<<"${run_json}")"
+              head_sha="$(jq -r '.head_sha' <<<"${run_json}")"
+              head_branch="$(jq -r '.head_branch' <<<"${run_json}")"
+              event_name="$(jq -r '.event' <<<"${run_json}")"
+              run_status="$(jq -r '.status' <<<"${run_json}")"
+              run_conclusion="$(jq -r '.conclusion // ""' <<<"${run_json}")"
+              run_url="$(jq -r '.html_url' <<<"${run_json}")"
+              repository_name="$(jq -r '.repository.full_name' <<<"${run_json}")"
+              head_repository_name="$(jq -r '.head_repository.full_name // empty' <<<"${run_json}")"
+
+              if [[ "${repository_name}" != "${REPO}" ]]; then
+                echo "Run ${run_id} belongs to repository '${repository_name}', expected '${REPO}'." >&2
+                exit 1
+              fi
+
+              if [[ "${workflow_path}" != "${DEFAULT_WORKFLOW_PATH}" ]]; then
+                echo "Run ${run_id} came from workflow path '${workflow_path}', expected '${DEFAULT_WORKFLOW_PATH}'." >&2
+                exit 1
+              fi
+
+              if [[ "${head_branch}" != "${DEFAULT_BRANCH}" ]]; then
+                echo "Run ${run_id} is on branch '${head_branch}', but releases must come from ${DEFAULT_BRANCH}." >&2
+                exit 1
+              fi
+
+              if [[ "${event_name}" != "push" && "${event_name}" != "workflow_dispatch" ]]; then
+                echo "Run ${run_id} came from event '${event_name}', but releases only accept push or workflow_dispatch builds." >&2
+                exit 1
+              fi
+
+              if [[ -n "${head_repository_name}" && "${head_repository_name}" != "${REPO}" ]]; then
+                echo "Run ${run_id} came from head repository '${head_repository_name}', but releases must use upstream main builds from ${REPO}." >&2
+                exit 1
+              fi
+
+              if [[ -z "${requested_run_id}" && "${head_sha}" != "${target_sha}" ]]; then
+                echo "Resolved run ${run_id} for commit '${head_sha}', but expected '${target_sha}'." >&2
+                exit 1
+              fi
+
+              if [[ "${run_status}" == "completed" ]]; then
+                if [[ "${run_conclusion}" != "success" ]]; then
+                  echo "Run ${run_id} completed with conclusion '${run_conclusion}' and cannot be released." >&2
+                  exit 1
+                fi
+
+                artifact_id="$(artifact_id_for_run "${run_id}" "${artifact_name}" || true)"
+                if [[ -n "${artifact_id}" ]]; then
+                  {
+                    echo "artifact_id=${artifact_id}"
+                    echo "artifact_name=${artifact_name}"
+                    echo "head_sha=${head_sha}"
+                    echo "run_id=${run_id}"
+                    echo "run_url=${run_url}"
+                  } >> "$GITHUB_OUTPUT"
+                  break
+                fi
+
+                echo "Run ${run_id} succeeded, but artifact '${artifact_name}' is not available yet; waiting ${POLL_INTERVAL_SECONDS}s..."
+              else
+                echo "Run ${run_id} is ${run_status}; waiting ${POLL_INTERVAL_SECONDS}s for artifact '${artifact_name}'..."
+              fi
+            fi
+
+            if (( $(date +%s) >= deadline )); then
+              if [[ -n "${requested_run_id}" ]]; then
+                echo "Timed out waiting for run ${run_id} to complete successfully with artifact '${artifact_name}'." >&2
+              else
+                echo "Timed out waiting for a successful ${DEFAULT_WORKFLOW} run for ${REPO}@${DEFAULT_BRANCH} (${target_sha}) with artifact '${artifact_name}'." >&2
+              fi
+              exit 1
+            fi
+
+            sleep "${POLL_INTERVAL_SECONDS}"
+          done
 
       - name: Guard existing release/tag
         env:
