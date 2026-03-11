@@ -214,6 +214,26 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve previous release tag
+        id: previous_release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          previous_tag="$({
+            gh api --paginate "/repos/${REPO}/releases?per_page=100" \
+              | jq -r '.[] | select(.draft == false) | .tag_name'
+            echo "${TAG}"
+          } | awk 'NF' | sort -Vu | awk -v tag="${TAG}" '$0 == tag { print prev; exit } { prev=$0 }')"
+
+          if [[ -n "${previous_tag}" ]]; then
+            echo "previous_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
+            echo "Anchoring generated release notes to ${previous_tag}."
+          else
+            echo "No previous published release tag found; generated release notes will cover full repository history."
+          fi
+
       - name: Download selected artifact
         run: |
           set -euo pipefail
@@ -229,8 +249,10 @@ jobs:
 
       - name: Create GitHub release
         env:
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
           NOTES: ${{ inputs.notes }}
           PRERELEASE: ${{ inputs.prerelease }}
+          PREVIOUS_TAG: ${{ steps.previous_release.outputs.previous_tag }}
           RELEASE_NAME: ${{ inputs.release_name }}
           TAG: ${{ inputs.tag }}
         run: |
@@ -239,6 +261,14 @@ jobs:
 
           title="${RELEASE_NAME:-${TAG}}"
           assets=(release-assets/*)
+          notes_file=""
+
+          cleanup() {
+            if [[ -n "${notes_file}" ]]; then
+              rm -f "${notes_file}"
+            fi
+          }
+          trap cleanup EXIT
 
           if [[ ${#assets[@]} -eq 0 ]]; then
             echo "No release assets were downloaded." >&2
@@ -249,7 +279,7 @@ jobs:
             release create "${TAG}"
             --repo "${REPO}"
             --title "${title}"
-            --target "${{ steps.resolve.outputs.head_sha }}"
+            --target "${HEAD_SHA}"
           )
 
           if [[ "${PRERELEASE}" == "true" ]]; then
@@ -259,7 +289,20 @@ jobs:
           if [[ -n "${NOTES}" ]]; then
             args+=(--notes "${NOTES}")
           else
-            args+=(--generate-notes)
+            notes_file="$(mktemp)"
+            api_args=(
+              --method POST
+              "/repos/${REPO}/releases/generate-notes"
+              -f "tag_name=${TAG}"
+              -f "target_commitish=${HEAD_SHA}"
+            )
+
+            if [[ -n "${PREVIOUS_TAG}" ]]; then
+              api_args+=( -f "previous_tag_name=${PREVIOUS_TAG}" )
+            fi
+
+            gh api "${api_args[@]}" | jq -r '.body' > "${notes_file}"
+            args+=(--notes-file "${notes_file}")
           fi
 
           args+=("${assets[@]}")
@@ -268,6 +311,7 @@ jobs:
 
       - name: Summarize release
         env:
+          PREVIOUS_TAG: ${{ steps.previous_release.outputs.previous_tag }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -279,5 +323,10 @@ jobs:
             echo "- Source run: ${{ steps.resolve.outputs.run_url }}"
             echo "- Source commit: \`${{ steps.resolve.outputs.head_sha }}\`"
             echo "- Artifact: \`${{ steps.resolve.outputs.artifact_name }}\`"
+            if [[ -n "${PREVIOUS_TAG}" ]]; then
+              echo "- Generated notes delta start: \`${PREVIOUS_TAG}\`"
+            else
+              echo "- Generated notes delta start: _none (first published release)_"
+            fi
             echo "- Release: https://github.com/${REPO}/releases/tag/${TAG}"
           } >> "$GITHUB_STEP_SUMMARY"

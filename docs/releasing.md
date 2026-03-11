@@ -36,11 +36,12 @@ versioned GitHub Release.
 - `artifact_name` *(optional)* — artifact to attach; defaults to
   `glowback-engine-linux-x86_64`
 - `prerelease` *(optional)* — mark the release as a prerelease
-- `notes` *(optional)* — custom release notes; if omitted, GitHub generates them
+- `notes` *(optional)* — custom release notes; if omitted, the workflow uses
+  GitHub-generated notes anchored to the previous published release tag
 
-### Selection behavior
+### Source artifact selection
 
-If you leave `run_id` empty, the workflow now:
+If `run_id` is blank, the workflow:
 
 1. snapshots the current upstream `main` HEAD commit when the release is
    dispatched,
@@ -50,10 +51,10 @@ If you leave `run_id` empty, the workflow now:
 4. waits up to 30 minutes for that run to finish successfully and expose the
    selected artifact.
 
-It does **not** fall back to an older successful run from a different commit, so
-releases cannot silently publish stale assets.
+The workflow does **not** fall back to an older successful run from a different
+commit, so it cannot silently publish stale assets.
 
-If you provide `run_id`, the workflow uses that exact build — as long as it:
+If `run_id` is provided, the workflow uses that exact build only if it:
 
 - belongs to the upstream repository running the release,
 - is a `rust.yml` run,
@@ -63,6 +64,20 @@ If you provide `run_id`, the workflow uses that exact build — as long as it:
 
 The release workflow never rebuilds the binary. It reuses the artifact that CI
 already produced.
+
+### Release-note generation
+
+If `notes` is blank, the workflow resolves the previous published release from
+GitHub, sorts published releases by version, and sends the previous tag to the
+`releases/generate-notes` API as `previous_tag_name`.
+
+In practice:
+
+- each release note body covers the delta from the previous published release,
+- release notes do not re-list the full repository history once the project has
+  an established release baseline, and
+- the first published release has no previous tag, so its generated notes cover
+  the history up to that release.
 
 ## Recommended release process
 
