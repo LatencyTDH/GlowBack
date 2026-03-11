@@ -18,7 +18,7 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 GlowBack provides a fast, realistic backtesting engine with data management, storage, and analytics. It includes:
 
 - Event‑driven simulation engine with slippage/latency/commission models
-- Data ingestion (CSV, Alpha Vantage, sample data)
+- Data ingestion (CSV, Alpha Vantage, explicit sample/demo data)
 - Arrow/Parquet columnar storage and SQLite metadata catalog
 - Strategy library (4 built‑in strategies)
 - Python bindings (async support)
@@ -113,9 +113,11 @@ See the [Deployment Guide](docs/deployment.md) for production configuration.
 import glowback
 
 manager = glowback.PyDataManager()
-manager.add_sample_provider()
 manager.add_csv_provider("/path/to/data")
 manager.add_alpha_vantage_provider("your_api_key")
+
+# Sample/demo data must be opted into explicitly.
+manager.add_sample_provider()
 
 bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z", "day")
 ```

@@ -813,7 +813,6 @@ dependencies = [
  "chrono",
  "gb-data",
  "gb-types",
- "rand",
  "rust_decimal",
  "serde",
  "tokio",

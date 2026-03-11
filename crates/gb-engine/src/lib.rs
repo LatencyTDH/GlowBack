@@ -5,9 +5,9 @@ pub mod engine;
 pub mod execution;
 pub mod simulator;
 
-use gb_data::DataManager;
-use gb_types::{BacktestConfig, BacktestResult, GbResult, Strategy, Symbol};
-use tracing::{error, info};
+use gb_data::{DataManager, SampleDataProvider};
+use gb_types::{BacktestConfig, BacktestResult, DataError, GbResult, Strategy, Symbol};
+use tracing::info;
 
 // Re-export the Engine for direct use
 pub use engine::Engine;
@@ -19,12 +19,31 @@ pub struct BacktestEngine {
     data_manager: DataManager,
 }
 
+fn uses_explicit_sample_data_source(config: &BacktestConfig) -> bool {
+    matches!(
+        config
+            .data_settings
+            .data_source
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "sample" | "sample-data" | "demo" | "mock"
+    )
+}
+
 impl BacktestEngine {
     /// Create a new backtesting engine
     pub async fn new(config: BacktestConfig) -> GbResult<Self> {
         info!("Initializing GlowBack backtesting engine");
 
-        let data_manager = DataManager::new().await?;
+        let mut data_manager = DataManager::new().await?;
+        if uses_explicit_sample_data_source(&config) {
+            info!(
+                "Enabling explicit sample data provider for data source '{}'",
+                config.data_settings.data_source
+            );
+            data_manager.add_provider(Box::new(SampleDataProvider::new()));
+        }
 
         Ok(Self {
             config,
@@ -37,8 +56,7 @@ impl BacktestEngine {
         info!("Loading market data for {} symbols", symbols.len());
 
         for symbol in symbols {
-            // Try to load data from data manager
-            let result = self
+            let bars = self
                 .data_manager
                 .load_data(
                     &symbol,
@@ -46,16 +64,18 @@ impl BacktestEngine {
                     self.config.end_date,
                     self.config.resolution,
                 )
-                .await;
+                .await?;
 
-            match result {
-                Ok(bars) => {
-                    info!("Loaded {} bars for {}", bars.len(), symbol);
+            if bars.is_empty() {
+                return Err(DataError::NoDataInRange {
+                    symbol: symbol.to_string(),
+                    start: self.config.start_date.to_rfc3339(),
+                    end: self.config.end_date.to_rfc3339(),
                 }
-                Err(e) => {
-                    error!("Failed to load data for {}: {}", symbol, e);
-                }
+                .into());
             }
+
+            info!("Loaded {} bars for {}", bars.len(), symbol);
         }
 
         Ok(())
@@ -175,6 +195,7 @@ mod tests {
         config.initial_capital = Decimal::from(100000);
         config.resolution = Resolution::Day;
         config.symbols = vec![Symbol::equity("AAPL"), Symbol::equity("GOOGL")];
+        config.data_settings.data_source = "sample".to_string();
 
         config
     }
@@ -458,6 +479,7 @@ mod tests {
         config.end_date = Utc::now();
 
         let mut data_manager = DataManager::new().await.unwrap();
+        data_manager.add_provider(Box::new(SampleDataProvider::new()));
         let strategy = Box::new(BuyAndHoldStrategy::new());
 
         let engine_result = Engine::new(config, &mut data_manager, strategy).await;
@@ -471,6 +493,40 @@ mod tests {
 
         // Engine should properly track results
         assert!(backtest_result.final_portfolio.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_load_market_data_fails_when_data_is_missing() {
+        let mut config = create_test_config();
+        config.data_settings.data_source = "default".to_string();
+
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        let missing_symbol = Symbol::equity("NO_DATA_SENTINEL");
+
+        let result = engine.load_market_data(vec![missing_symbol.clone()]).await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("NO_DATA_SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn test_strategy_backtest_fails_without_explicit_sample_opt_in() {
+        use gb_types::BuyAndHoldStrategy;
+
+        let mut config = create_test_config();
+        config.data_settings.data_source = "default".to_string();
+        config.symbols = vec![Symbol::equity("NO_DATA_SENTINEL")];
+
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        let strategy = Box::new(BuyAndHoldStrategy::new());
+
+        let result = engine.run_with_strategy(strategy).await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("failed to load required market data"));
+        assert!(error.contains("NO_DATA_SENTINEL"));
     }
 
     #[tokio::test]
@@ -582,6 +638,7 @@ mod tests {
         config.initial_capital = Decimal::from(50000);
         config.resolution = Resolution::Day;
         config.symbols = vec![Symbol::crypto("BTC-USD"), Symbol::crypto("ETH-USD")];
+        config.data_settings.data_source = "sample".to_string();
         config
     }
 
