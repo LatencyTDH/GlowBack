@@ -15,7 +15,10 @@ from .adapter import MockEngineAdapter
 from .auth import require_api_key, validate_api_key
 from .models import BacktestRequest, BacktestResult, BacktestStatus, RunState
 from .optimization_models import OptimizationRequest, OptimizationResult, OptimizationState, OptimizationStatus
-from .optimization_store import OptimizationStore
+from .optimization_store import (
+    OPTIMIZATION_BACKEND_UNAVAILABLE_ERROR,
+    OptimizationStore,
+)
 from .rate_limit import rate_limit_check
 from .store import RunStore
 
@@ -319,10 +322,15 @@ async def stream_backtest(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_optimization(request: OptimizationRequest) -> OptimizationStatus:
-    """Create and start a new parameter-search optimization run."""
-    status_obj = await opt_store.create(request)
-    asyncio.create_task(opt_store.run_optimization(status_obj.optimization_id))
-    return status_obj
+    """Reject optimization creation until a real execution backend exists."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail=(
+            f"{OPTIMIZATION_BACKEND_UNAVAILABLE_ERROR} "
+            "POST /optimizations is disabled until the API is connected to the "
+            "engine and honors base_backtest/ray_cluster inputs."
+        ),
+    )
 
 
 @app.get("/optimizations", response_model=list[OptimizationStatus])
