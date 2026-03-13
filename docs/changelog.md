@@ -7,3 +7,4 @@
 - Docs site created and expanded
 - CI and workflow improvements
 - Added a manual GitHub release workflow that publishes versioned releases from a previously built CI artifact.
+- Fixed Parquet storage writes to merge existing and incoming bar history by timestamp instead of truncating previously stored data on refresh.
