@@ -36,8 +36,16 @@ impl BacktestEngine {
     pub async fn new(config: BacktestConfig) -> GbResult<Self> {
         info!("Initializing GlowBack backtesting engine");
 
-        let mut data_manager = DataManager::new().await?;
-        if uses_explicit_sample_data_source(&config) {
+        let use_sample_data = uses_explicit_sample_data_source(&config);
+        let mut data_manager = if use_sample_data {
+            // Sample/demo data is synthetic, so keeping it in an isolated
+            // ephemeral store avoids test flakiness from concurrent runs
+            // sharing one on-disk catalog/parquet directory.
+            DataManager::new_ephemeral("glowback-sample").await?
+        } else {
+            DataManager::new().await?
+        };
+        if use_sample_data {
             info!(
                 "Enabling explicit sample data provider for data source '{}'",
                 config.data_settings.data_source
