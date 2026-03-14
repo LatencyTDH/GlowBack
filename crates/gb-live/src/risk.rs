@@ -69,6 +69,8 @@ struct SessionState {
     recent_orders: Vec<DateTime<Utc>>,
     /// Position quantities keyed by symbol.
     positions: HashMap<Symbol, Decimal>,
+    /// Latest known marks keyed by symbol.
+    marks: HashMap<Symbol, Decimal>,
     /// Starting equity for the current trading day.
     start_of_day_equity: Decimal,
     /// Whether the circuit breaker has been tripped.
@@ -93,6 +95,7 @@ impl RiskManager {
             state: SessionState {
                 recent_orders: Vec::new(),
                 positions: HashMap::new(),
+                marks: HashMap::new(),
                 start_of_day_equity: starting_equity,
                 circuit_breaker_tripped: false,
                 circuit_breaker_tripped_at: None,
@@ -269,16 +272,40 @@ impl RiskManager {
     }
 
     fn check_total_exposure(&self, order: &Order, current_price: Decimal) -> RiskCheckResult {
-        let order_notional = order.quantity * current_price;
+        let delta = match order.side {
+            Side::Buy => order.quantity,
+            Side::Sell => -order.quantity,
+        };
 
-        let existing_exposure: Decimal = self
-            .state
-            .positions
-            .values()
-            .map(|q| q.abs() * current_price) // simplified: uses same price
-            .sum();
+        let mut projected_positions = self.state.positions.clone();
+        let new_qty = projected_positions
+            .get(&order.symbol)
+            .copied()
+            .unwrap_or(Decimal::ZERO)
+            + delta;
 
-        let new_exposure = existing_exposure + order_notional;
+        if new_qty == Decimal::ZERO {
+            projected_positions.remove(&order.symbol);
+        } else {
+            projected_positions.insert(order.symbol.clone(), new_qty);
+        }
+
+        let mut new_exposure = Decimal::ZERO;
+        for (symbol, quantity) in projected_positions {
+            let mark = if symbol == order.symbol {
+                current_price
+            } else if let Some(mark) = self.state.marks.get(&symbol).copied() {
+                mark
+            } else {
+                return RiskCheckResult::Rejected {
+                    reason: format!(
+                        "missing mark for existing position {symbol} while computing total exposure"
+                    ),
+                };
+            };
+
+            new_exposure += quantity.abs() * mark;
+        }
 
         if new_exposure > self.config.max_total_exposure {
             return RiskCheckResult::Rejected {
@@ -294,16 +321,37 @@ impl RiskManager {
 
     // -- state updates called by the engine ---------------------------------
 
+    /// Update the latest known mark for a symbol from market data.
+    pub fn update_market_price(&mut self, symbol: &Symbol, price: Decimal) {
+        self.state.marks.insert(symbol.clone(), price);
+    }
+
     /// Update internal position tracking after a fill.
-    pub fn update_position(&mut self, symbol: &Symbol, side: Side, quantity: Decimal) {
-        let entry = self
-            .state
-            .positions
-            .entry(symbol.clone())
-            .or_insert(Decimal::ZERO);
-        match side {
-            Side::Buy => *entry += quantity,
-            Side::Sell => *entry -= quantity,
+    pub fn update_position(
+        &mut self,
+        symbol: &Symbol,
+        side: Side,
+        quantity: Decimal,
+        fill_price: Decimal,
+    ) {
+        let new_qty = {
+            let entry = self
+                .state
+                .positions
+                .entry(symbol.clone())
+                .or_insert(Decimal::ZERO);
+            match side {
+                Side::Buy => *entry += quantity,
+                Side::Sell => *entry -= quantity,
+            }
+            *entry
+        };
+
+        if new_qty == Decimal::ZERO {
+            self.state.positions.remove(symbol);
+            self.state.marks.remove(symbol);
+        } else {
+            self.state.marks.insert(symbol.clone(), fill_price);
         }
     }
 
@@ -338,8 +386,12 @@ mod tests {
     use gb_types::orders::{Order, Side};
     use rust_decimal_macros::dec;
 
+    fn equity_symbol(symbol: &str) -> Symbol {
+        Symbol::new(symbol, "NASDAQ", AssetClass::Equity)
+    }
+
     fn test_symbol() -> Symbol {
-        Symbol::new("AAPL", "NASDAQ", AssetClass::Equity)
+        equity_symbol("AAPL")
     }
 
     fn default_risk_manager() -> RiskManager {
@@ -481,20 +533,101 @@ mod tests {
     }
 
     #[test]
+    fn test_total_exposure_uses_per_symbol_marks_for_false_reject_case() {
+        let config = RiskConfig {
+            max_total_exposure: dec!(46_000),
+            max_order_notional: Decimal::from(1_000_000),
+            limits: RiskLimits {
+                position_concentration_limit: dec!(1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut rm = RiskManager::new(config, dec!(100_000));
+        let existing = equity_symbol("MSFT");
+        let incoming = equity_symbol("AAPL");
+
+        rm.update_position(&existing, Side::Buy, dec!(100), dec!(50));
+
+        // True projected exposure = $5k existing + $40k new = $45k, so this
+        // order should pass. The old bug used the incoming symbol's $400 price
+        // for every position and falsely rejected it as $80k exposure.
+        let order = Order::market_order(incoming, Side::Buy, dec!(100), "test".into());
+        let result = rm.check_order(&order, dec!(400), dec!(100_000));
+        assert!(result.is_approved(), "expected approval, got {result:?}");
+    }
+
+    #[test]
+    fn test_total_exposure_uses_per_symbol_marks_for_false_approve_case() {
+        let config = RiskConfig {
+            max_total_exposure: dec!(42_000),
+            max_order_notional: Decimal::from(1_000_000),
+            limits: RiskLimits {
+                position_concentration_limit: dec!(1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut rm = RiskManager::new(config, dec!(100_000));
+        let existing = equity_symbol("AAPL");
+        let incoming = equity_symbol("MSFT");
+
+        rm.update_position(&existing, Side::Buy, dec!(100), dec!(400));
+
+        // True projected exposure = $40k existing + $5k new = $45k, so this
+        // order should be rejected. The old bug used the incoming symbol's $50
+        // price for every position and falsely approved it as $10k exposure.
+        let order = Order::market_order(incoming, Side::Buy, dec!(100), "test".into());
+        let result = rm.check_order(&order, dec!(50), dec!(100_000));
+        assert!(!result.is_approved(), "expected rejection, got {result:?}");
+    }
+
+    #[test]
+    fn test_total_exposure_uses_latest_marks_after_market_data_updates() {
+        let config = RiskConfig {
+            max_total_exposure: dec!(25_000),
+            max_order_notional: Decimal::from(1_000_000),
+            limits: RiskLimits {
+                position_concentration_limit: dec!(1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut rm = RiskManager::new(config, dec!(100_000));
+        let held = test_symbol();
+        let incoming = equity_symbol("MSFT");
+
+        rm.update_position(&held, Side::Buy, dec!(100), dec!(100));
+        rm.update_market_price(&held, dec!(200));
+
+        // The latest mark doubles the held position to $20k. Adding a new $6k
+        // order should now be rejected at $26k total exposure.
+        let order = Order::market_order(incoming, Side::Buy, dec!(60), "test".into());
+        let result = rm.check_order(&order, dec!(100), dec!(100_000));
+        assert!(!result.is_approved(), "expected rejection, got {result:?}");
+    }
+
+    #[test]
     fn test_update_position_tracking() {
         let mut rm = default_risk_manager();
         let sym = test_symbol();
 
-        rm.update_position(&sym, Side::Buy, dec!(100));
+        rm.update_position(&sym, Side::Buy, dec!(100), dec!(150));
         assert_eq!(
             rm.state.positions.get(&sym).copied().unwrap_or_default(),
             dec!(100)
         );
+        assert_eq!(rm.state.marks.get(&sym).copied(), Some(dec!(150)));
 
-        rm.update_position(&sym, Side::Sell, dec!(40));
+        rm.update_position(&sym, Side::Sell, dec!(40), dec!(145));
         assert_eq!(
             rm.state.positions.get(&sym).copied().unwrap_or_default(),
             dec!(60)
         );
+        assert_eq!(rm.state.marks.get(&sym).copied(), Some(dec!(145)));
+
+        rm.update_position(&sym, Side::Sell, dec!(60), dec!(140));
+        assert!(!rm.state.positions.contains_key(&sym));
+        assert!(!rm.state.marks.contains_key(&sym));
     }
 }

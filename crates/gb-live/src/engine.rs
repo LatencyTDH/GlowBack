@@ -188,6 +188,13 @@ impl<B: Broker, S: Strategy> LiveEngine<B, S> {
             .await
             .map_err(|e| format!("broker market data update failed: {e}"))?;
 
+        let price = match &event {
+            MarketEvent::Bar(bar) => bar.close,
+            MarketEvent::Tick(tick) => tick.price,
+            MarketEvent::Quote { bid, ask, .. } => (*bid + *ask) / Decimal::from(2),
+        };
+        self.risk_manager.update_market_price(&symbol, price);
+
         // Update strategy context's market data buffer.
         {
             let buffer = self
@@ -220,7 +227,7 @@ impl<B: Broker, S: Strategy> LiveEngine<B, S> {
 
         // Update risk manager position tracking
         self.risk_manager
-            .update_position(&fill.symbol, fill.side, fill.quantity);
+            .update_position(&fill.symbol, fill.side, fill.quantity, fill.price);
 
         // Remove from pending if fully filled
         if let Some(order) = self.pending_orders.get(&fill.order_id) {
