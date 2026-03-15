@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Portfolio correctness:** `Position::apply_fill` now preserves the residual leg when a fill crosses through flat, so long→short and short→long reversals keep the reopened position with the crossing fill's basis; added reversal and exact-close regression coverage in `gb-types`.
 - **Live risk safety:** Total exposure checks in `gb-live` now price each held symbol from its own latest mark instead of reusing the incoming order's price across the whole book; added multi-symbol regression tests for both false-approve and false-reject cases.
 - **CI stability:** Sample/demo backtests now use isolated ephemeral data directories, preventing concurrent test runs from sharing one on-disk catalog/parquet store and intermittently failing multi-symbol crypto tests.
 - **API safety:** `/optimizations` now fails closed with `501 Not Implemented` until the endpoint is wired to a real backtest backend, instead of fabricating synthetic trial metrics from RNG while accepting `base_backtest` / `ray_cluster` inputs.
