@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -31,67 +31,74 @@ impl Position {
             last_updated: Utc::now(),
         }
     }
-    
+
     pub fn is_long(&self) -> bool {
         self.quantity > Decimal::ZERO
     }
-    
+
     pub fn is_short(&self) -> bool {
         self.quantity < Decimal::ZERO
     }
-    
+
     pub fn is_flat(&self) -> bool {
         self.quantity == Decimal::ZERO
     }
-    
+
     pub fn apply_fill(&mut self, fill: &Fill) {
         let fill_quantity = match fill.side {
             Side::Buy => fill.quantity,
             Side::Sell => -fill.quantity,
         };
-        
-        let new_quantity = self.quantity + fill_quantity;
-        
+
+        let current_quantity = self.quantity;
+        let new_quantity = current_quantity + fill_quantity;
+
         // Handle position changes
-        if self.quantity == Decimal::ZERO {
+        if current_quantity == Decimal::ZERO {
             // Opening new position
             self.quantity = new_quantity;
             self.average_price = fill.price;
-        } else if (self.quantity > Decimal::ZERO && fill_quantity > Decimal::ZERO) || 
-                   (self.quantity < Decimal::ZERO && fill_quantity < Decimal::ZERO) {
+        } else if (current_quantity > Decimal::ZERO && fill_quantity > Decimal::ZERO)
+            || (current_quantity < Decimal::ZERO && fill_quantity < Decimal::ZERO)
+        {
             // Adding to existing position
-            let total_cost = self.quantity.abs() * self.average_price + fill_quantity.abs() * fill.price;
-            let total_quantity = self.quantity.abs() + fill_quantity.abs();
+            let total_cost =
+                current_quantity.abs() * self.average_price + fill_quantity.abs() * fill.price;
+            let total_quantity = current_quantity.abs() + fill_quantity.abs();
             self.average_price = total_cost / total_quantity;
             self.quantity = new_quantity;
         } else {
-            // Reducing or closing position
-            let closed_quantity = fill_quantity.abs().min(self.quantity.abs());
-            let remaining_quantity = self.quantity.abs() - closed_quantity;
-            
-            // Calculate realized P&L
-            let realized_pnl = match self.quantity > Decimal::ZERO {
-                true => (fill.price - self.average_price) * closed_quantity,
-                false => (self.average_price - fill.price) * closed_quantity,
+            // Reducing, closing, or reversing position
+            let closed_quantity = fill_quantity.abs().min(current_quantity.abs());
+
+            // Calculate realized P&L for the closed leg
+            let realized_pnl = if current_quantity > Decimal::ZERO {
+                (fill.price - self.average_price) * closed_quantity
+            } else {
+                (self.average_price - fill.price) * closed_quantity
             };
             self.realized_pnl += realized_pnl;
-            
-            if remaining_quantity == Decimal::ZERO {
-                // Position closed
+
+            if new_quantity == Decimal::ZERO {
+                // Position closed exactly
                 self.quantity = Decimal::ZERO;
                 self.average_price = Decimal::ZERO;
+            } else if (current_quantity > Decimal::ZERO && new_quantity > Decimal::ZERO)
+                || (current_quantity < Decimal::ZERO && new_quantity < Decimal::ZERO)
+            {
+                // Position reduced but still on the same side
+                self.quantity = new_quantity;
             } else {
-                // Position reduced
-                self.quantity = match self.quantity > Decimal::ZERO {
-                    true => remaining_quantity,
-                    false => -remaining_quantity,
-                };
+                // Position crossed through flat and reopened on the opposite side.
+                // The residual leg should carry the crossing fill's price as its new basis.
+                self.quantity = new_quantity;
+                self.average_price = fill.price;
             }
         }
-        
+
         self.last_updated = fill.executed_at;
     }
-    
+
     pub fn update_market_price(&mut self, market_price: Decimal) {
         self.market_value = self.quantity.abs() * market_price;
         self.unrealized_pnl = match self.quantity {
@@ -101,7 +108,7 @@ impl Position {
         };
         self.last_updated = Utc::now();
     }
-    
+
     pub fn total_pnl(&self) -> Decimal {
         self.realized_pnl + self.unrealized_pnl
     }
@@ -139,27 +146,28 @@ impl Portfolio {
             daily_returns: Vec::new(),
         }
     }
-    
+
     pub fn apply_fill(&mut self, fill: &Fill) {
         // Update cash
         self.cash += fill.net_amount();
         self.total_commissions += fill.commission;
-        
+
         // Update position
-        let position = self.positions
+        let position = self
+            .positions
             .entry(fill.symbol.clone())
             .or_insert_with(|| Position::new(fill.symbol.clone()));
         position.apply_fill(fill);
-        
+
         // Remove flat positions
         if position.is_flat() {
             self.positions.remove(&fill.symbol);
         }
-        
+
         self.last_updated = fill.executed_at;
         self.update_totals();
     }
-    
+
     pub fn update_market_prices(&mut self, prices: &HashMap<Symbol, Decimal>) {
         for (symbol, price) in prices {
             if let Some(position) = self.positions.get_mut(symbol) {
@@ -168,34 +176,28 @@ impl Portfolio {
         }
         self.update_totals();
     }
-    
+
     fn update_totals(&mut self) {
-        self.total_realized_pnl = self.positions.values()
-            .map(|p| p.realized_pnl)
-            .sum();
-            
-        self.total_unrealized_pnl = self.positions.values()
-            .map(|p| p.unrealized_pnl)
-            .sum();
-            
+        self.total_realized_pnl = self.positions.values().map(|p| p.realized_pnl).sum();
+
+        self.total_unrealized_pnl = self.positions.values().map(|p| p.unrealized_pnl).sum();
+
         self.total_pnl = self.total_realized_pnl + self.total_unrealized_pnl;
-        
-        let market_value: Decimal = self.positions.values()
-            .map(|p| p.market_value)
-            .sum();
-            
+
+        let market_value: Decimal = self.positions.values().map(|p| p.market_value).sum();
+
         self.total_equity = self.cash + market_value;
     }
-    
+
     pub fn get_position(&self, symbol: &Symbol) -> Option<&Position> {
         self.positions.get(symbol)
     }
-    
+
     pub fn get_available_cash(&self) -> Decimal {
         // Simple implementation - could add margin calculations
         self.cash.max(Decimal::ZERO)
     }
-    
+
     pub fn get_total_return(&self) -> Decimal {
         if self.initial_capital > Decimal::ZERO {
             (self.total_equity - self.initial_capital) / self.initial_capital
@@ -203,7 +205,7 @@ impl Portfolio {
             Decimal::ZERO
         }
     }
-    
+
     pub fn add_daily_return(&mut self, date: DateTime<Utc>, daily_return: Decimal) {
         self.daily_returns.push(DailyReturn {
             date,
@@ -212,57 +214,58 @@ impl Portfolio {
             cumulative_return: self.get_total_return(),
         });
     }
-    
+
     pub fn get_sharpe_ratio(&self, risk_free_rate: Decimal) -> Option<Decimal> {
         if self.daily_returns.len() < 2 {
             return None;
         }
-        
-        let returns: Vec<Decimal> = self.daily_returns.iter()
-            .map(|r| r.daily_return)
-            .collect();
-            
+
+        let returns: Vec<Decimal> = self.daily_returns.iter().map(|r| r.daily_return).collect();
+
         let mean_return = returns.iter().sum::<Decimal>() / Decimal::from(returns.len());
         let excess_return = mean_return - risk_free_rate / Decimal::from(252); // Daily risk-free rate
-        
-        let variance = returns.iter()
+
+        let variance = returns
+            .iter()
             .map(|r| {
                 let diff = *r - mean_return;
                 let diff_f64 = diff.to_f64().unwrap_or(0.0);
                 Decimal::from_f64_retain(diff_f64 * diff_f64).unwrap_or_default()
             })
-            .sum::<Decimal>() / Decimal::from(returns.len() - 1);
-            
+            .sum::<Decimal>()
+            / Decimal::from(returns.len() - 1);
+
         let variance_f64 = variance.to_f64().unwrap_or(0.0);
         let std_dev = Decimal::from_f64_retain(variance_f64.sqrt()).unwrap_or_default();
-        
+
         if std_dev > Decimal::ZERO {
-            let annualization_factor = Decimal::from_f64_retain((252.0_f64).sqrt()).unwrap_or_default();
+            let annualization_factor =
+                Decimal::from_f64_retain((252.0_f64).sqrt()).unwrap_or_default();
             Some(excess_return / std_dev * annualization_factor) // Annualized
         } else {
             None
         }
     }
-    
+
     pub fn get_max_drawdown(&self) -> Decimal {
         if self.daily_returns.is_empty() {
             return Decimal::ZERO;
         }
-        
+
         let mut max_value = self.initial_capital;
         let mut max_drawdown = Decimal::ZERO;
-        
+
         for daily_return in &self.daily_returns {
             if daily_return.portfolio_value > max_value {
                 max_value = daily_return.portfolio_value;
             }
-            
+
             let drawdown = (max_value - daily_return.portfolio_value) / max_value;
             if drawdown > max_drawdown {
                 max_drawdown = drawdown;
             }
         }
-        
+
         max_drawdown
     }
 }
@@ -279,10 +282,21 @@ pub struct DailyReturn {
 /// Portfolio event for the event-driven engine
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PortfolioEvent {
-    PositionOpened { symbol: Symbol, position: Position },
-    PositionClosed { symbol: Symbol, realized_pnl: Decimal },
-    PositionUpdated { symbol: Symbol, position: Position },
-    DailySnapshot { portfolio: Portfolio },
+    PositionOpened {
+        symbol: Symbol,
+        position: Position,
+    },
+    PositionClosed {
+        symbol: Symbol,
+        realized_pnl: Decimal,
+    },
+    PositionUpdated {
+        symbol: Symbol,
+        position: Position,
+    },
+    DailySnapshot {
+        portfolio: Portfolio,
+    },
 }
 
 /// Risk management parameters
@@ -301,8 +315,89 @@ impl Default for RiskLimits {
             max_position_size: Decimal::from(10000),
             max_portfolio_leverage: Decimal::from(2),
             max_daily_loss: Decimal::new(5, 2), // 5%
-            max_drawdown: Decimal::new(20, 2), // 20%
+            max_drawdown: Decimal::new(20, 2),  // 20%
             position_concentration_limit: Decimal::new(25, 2), // 25%
         }
     }
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Portfolio, Position};
+    use crate::market::Symbol;
+    use crate::orders::{Fill, Side};
+    use chrono::Utc;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+    use uuid::Uuid;
+
+    fn test_fill(symbol: &Symbol, side: Side, quantity: Decimal, price: Decimal) -> Fill {
+        Fill {
+            id: Uuid::new_v4(),
+            order_id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side,
+            quantity,
+            price,
+            commission: Decimal::ZERO,
+            executed_at: Utc::now(),
+            strategy_id: "test-strategy".to_string(),
+        }
+    }
+
+    #[test]
+    fn apply_fill_reopens_long_position_as_short_when_fill_crosses_flat() {
+        let symbol = Symbol::equity("AAPL");
+        let mut position = Position::new(symbol.clone());
+
+        position.apply_fill(&test_fill(&symbol, Side::Buy, dec!(10), dec!(100)));
+        position.apply_fill(&test_fill(&symbol, Side::Sell, dec!(15), dec!(110)));
+
+        assert_eq!(position.quantity, dec!(-5));
+        assert_eq!(position.average_price, dec!(110));
+        assert_eq!(position.realized_pnl, dec!(100));
+    }
+
+    #[test]
+    fn apply_fill_reopens_short_position_as_long_when_fill_crosses_flat() {
+        let symbol = Symbol::equity("TSLA");
+        let mut position = Position::new(symbol.clone());
+
+        position.apply_fill(&test_fill(&symbol, Side::Sell, dec!(10), dec!(200)));
+        position.apply_fill(&test_fill(&symbol, Side::Buy, dec!(15), dec!(180)));
+
+        assert_eq!(position.quantity, dec!(5));
+        assert_eq!(position.average_price, dec!(180));
+        assert_eq!(position.realized_pnl, dec!(200));
+    }
+
+    #[test]
+    fn apply_fill_closes_position_exactly_to_flat() {
+        let symbol = Symbol::equity("MSFT");
+        let mut position = Position::new(symbol.clone());
+
+        position.apply_fill(&test_fill(&symbol, Side::Buy, dec!(10), dec!(50)));
+        position.apply_fill(&test_fill(&symbol, Side::Sell, dec!(10), dec!(55)));
+
+        assert!(position.is_flat());
+        assert_eq!(position.average_price, Decimal::ZERO);
+        assert_eq!(position.realized_pnl, dec!(50));
+    }
+
+    #[test]
+    fn portfolio_apply_fill_keeps_residual_reversal_position() {
+        let symbol = Symbol::equity("NVDA");
+        let mut portfolio = Portfolio::new("acct-1".to_string(), dec!(1000));
+
+        portfolio.apply_fill(&test_fill(&symbol, Side::Buy, dec!(10), dec!(100)));
+        portfolio.apply_fill(&test_fill(&symbol, Side::Sell, dec!(15), dec!(110)));
+
+        let position = portfolio
+            .get_position(&symbol)
+            .expect("residual short position should remain open");
+        assert_eq!(position.quantity, dec!(-5));
+        assert_eq!(position.average_price, dec!(110));
+        assert_eq!(portfolio.total_realized_pnl, dec!(100));
+        assert_eq!(portfolio.cash, dec!(1650));
+    }
+}
