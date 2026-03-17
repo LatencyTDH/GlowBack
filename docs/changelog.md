@@ -6,6 +6,7 @@
 - **Live risk safety:** Total exposure checks in `gb-live` now price each held symbol from its own latest mark instead of reusing the incoming order's price across the whole book; added multi-symbol regression tests for both false-approve and false-reject cases.
 - **CI stability:** Sample/demo backtests now use isolated ephemeral data directories, preventing concurrent test runs from sharing one on-disk catalog/parquet store and intermittently failing multi-symbol crypto tests.
 - **API safety:** `/optimizations` now fails closed with `501 Not Implemented` until the endpoint is wired to a real backtest backend, instead of fabricating synthetic trial metrics from RNG while accepting `base_backtest` / `ray_cluster` inputs.
+- **CI coverage:** Normal PR CI now includes `gb-live`, `gb-risk`, and `gb-optimizer` in the Rust test matrix, adds lightweight API/UI Python validation, and gates release artifacts on those checks passing.
 - **Breaking (build only):** Replaced DuckDB with SQLite (`rusqlite`) for catalog metadata storage. No schema or behavior changes — same SQL, dramatically faster builds (~20 min → ~47s) and smaller artifacts (~3.5 GB → ~1.1 GB).
 - Added `[profile.dev] debug = "line-tables-only"` to reduce debug build size.
 - Docs site created and expanded
