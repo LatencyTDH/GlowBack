@@ -486,7 +486,9 @@ mod tests {
         config.start_date = Utc::now() - Duration::days(5);
         config.end_date = Utc::now();
 
-        let mut data_manager = DataManager::new().await.unwrap();
+        let mut data_manager = DataManager::new_ephemeral("gb-engine-direct-test")
+            .await
+            .unwrap();
         data_manager.add_provider(Box::new(SampleDataProvider::new()));
         let strategy = Box::new(BuyAndHoldStrategy::new());
 
