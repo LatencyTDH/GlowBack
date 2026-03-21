@@ -17,3 +17,10 @@ chrono = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 rust_decimal = { workspace = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "strategy_context"
+harness = false

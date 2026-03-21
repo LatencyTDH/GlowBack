@@ -5,11 +5,14 @@ use chrono::{DateTime, Duration, Utc};
 use gb_data::DataManager;
 use gb_types::{
     BacktestConfig, BacktestError, BacktestResult, Bar, EquityCurvePoint, Fill, GbResult,
-    MarketEvent, Order, Portfolio, Strategy, StrategyContext, StrategyMetrics, Symbol,
+    MarketDataBuffer, MarketEvent, Order, Portfolio, Strategy, StrategyContext, StrategyMetrics,
+    Symbol,
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
+
+const STRATEGY_MARKET_DATA_WINDOW: usize = 100;
 
 /// Enhanced backtesting engine with event-driven simulation
 pub struct Engine {
@@ -18,7 +21,10 @@ pub struct Engine {
     strategy: Box<dyn Strategy>,
     current_time: DateTime<Utc>,
     market_data: HashMap<Symbol, Vec<Bar>>,
+    next_bar_indices: HashMap<Symbol, usize>,
+    current_market_bars: Vec<(Symbol, Bar)>,
     pending_orders: Vec<Order>,
+    strategy_context: StrategyContext,
     strategy_metrics: StrategyMetrics,
     equity_curve: Vec<EquityCurvePoint>,
     equity_peak: Decimal,
@@ -82,14 +88,34 @@ impl Engine {
             .into());
         }
 
+        let mut strategy_context = StrategyContext::new(
+            strategy.get_config().strategy_id.clone(),
+            config.initial_capital,
+        );
+        strategy_context.current_time = config.start_date;
+        strategy_context.portfolio = portfolio.clone();
+        for symbol in market_data.keys() {
+            strategy_context.market_data.insert(
+                symbol.clone(),
+                MarketDataBuffer::new(symbol.clone(), STRATEGY_MARKET_DATA_WINDOW),
+            );
+        }
+
         Ok(Self {
             current_time: config.start_date,
             equity_peak: config.initial_capital,
+            next_bar_indices: market_data
+                .keys()
+                .cloned()
+                .map(|symbol| (symbol, 0))
+                .collect(),
+            current_market_bars: Vec::new(),
             config,
             portfolio,
             strategy,
             market_data,
             pending_orders: Vec::new(),
+            strategy_context,
             strategy_metrics,
             equity_curve: Vec::new(),
         })
@@ -162,22 +188,46 @@ impl Engine {
 
     /// Process market data for the current time
     async fn process_market_data(&mut self) -> GbResult<()> {
-        for (symbol, bars) in &self.market_data {
-            // Find bars for current time
-            let current_bars: Vec<&Bar> = bars
-                .iter()
-                .filter(|bar| bar.timestamp.date_naive() == self.current_time.date_naive())
-                .collect();
+        self.strategy_context.current_time = self.current_time;
+        self.current_market_bars.clear();
 
-            for bar in current_bars {
-                let _market_event = MarketEvent::Bar(bar.clone());
+        let current_date = self.current_time.date_naive();
+        for symbol in self.config.symbols.clone() {
+            let Some(bars) = self.market_data.get(&symbol) else {
+                continue;
+            };
+            let next_index = self.next_bar_indices.entry(symbol.clone()).or_insert(0);
 
-                debug!(
-                    "Market data: {} at {}: {}",
-                    symbol, bar.timestamp, bar.close
-                );
+            while let Some(bar) = bars.get(*next_index) {
+                let bar_date = bar.timestamp.date_naive();
+                if bar_date < current_date {
+                    *next_index += 1;
+                    continue;
+                }
+                if bar_date > current_date {
+                    break;
+                }
+
+                self.current_market_bars.push((symbol.clone(), bar.clone()));
+                *next_index += 1;
             }
         }
+
+        for (symbol, bar) in &self.current_market_bars {
+            self.strategy_context
+                .market_data
+                .entry(symbol.clone())
+                .or_insert_with(|| {
+                    MarketDataBuffer::new(symbol.clone(), STRATEGY_MARKET_DATA_WINDOW)
+                })
+                .add_event(MarketEvent::Bar(bar.clone()));
+
+            debug!(
+                "Market data: {} at {}: {}",
+                symbol, bar.timestamp, bar.close
+            );
+        }
+
         Ok(())
     }
 
@@ -216,18 +266,25 @@ impl Engine {
             self.pending_orders.remove(index);
         }
 
+        if !order_events_to_process.is_empty() {
+            self.sync_strategy_context_account_state();
+        }
+
         // Notify strategy of order events
         for order_event in order_events_to_process {
-            let context = self.build_strategy_context();
-            match self.strategy.on_order_event(&order_event, &context) {
-                Ok(actions) => {
-                    for action in actions {
-                        self.process_strategy_action(action)?;
-                    }
-                }
+            let actions = match self
+                .strategy
+                .on_order_event(&order_event, &self.strategy_context)
+            {
+                Ok(actions) => actions,
                 Err(e) => {
                     warn!("Strategy on_order_event error: {}", e);
+                    continue;
                 }
+            };
+
+            for action in actions {
+                self.process_strategy_action(action)?;
             }
         }
 
@@ -263,91 +320,48 @@ impl Engine {
 
     /// Update portfolio values with current market prices
     async fn update_portfolio_values(&mut self) -> GbResult<()> {
-        let mut current_prices = HashMap::new();
+        let current_prices = self
+            .current_market_bars
+            .iter()
+            .map(|(symbol, bar)| (symbol.clone(), bar.close))
+            .collect();
 
-        // Collect current prices
-        for (symbol, bars) in &self.market_data {
-            for bar in bars {
-                if bar.timestamp.date_naive() == self.current_time.date_naive() {
-                    current_prices.insert(symbol.clone(), bar.close);
-                    break;
-                }
-            }
-        }
-
-        // Update portfolio with current prices
         self.portfolio.update_market_prices(&current_prices);
+        self.strategy_context.portfolio = self.portfolio.clone();
 
         Ok(())
     }
 
     /// Generate strategy signals by calling the strategy's on_market_event method
     async fn generate_strategy_signals(&mut self) -> GbResult<()> {
-        // Build the current strategy context with market data and portfolio state
-        let context = self.build_strategy_context();
+        let current_bars_to_process = self.current_market_bars.clone();
 
-        // Collect all current bars first to avoid borrow conflicts
-        let mut current_bars_to_process: Vec<(Symbol, Bar)> = Vec::new();
-
-        for symbol in &self.config.symbols.clone() {
-            if let Some(bars) = self.market_data.get(symbol) {
-                for bar in bars.iter() {
-                    if bar.timestamp.date_naive() == self.current_time.date_naive() {
-                        current_bars_to_process.push((symbol.clone(), bar.clone()));
-                    }
-                }
-            }
-        }
-
-        // Now process each bar - no borrow conflict since we own the data
         for (symbol, bar) in current_bars_to_process {
             let market_event = MarketEvent::Bar(bar);
 
-            // Call the strategy's on_market_event method
-            match self.strategy.on_market_event(&market_event, &context) {
-                Ok(actions) => {
-                    for action in actions {
-                        self.process_strategy_action(action)?;
-                    }
-                }
+            let actions = match self
+                .strategy
+                .on_market_event(&market_event, &self.strategy_context)
+            {
+                Ok(actions) => actions,
                 Err(e) => {
                     warn!("Strategy error processing {}: {}", symbol, e);
+                    continue;
                 }
+            };
+
+            for action in actions {
+                self.process_strategy_action(action)?;
             }
         }
 
         Ok(())
     }
 
-    /// Build a complete StrategyContext with current market data and portfolio state
-    fn build_strategy_context(&self) -> StrategyContext {
-        use gb_types::{MarketDataBuffer, MarketEvent as ME};
-
-        let mut context = StrategyContext::new(
-            self.strategy.get_config().strategy_id.clone(),
-            self.config.initial_capital,
-        );
-
-        // Copy portfolio state
-        context.portfolio = self.portfolio.clone();
-        context.current_time = self.current_time;
-        context.pending_orders = self.pending_orders.clone();
-
-        // Build market data buffers for each symbol with historical data up to current time
-        for (symbol, bars) in &self.market_data {
-            let mut buffer = MarketDataBuffer::new(symbol.clone(), 100); // Keep last 100 bars
-
-            // Add all bars up to and including current date
-            for bar in bars {
-                if bar.timestamp <= self.current_time {
-                    buffer.add_event(ME::Bar(bar.clone()));
-                }
-            }
-
-            context.market_data.insert(symbol.clone(), buffer);
-        }
-
-        context
+    fn sync_strategy_context_account_state(&mut self) {
+        self.strategy_context.current_time = self.current_time;
+        self.strategy_context.portfolio = self.portfolio.clone();
+        self.strategy_context.pending_orders = self.pending_orders.clone();
     }
 
     /// Process a single strategy action
@@ -360,11 +374,15 @@ impl Engine {
                     "Strategy placed order: {:?} {} {} at {:?}",
                     order.side, order.quantity, order.symbol, order.order_type
                 );
+                self.strategy_context.pending_orders.push(order.clone());
                 self.pending_orders.push(order);
             }
             StrategyAction::CancelOrder { order_id } => {
                 debug!("Strategy cancelled order: {}", order_id);
                 self.pending_orders.retain(|o| o.id != order_id);
+                self.strategy_context
+                    .pending_orders
+                    .retain(|o| o.id != order_id);
             }
             StrategyAction::Log { level, message } => match level {
                 gb_types::LogLevel::Debug => debug!("[Strategy] {}", message),
@@ -538,17 +556,18 @@ impl Engine {
 
     /// Call strategy's on_day_end method for end-of-day processing
     async fn call_strategy_day_end(&mut self) -> GbResult<()> {
-        let context = self.build_strategy_context();
+        self.sync_strategy_context_account_state();
 
-        match self.strategy.on_day_end(&context) {
-            Ok(actions) => {
-                for action in actions {
-                    self.process_strategy_action(action)?;
-                }
-            }
+        let actions = match self.strategy.on_day_end(&self.strategy_context) {
+            Ok(actions) => actions,
             Err(e) => {
                 warn!("Strategy on_day_end error: {}", e);
+                return Ok(());
             }
+        };
+
+        for action in actions {
+            self.process_strategy_action(action)?;
         }
 
         Ok(())
@@ -556,20 +575,203 @@ impl Engine {
 
     /// Call strategy's on_stop method for cleanup
     async fn call_strategy_stop(&mut self) -> GbResult<()> {
-        let context = self.build_strategy_context();
+        self.sync_strategy_context_account_state();
 
-        match self.strategy.on_stop(&context) {
-            Ok(actions) => {
-                for action in actions {
-                    self.process_strategy_action(action)?;
-                }
-            }
+        let actions = match self.strategy.on_stop(&self.strategy_context) {
+            Ok(actions) => actions,
             Err(e) => {
                 warn!("Strategy on_stop error: {}", e);
+                info!("Strategy stopped");
+                return Ok(());
             }
+        };
+
+        for action in actions {
+            self.process_strategy_action(action)?;
         }
 
         info!("Strategy stopped");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use gb_types::{OrderEvent, Resolution, Side, StrategyAction, StrategyConfig};
+
+    #[derive(Debug, Clone)]
+    struct NoopStrategy {
+        config: StrategyConfig,
+    }
+
+    impl NoopStrategy {
+        fn new() -> Self {
+            Self {
+                config: StrategyConfig::new("noop".to_string(), "Noop Strategy".to_string()),
+            }
+        }
+    }
+
+    impl Strategy for NoopStrategy {
+        fn initialize(&mut self, config: &StrategyConfig) -> Result<(), String> {
+            self.config = config.clone();
+            Ok(())
+        }
+
+        fn on_market_event(
+            &mut self,
+            _event: &MarketEvent,
+            _context: &StrategyContext,
+        ) -> Result<Vec<StrategyAction>, String> {
+            Ok(vec![])
+        }
+
+        fn on_order_event(
+            &mut self,
+            _event: &OrderEvent,
+            _context: &StrategyContext,
+        ) -> Result<Vec<StrategyAction>, String> {
+            Ok(vec![])
+        }
+
+        fn on_day_end(
+            &mut self,
+            _context: &StrategyContext,
+        ) -> Result<Vec<StrategyAction>, String> {
+            Ok(vec![])
+        }
+
+        fn on_stop(&mut self, _context: &StrategyContext) -> Result<Vec<StrategyAction>, String> {
+            Ok(vec![])
+        }
+
+        fn get_config(&self) -> &StrategyConfig {
+            &self.config
+        }
+
+        fn get_metrics(&self) -> StrategyMetrics {
+            StrategyMetrics::new(self.config.strategy_id.clone())
+        }
+    }
+
+    fn ts(day: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 1, day, 0, 0, 0).unwrap()
+    }
+
+    fn test_bar(symbol: &Symbol, day: u32, price: i64) -> Bar {
+        let price = Decimal::from(price);
+        Bar::new(
+            symbol.clone(),
+            ts(day),
+            price,
+            price,
+            price,
+            price,
+            Decimal::from(1_000),
+            Resolution::Day,
+        )
+    }
+
+    fn test_engine(symbol: Symbol, bars: Vec<Bar>) -> Engine {
+        let mut config = BacktestConfig::new(
+            "engine-test".to_string(),
+            StrategyConfig::new("noop".to_string(), "Noop Strategy".to_string()),
+        );
+        config.start_date = ts(1);
+        config.end_date = ts(5);
+        config.initial_capital = Decimal::from(100_000);
+        config.resolution = Resolution::Day;
+        config.symbols = vec![symbol.clone()];
+
+        let portfolio = Portfolio::new("test-account".to_string(), config.initial_capital);
+        let mut strategy_context = StrategyContext::new("noop".to_string(), config.initial_capital);
+        strategy_context.current_time = config.start_date;
+        strategy_context.portfolio = portfolio.clone();
+        strategy_context.market_data.insert(
+            symbol.clone(),
+            MarketDataBuffer::new(symbol.clone(), STRATEGY_MARKET_DATA_WINDOW),
+        );
+
+        Engine {
+            config,
+            portfolio,
+            strategy: Box::new(NoopStrategy::new()),
+            current_time: ts(1),
+            market_data: HashMap::from([(symbol.clone(), bars)]),
+            next_bar_indices: HashMap::from([(symbol.clone(), 0)]),
+            current_market_bars: Vec::new(),
+            pending_orders: Vec::new(),
+            strategy_context,
+            strategy_metrics: StrategyMetrics::new("noop".to_string()),
+            equity_curve: Vec::new(),
+            equity_peak: Decimal::from(100_000),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_market_data_updates_context_incrementally() {
+        let symbol = Symbol::equity("AAPL");
+        let mut engine = test_engine(
+            symbol.clone(),
+            vec![
+                test_bar(&symbol, 1, 101),
+                test_bar(&symbol, 2, 102),
+                test_bar(&symbol, 4, 104),
+            ],
+        );
+
+        engine.process_market_data().await.unwrap();
+        assert_eq!(engine.current_market_bars.len(), 1);
+        assert_eq!(engine.next_bar_indices[&symbol], 1);
+        let buffer = engine.strategy_context.market_data.get(&symbol).unwrap();
+        assert_eq!(buffer.data.len(), 1);
+        assert_eq!(buffer.get_current_price(), Some(Decimal::from(101)));
+
+        engine.current_time = ts(2);
+        engine.process_market_data().await.unwrap();
+        assert_eq!(engine.current_market_bars.len(), 1);
+        assert_eq!(engine.next_bar_indices[&symbol], 2);
+        let buffer = engine.strategy_context.market_data.get(&symbol).unwrap();
+        assert_eq!(buffer.data.len(), 2);
+        assert_eq!(buffer.get_current_price(), Some(Decimal::from(102)));
+
+        engine.current_time = ts(3);
+        engine.process_market_data().await.unwrap();
+        assert!(engine.current_market_bars.is_empty());
+        assert_eq!(engine.next_bar_indices[&symbol], 2);
+        let buffer = engine.strategy_context.market_data.get(&symbol).unwrap();
+        assert_eq!(buffer.data.len(), 2);
+        assert_eq!(buffer.get_current_price(), Some(Decimal::from(102)));
+
+        engine.current_time = ts(4);
+        engine.process_market_data().await.unwrap();
+        assert_eq!(engine.current_market_bars.len(), 1);
+        assert_eq!(engine.next_bar_indices[&symbol], 3);
+        let buffer = engine.strategy_context.market_data.get(&symbol).unwrap();
+        assert_eq!(buffer.data.len(), 3);
+        assert_eq!(buffer.get_current_price(), Some(Decimal::from(104)));
+    }
+
+    #[test]
+    fn process_strategy_action_keeps_pending_order_snapshots_in_sync() {
+        let symbol = Symbol::equity("AAPL");
+        let mut engine = test_engine(symbol.clone(), Vec::new());
+        let order = Order::market_order(symbol, Side::Buy, Decimal::from(5), "noop".to_string());
+        let order_id = order.id;
+
+        engine
+            .process_strategy_action(StrategyAction::PlaceOrder(order.clone()))
+            .unwrap();
+        assert_eq!(engine.pending_orders.len(), 1);
+        assert_eq!(engine.strategy_context.pending_orders.len(), 1);
+        assert_eq!(engine.strategy_context.pending_orders[0].id, order_id);
+
+        engine
+            .process_strategy_action(StrategyAction::CancelOrder { order_id })
+            .unwrap();
+        assert!(engine.pending_orders.is_empty());
+        assert!(engine.strategy_context.pending_orders.is_empty());
     }
 }
