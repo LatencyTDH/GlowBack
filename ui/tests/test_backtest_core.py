@@ -2,6 +2,7 @@ import queue
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pandas as pd
 
@@ -15,81 +16,83 @@ from backtest_core import (  # noqa: E402
 
 
 class BacktestCoreTests(unittest.TestCase):
-    def test_run_backtest_marks_multi_symbol_positions_with_last_known_prices(self):
+    def test_run_backtest_bridges_session_data_into_real_engine_runtime(self):
         strategy_code = """
-class BuyAndHoldTwoSymbols:
-    name = "Buy and Hold Two Symbols"
+class BuyAndHoldStrategy:
+    name = "Buy and Hold"
 
     def on_bar(self, bar, portfolio):
-        if bar.symbol == 'AAPL' and portfolio.get_position('AAPL') == 0:
-            portfolio.buy('AAPL', 10, bar.close, bar.timestamp)
-        elif bar.symbol == 'MSFT' and portfolio.get_position('MSFT') == 0:
-            portfolio.buy('MSFT', 10, bar.close, bar.timestamp)
         return []
 """
         market_data = pd.DataFrame(
             [
                 {
-                    'timestamp': pd.Timestamp('2026-01-01'),
-                    'symbol': 'AAPL',
-                    'open': 100.0,
-                    'high': 100.0,
-                    'low': 100.0,
-                    'close': 100.0,
-                    'volume': 1000,
-                    'resolution': 'day',
+                    "timestamp": pd.Timestamp("2026-01-01T00:00:00Z"),
+                    "symbol": "AAPL",
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "volume": 1000,
+                    "resolution": "1d",
                 },
                 {
-                    'timestamp': pd.Timestamp('2026-01-01'),
-                    'symbol': 'MSFT',
-                    'open': 50.0,
-                    'high': 50.0,
-                    'low': 50.0,
-                    'close': 50.0,
-                    'volume': 1000,
-                    'resolution': 'day',
-                },
-                {
-                    'timestamp': pd.Timestamp('2026-01-02'),
-                    'symbol': 'AAPL',
-                    'open': 110.0,
-                    'high': 110.0,
-                    'low': 110.0,
-                    'close': 110.0,
-                    'volume': 1000,
-                    'resolution': 'day',
-                },
-                {
-                    'timestamp': pd.Timestamp('2026-01-02'),
-                    'symbol': 'MSFT',
-                    'open': 55.0,
-                    'high': 55.0,
-                    'low': 55.0,
-                    'close': 55.0,
-                    'volume': 1000,
-                    'resolution': 'day',
+                    "timestamp": pd.Timestamp("2026-01-01T00:00:00Z"),
+                    "symbol": "MSFT",
+                    "open": 50.0,
+                    "high": 51.0,
+                    "low": 49.0,
+                    "close": 50.5,
+                    "volume": 2000,
+                    "resolution": "1d",
                 },
             ]
         )
 
-        results = run_backtest(
-            strategy_code,
-            market_data,
-            {'initial_capital': 2000.0},
-            queue.Queue(),
-            queue.Queue(),
-        )
+        observed = {}
+
+        def fake_run_engine_backtest(**kwargs):
+            observed.update(kwargs)
+            self.assertEqual(kwargs["strategy_name"], "buy_and_hold")
+            self.assertEqual(kwargs["data_source"], "csv")
+            csv_dir = Path(kwargs["csv_data_path"])
+            self.assertTrue((csv_dir / "AAPL_1d.csv").exists())
+            self.assertTrue((csv_dir / "MSFT_1d.csv").exists())
+            return {
+                "metrics_summary": {"initial_capital": 2000.0, "final_value": 2050.0, "total_return": 2.5, "sharpe_ratio": 1.2, "max_drawdown": 1.0, "total_trades": 1.0},
+                "equity_curve": [{"timestamp": "2026-01-01T00:00:00Z", "value": 2050.0, "cash": 100.0, "positions": 1950.0, "returns": 2.5, "drawdown": 1.0}],
+                "trades": [{"timestamp": "2026-01-01T00:00:00Z", "symbol": "AAPL", "action": "BUY", "shares": 10.0, "price": 100.0}],
+                "exposures": [],
+                "logs": ["Engine-backed backtest completed"],
+                "initial_capital": 2000.0,
+                "final_value": 2050.0,
+                "total_return": 2.5,
+                "sharpe_ratio": 1.2,
+                "max_drawdown": 1.0,
+                "total_trades": 1.0,
+                "final_cash": 100.0,
+                "final_positions": {"AAPL": 10.0},
+            }
+
+        with mock.patch("backtest_core.run_engine_backtest", side_effect=fake_run_engine_backtest):
+            results = run_backtest(
+                strategy_code,
+                market_data,
+                {"initial_capital": 2000.0, "strategy_type": "buy_and_hold"},
+                queue.Queue(),
+                queue.Queue(),
+            )
 
         self.assertIsNotNone(results)
-        self.assertEqual(results['equity_curve'][2]['value'], 2100.0)
-        self.assertEqual(results['equity_curve'][3]['value'], 2150.0)
-        self.assertEqual(results['final_value'], 2150.0)
+        self.assertEqual(observed["symbols"], ["AAPL", "MSFT"])
+        self.assertEqual(results["final_value"], 2050.0)
+        self.assertEqual(results["final_positions"], {"AAPL": 10.0})
 
     def test_period_returns_are_derived_from_portfolio_value_not_cumulative_return_percent(self):
         equity_curve = [
-            {'timestamp': '2026-01-01', 'value': 100.0, 'returns': 0.0},
-            {'timestamp': '2026-01-02', 'value': 110.0, 'returns': 10.0},
-            {'timestamp': '2026-01-03', 'value': 120.0, 'returns': 20.0},
+            {"timestamp": "2026-01-01", "value": 100.0, "returns": 0.0},
+            {"timestamp": "2026-01-02", "value": 110.0, "returns": 10.0},
+            {"timestamp": "2026-01-03", "value": 120.0, "returns": 20.0},
         ]
 
         period_returns = calculate_period_return_series(equity_curve).dropna().tolist()
@@ -100,16 +103,16 @@ class BuyAndHoldTwoSymbols:
 
     def test_closed_trade_win_rate_uses_realized_pnl(self):
         trades = [
-            {'symbol': 'AAPL', 'action': 'BUY', 'shares': 10, 'price': 100.0},
-            {'symbol': 'AAPL', 'action': 'SELL', 'shares': 10, 'price': 110.0},
-            {'symbol': 'MSFT', 'action': 'BUY', 'shares': 10, 'price': 50.0},
-            {'symbol': 'MSFT', 'action': 'SELL', 'shares': 10, 'price': 45.0},
+            {"symbol": "AAPL", "action": "BUY", "shares": 10, "price": 100.0},
+            {"symbol": "AAPL", "action": "SELL", "shares": 10, "price": 110.0},
+            {"symbol": "MSFT", "action": "BUY", "shares": 10, "price": 50.0},
+            {"symbol": "MSFT", "action": "SELL", "shares": 10, "price": 45.0},
         ]
 
         self.assertEqual(calculate_closed_trade_win_rate(trades), 50.0)
         self.assertIsNone(
             calculate_closed_trade_win_rate([
-                {'symbol': 'AAPL', 'action': 'BUY', 'shares': 10, 'price': 100.0}
+                {"symbol": "AAPL", "action": "BUY", "shares": 10, "price": 100.0}
             ])
         )
 
@@ -259,5 +262,5 @@ class BuyThenSell:
         self.assertIn('overview', results['tearsheet'])
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

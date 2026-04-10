@@ -11,7 +11,7 @@ import uuid
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from .adapter import MockEngineAdapter
+from .adapter import RealEngineAdapter
 from .auth import require_api_key, validate_api_key
 from .models import BacktestRequest, BacktestResult, BacktestStatus, RunState
 from .optimization_models import OptimizationRequest, OptimizationResult, OptimizationState, OptimizationStatus
@@ -67,7 +67,7 @@ logger = logging.getLogger("glowback.api")
 _MAX_BODY_BYTES = int(os.getenv("GLOWBACK_MAX_BODY_BYTES", str(1024 * 1024)))  # 1 MiB default
 
 store = RunStore()
-adapter = MockEngineAdapter(store)
+adapter = RealEngineAdapter(store)
 opt_store = OptimizationStore()
 
 app = FastAPI(

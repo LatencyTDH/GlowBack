@@ -5,8 +5,8 @@ use chrono::{DateTime, Duration, Utc};
 use gb_data::DataManager;
 use gb_types::{
     BacktestConfig, BacktestError, BacktestResult, Bar, EquityCurvePoint, Fill, GbResult,
-    MarketDataBuffer, MarketEvent, Order, Portfolio, Strategy, StrategyContext, StrategyMetrics,
-    Symbol,
+    LatencyModel, MarketDataBuffer, MarketEvent, Order, Portfolio, Side, SlippageModel, Strategy,
+    StrategyContext, StrategyMetrics, Symbol, TradeRecord,
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -27,6 +27,7 @@ pub struct Engine {
     strategy_context: StrategyContext,
     strategy_metrics: StrategyMetrics,
     equity_curve: Vec<EquityCurvePoint>,
+    trade_log: Vec<TradeRecord>,
     equity_peak: Decimal,
 }
 
@@ -118,6 +119,7 @@ impl Engine {
             strategy_context,
             strategy_metrics,
             equity_curve: Vec::new(),
+            trade_log: Vec::new(),
         })
     }
 
@@ -247,9 +249,11 @@ impl Engine {
 
                 // Log execution
                 info!(
-                    "Executed order: {:?} {} {} at {}",
-                    order.side, order.quantity, order.symbol, fill.price
+                    "Executed order: {:?} {} {} at {} (commission {})",
+                    order.side, order.quantity, order.symbol, fill.price, fill.commission
                 );
+                self.trade_log
+                    .push(self.trade_record_from_fill(order, &fill));
 
                 // Prepare order event for strategy callback
                 order_events_to_process.push(gb_types::OrderEvent::OrderFilled {
@@ -291,28 +295,111 @@ impl Engine {
         Ok(())
     }
 
+    fn latency_bar_offset(&self) -> usize {
+        let latency_ms = match &self.config.execution_settings.latency_model {
+            LatencyModel::None => return 0,
+            LatencyModel::Fixed { milliseconds } => *milliseconds,
+            LatencyModel::Random { min_ms: _, max_ms } => *max_ms,
+            LatencyModel::VenueSpecific { venues } => venues.values().copied().max().unwrap_or(0),
+        };
+
+        let Some(seconds_per_bar) = self.config.resolution.to_seconds() else {
+            return 0;
+        };
+
+        let bar_ms = seconds_per_bar.saturating_mul(1000);
+        if bar_ms == 0 || latency_ms == 0 {
+            return 0;
+        }
+
+        latency_ms.div_ceil(bar_ms) as usize
+    }
+
+    fn apply_slippage(&self, base_price: Decimal, side: Side) -> Decimal {
+        let price_multiplier = match &self.config.execution_settings.slippage_model {
+            SlippageModel::None => return base_price,
+            SlippageModel::Fixed { basis_points } | SlippageModel::Linear { basis_points } => {
+                Decimal::ONE + Decimal::from(*basis_points) / Decimal::from(10_000)
+            }
+            SlippageModel::VolumeWeighted { min_bps, max_bps } => {
+                let avg_bps = (*min_bps + *max_bps) / 2;
+                Decimal::ONE + Decimal::from(avg_bps) / Decimal::from(10_000)
+            }
+            SlippageModel::SquareRoot { factor } => Decimal::ONE + *factor,
+        };
+
+        match side {
+            Side::Buy => (base_price * price_multiplier).round_dp(6),
+            Side::Sell => (base_price / price_multiplier).round_dp(6),
+        }
+    }
+
+    fn calculate_commission(&self, quantity: Decimal, execution_price: Decimal) -> Decimal {
+        let settings = &self.config.execution_settings;
+        let quantity = quantity.abs();
+        if quantity == Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+
+        let per_share = settings.commission_per_share * quantity;
+        let gross_notional = quantity * execution_price.abs();
+        let percentage = gross_notional * settings.commission_percentage;
+        let commission = per_share + percentage;
+
+        if commission > Decimal::ZERO && commission < settings.minimum_commission {
+            settings.minimum_commission
+        } else {
+            commission.round_dp(6)
+        }
+    }
+
+    fn trade_record_from_fill(&self, order: &Order, fill: &Fill) -> TradeRecord {
+        TradeRecord {
+            id: order.id,
+            symbol: fill.symbol.clone(),
+            entry_time: fill.executed_at,
+            exit_time: Some(fill.executed_at),
+            entry_price: fill.price,
+            exit_price: Some(fill.price),
+            quantity: fill.quantity,
+            side: fill.side,
+            pnl: None,
+            commission: fill.commission,
+            duration_hours: Some(0.0),
+            strategy_id: fill.strategy_id.clone(),
+            tags: vec!["fill".to_string()],
+        }
+    }
+
     /// Try to execute a single order
     async fn try_execute_order(&self, order: &Order) -> GbResult<Option<Fill>> {
-        // Get current market data for the symbol
         if let Some(bars) = self.market_data.get(&order.symbol) {
-            for bar in bars {
-                if bar.timestamp.date_naive() == self.current_time.date_naive() {
-                    // Simple execution logic - execute at open price
-                    let execution_price = bar.open;
+            let Some(current_index) = bars
+                .iter()
+                .position(|bar| bar.timestamp.date_naive() == self.current_time.date_naive())
+            else {
+                return Ok(None);
+            };
 
-                    let fill = Fill::new(
-                        order.id,
-                        order.symbol.clone(),
-                        order.side,
-                        order.quantity,
-                        execution_price,
-                        Decimal::ZERO,        // commission
-                        "engine".to_string(), // strategy_id
-                    );
+            let execution_index = current_index.saturating_add(self.latency_bar_offset());
+            let Some(bar) = bars.get(execution_index) else {
+                return Ok(None);
+            };
 
-                    return Ok(Some(fill));
-                }
-            }
+            let execution_price = self.apply_slippage(bar.open, order.side);
+            let commission = self.calculate_commission(order.quantity, execution_price);
+
+            let fill = Fill::new(
+                order.id,
+                order.symbol.clone(),
+                order.side,
+                order.quantity,
+                execution_price,
+                commission,
+                order.strategy_id.clone(),
+            );
+
+            return Ok(Some(fill));
         }
 
         Ok(None)
@@ -532,6 +619,11 @@ impl Engine {
         // Mark result as completed with final portfolio and metrics
         result.mark_completed(self.portfolio.clone(), self.strategy_metrics.clone());
         result.equity_curve = self.equity_curve.clone();
+        result.trade_log = self.trade_log.clone();
+        result.performance_metrics = Some(gb_types::PerformanceMetrics::calculate_with_trades(
+            &self.portfolio,
+            &self.trade_log,
+        ));
 
         info!("Final portfolio value: {}", self.portfolio.total_equity);
         info!("Total return: {:.2}%", total_return * Decimal::from(100));
@@ -706,6 +798,7 @@ mod tests {
             strategy_context,
             strategy_metrics: StrategyMetrics::new("noop".to_string()),
             equity_curve: Vec::new(),
+            trade_log: Vec::new(),
             equity_peak: Decimal::from(100_000),
         }
     }

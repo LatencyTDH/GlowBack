@@ -1,7 +1,7 @@
-# GlowBack FastAPI Gateway (Phase 1)
+# GlowBack FastAPI Gateway
 
-This folder contains a minimal FastAPI service that exposes the GlowBack backtesting API contract.
-It currently runs with a mock engine adapter and in‑memory storage while the Rust engine bindings are integrated.
+This folder contains the FastAPI service that exposes the GlowBack backtesting API contract.
+Backtest runs execute through the real Rust engine via the `gb-python` bindings, while run metadata remains in process-local in-memory storage.
 
 ## Quickstart
 
@@ -10,6 +10,7 @@ cd api
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+maturin develop -m ../crates/gb-python/Cargo.toml
 
 # optional: require an API key (comma-separated keys supported)
 export GLOWBACK_API_KEY="dev-secret"
@@ -30,7 +31,8 @@ The server will be available at http://127.0.0.1:8000 with interactive docs at `
 ## Notes
 
 - Storage is in‑memory (process‑local).
-- The engine adapter is a mock that emits progress events and a sample result.
+- Backtests execute through the same Rust engine path used by the Python bindings/UI.
+- Use `data_source: "sample"` to opt into the built-in sample provider, or `data_source: "csv"` with `csv_data_path` pointing at a directory of `{symbol}_{resolution}.csv` files.
 - `GLOWBACK_API_KEY` enables a stub auth check (`Authorization: Bearer <token>` or `X-API-Key: <token>`).
   WebSocket clients can pass `?api_key=<token>`.
 - HTTP responses include `X-Request-ID` for log correlation.

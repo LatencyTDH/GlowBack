@@ -5,7 +5,7 @@ pub mod engine;
 pub mod execution;
 pub mod simulator;
 
-use gb_data::{DataManager, SampleDataProvider};
+use gb_data::{CsvDataProvider, DataManager, SampleDataProvider};
 use gb_types::{BacktestConfig, BacktestResult, DataError, GbResult, Strategy, Symbol};
 use tracing::info;
 
@@ -57,6 +57,18 @@ impl BacktestEngine {
             config,
             data_manager,
         })
+    }
+
+    /// Add the built-in sample/demo data provider explicitly.
+    pub fn add_sample_provider(&mut self) {
+        self.data_manager
+            .add_provider(Box::new(SampleDataProvider::new()));
+    }
+
+    /// Add a CSV data provider rooted at the supplied directory.
+    pub fn add_csv_provider(&mut self, base_path: &str) {
+        self.data_manager
+            .add_provider(Box::new(CsvDataProvider::new(base_path)));
     }
 
     /// Load market data for backtesting

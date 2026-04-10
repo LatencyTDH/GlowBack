@@ -80,9 +80,11 @@ impl DataManager {
             .load_bars(symbol, start_date, end_date, resolution)
             .await
         {
-            // Cache for future use
-            self.cache.store_bars(symbol, &data, resolution).await?;
-            return Ok(data);
+            if !data.is_empty() {
+                // Cache for future use
+                self.cache.store_bars(symbol, &data, resolution).await?;
+                return Ok(data);
+            }
         }
 
         // Fetch from providers
@@ -112,5 +114,32 @@ impl DataManager {
             end: end_date.to_rfc3339(),
         }
         .into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use gb_types::{Resolution, Symbol};
+
+    #[tokio::test]
+    async fn load_data_falls_back_to_providers_when_storage_is_empty() {
+        let mut manager = DataManager::new_ephemeral("gb-data-provider-fallback")
+            .await
+            .unwrap();
+        manager.add_provider(Box::new(SampleDataProvider::new()));
+
+        let symbol = Symbol::equity("AAPL");
+        let start = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2024, 1, 5, 0, 0, 0).unwrap();
+
+        let bars = manager
+            .load_data(&symbol, start, end, Resolution::Day)
+            .await
+            .unwrap();
+
+        assert!(!bars.is_empty());
+        assert_eq!(bars[0].symbol, symbol);
     }
 }

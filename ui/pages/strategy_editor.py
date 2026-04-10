@@ -6,6 +6,15 @@ import streamlit as st
 from streamlit_ace import st_ace
 
 # Strategy templates
+ENGINE_STRATEGY_TYPES = {
+    "Buy and Hold": "buy_and_hold",
+    "Moving Average Crossover": "ma_crossover",
+    "Mean Reversion": "mean_reversion",
+    "Momentum": "momentum",
+    "RSI": "rsi",
+    "Custom Strategy": "custom",
+}
+
 STRATEGY_TEMPLATES = {
     "Buy and Hold": '''
 # Buy and Hold Strategy
@@ -217,7 +226,44 @@ def show():
         
         strategy_name = st.text_input("Strategy Name", value="My Strategy")
         initial_capital = st.number_input("Initial Capital", value=100000, min_value=1000, step=1000)
-        
+
+        strategy_params = {}
+        strategy_type = ENGINE_STRATEGY_TYPES.get(selected_template, "custom")
+
+        if strategy_type == "ma_crossover":
+            short_period = st.number_input("Short MA Period", value=10, min_value=1, step=1)
+            long_period = st.number_input("Long MA Period", value=20, min_value=2, step=1)
+            strategy_params = {"short_period": short_period, "long_period": long_period}
+        elif strategy_type == "momentum":
+            lookback_period = st.number_input("Momentum Lookback", value=10, min_value=1, step=1)
+            momentum_threshold = st.number_input("Momentum Threshold", value=0.05, min_value=0.0, format="%.4f")
+            strategy_params = {
+                "lookback_period": lookback_period,
+                "momentum_threshold": momentum_threshold,
+            }
+        elif strategy_type == "mean_reversion":
+            lookback_period = st.number_input("Reversion Lookback", value=20, min_value=2, step=1)
+            entry_threshold = st.number_input("Entry Threshold", value=2.0, min_value=0.1, format="%.2f")
+            exit_threshold = st.number_input("Exit Threshold", value=1.0, min_value=0.1, format="%.2f")
+            strategy_params = {
+                "lookback_period": lookback_period,
+                "entry_threshold": entry_threshold,
+                "exit_threshold": exit_threshold,
+            }
+        elif strategy_type == "rsi":
+            lookback_period = st.number_input("RSI Lookback", value=14, min_value=2, step=1)
+            oversold_threshold = st.number_input("Oversold Threshold", value=30.0, min_value=0.0, max_value=100.0, format="%.1f")
+            overbought_threshold = st.number_input("Overbought Threshold", value=70.0, min_value=0.0, max_value=100.0, format="%.1f")
+            strategy_params = {
+                "lookback_period": lookback_period,
+                "oversold_threshold": oversold_threshold,
+                "overbought_threshold": overbought_threshold,
+            }
+
+        st.caption(
+            "Backtests now run through the real Rust engine. The runner supports the built-in templates above; custom code can still be edited, but only built-in strategies execute end-to-end today."
+        )
+
         # Advanced settings
         with st.expander("Advanced Settings"):
             commission = st.number_input("Commission per Trade", value=0.001, min_value=0.0, format="%.4f")
@@ -228,6 +274,10 @@ def show():
         if st.button("💾 Save Config"):
             st.session_state.strategy_config = {
                 "name": strategy_name,
+                "display_name": strategy_name,
+                "strategy_type": strategy_type,
+                "strategy_template": selected_template,
+                "strategy_params": strategy_params,
                 "initial_capital": initial_capital,
                 "commission": commission,
                 "slippage": slippage,
