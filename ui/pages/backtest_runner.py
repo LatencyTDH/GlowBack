@@ -5,11 +5,13 @@ Backtest Runner Page - Execute backtests and monitor progress
 import queue
 import threading
 import time
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
 
 from backtest_core import run_backtest
+from research_registry import persist_streamlit_run
 
 def show():
     """Main backtest runner page"""
@@ -101,6 +103,8 @@ def run_backtest_execution():
         st.session_state.backtest_progress = 0
         st.session_state.backtest_logs = []
         
+        run_started_at = datetime.now(timezone.utc).isoformat()
+
         # Create progress and log containers
         progress_container = st.container()
         log_container = st.container()
@@ -171,6 +175,18 @@ def run_backtest_execution():
         # Process results
         result = result_container[0]
         if result:
+            persisted = persist_streamlit_run(
+                result,
+                market_data,
+                config,
+                strategy_code,
+                created_at=run_started_at,
+                started_at=run_started_at,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+            result["run_id"] = persisted["run_id"]
+            result["saved_at"] = persisted["created_at"]
+            result["strategy_name"] = persisted.get("strategy_name")
             st.session_state.backtest_results = result
             st.session_state.backtest_logs = logs
             progress_bar.progress(1.0)
@@ -222,6 +238,9 @@ def show_quick_results():
     with col4:
         st.metric("Total Trades", results['total_trades'])
     
+    if results.get('run_id'):
+        st.caption(f"Persisted experiment ID: `{results['run_id']}`")
+
     # Final portfolio
     col1, col2 = st.columns(2)
     

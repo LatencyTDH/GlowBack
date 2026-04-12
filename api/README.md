@@ -1,7 +1,7 @@
 # GlowBack FastAPI Gateway (Phase 1)
 
 This folder contains a minimal FastAPI service that exposes the GlowBack backtesting API contract.
-It currently runs with a mock engine adapter and in‑memory storage while the Rust engine bindings are integrated.
+It currently runs with a mock engine adapter while persisting run history/events/results into a local SQLite-backed experiment registry.
 
 ## Quickstart
 
@@ -29,7 +29,7 @@ The server will be available at http://127.0.0.1:8000 with interactive docs at `
 
 ## Notes
 
-- Storage is in‑memory (process‑local).
+- Backtest run metadata, event history, and completed results are persisted in a local SQLite experiment registry so `GET /backtests` still shows historical runs after restart.
 - The engine adapter is a mock that emits progress events and a sample result.
 - `GLOWBACK_API_KEY` enables a stub auth check (`Authorization: Bearer <token>` or `X-API-Key: <token>`).
   WebSocket clients can pass `?api_key=<token>`.
