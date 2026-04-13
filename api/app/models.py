@@ -38,6 +38,7 @@ class BacktestRequest(BaseModel):
     initial_capital: float = Field(default=1_000_000.0, gt=0, le=1e12)
     currency: str = Field(default="USD", min_length=3, max_length=5, pattern=r"^[A-Z]{3,5}$")
     timezone: str = Field(default="UTC", max_length=64)
+    benchmark_symbol: str | None = Field(default=None, min_length=1, max_length=16)
 
 
 class RunState(str, Enum):
@@ -74,8 +75,11 @@ class BacktestEvent(BaseModel):
 
 class BacktestResult(BaseModel):
     run_id: str
-    metrics_summary: dict[str, float] = Field(default_factory=dict)
+    metrics_summary: dict[str, Any] = Field(default_factory=dict)
     equity_curve: list[dict[str, Any]] = Field(default_factory=list)
+    benchmark_curve: list[dict[str, Any]] = Field(default_factory=list)
+    benchmark_symbol: str | None = None
     trades: list[dict[str, Any]] = Field(default_factory=list)
     exposures: list[dict[str, Any]] = Field(default_factory=list)
+    tearsheet: dict[str, Any] = Field(default_factory=dict)
     logs: list[str] = Field(default_factory=list)

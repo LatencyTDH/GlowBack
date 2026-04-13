@@ -49,33 +49,50 @@ def show_performance_analysis():
     
     with col1:
         st.markdown("**🎯 Performance Attribution**")
-        
-        # Calculate performance components
-        total_return = results['total_return']
-        
-        # Simplified attribution (in reality, this would be more complex)
-        attribution_data = {
-            "Component": ["Asset Selection", "Market Timing", "Cash Allocation", "Trading Costs"],
-            "Contribution (%)": [
-                total_return * 0.6,  # Simplified
-                total_return * 0.3,
-                total_return * 0.1,
-                -abs(total_return * 0.02)  # Cost drag
-            ]
-        }
-        
+
+        attribution_rows = results.get('attribution') or []
+        cost_summary = results.get('cost_summary') or {}
+        benchmark_metrics = results.get('benchmark_metrics') or {}
+
+        attribution_data = [
+            {
+                "Component": row.get("component", "Unknown"),
+                "Contribution (%)": row.get("contribution_pct", 0.0),
+            }
+            for row in attribution_rows
+        ]
+        if cost_summary:
+            attribution_data.append(
+                {
+                    "Component": "Trading Costs",
+                    "Contribution (%)": -cost_summary.get("cost_drag_pct_initial", 0.0),
+                }
+            )
+
         attr_df = pd.DataFrame(attribution_data)
-        
-        fig = px.bar(
-            attr_df,
-            x="Component",
-            y="Contribution (%)",
-            color="Contribution (%)",
-            color_continuous_scale="RdYlGn",
-            title="Performance Attribution"
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+        if not attr_df.empty:
+            fig = px.bar(
+                attr_df,
+                x="Component",
+                y="Contribution (%)",
+                color="Contribution (%)",
+                color_continuous_scale="RdYlGn",
+                title="Performance Attribution",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Run a backtest with executed trades to see attribution.")
+
+        if benchmark_metrics:
+            beta = benchmark_metrics.get('beta')
+            alpha = benchmark_metrics.get('alpha')
+            information_ratio = benchmark_metrics.get('information_ratio')
+            st.caption(
+                f"Benchmark: {benchmark_metrics.get('benchmark_symbol') or results.get('benchmark_symbol')} · "
+                f"Beta {'N/A' if beta is None else f'{beta:.2f}'} · "
+                f"Alpha {'N/A' if alpha is None else f'{alpha:.2f}%'} · "
+                f"IR {'N/A' if information_ratio is None else f'{information_ratio:.2f}'}"
+            )
     
     with col2:
         st.markdown("**📅 Period Analysis**")

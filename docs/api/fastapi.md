@@ -56,7 +56,8 @@ POST /backtests
   "end_date": "2024-12-31T23:59:59Z",
   "resolution": "day",
   "strategy": {"name": "buy_and_hold"},
-  "execution": {"slippage_bps": 1.0, "commission_bps": 0.5}
+  "execution": {"slippage_bps": 1.0, "commission_bps": 0.5},
+  "benchmark_symbol": "SPY"
 }
 ```
 
@@ -91,8 +92,24 @@ POST /backtests
       "drawdown": 0.0
     }
   ],
+  "benchmark_symbol": "SPY",
+  "benchmark_curve": [
+    {
+      "timestamp": "2024-01-01T00:00:00+00:00",
+      "symbol": "SPY",
+      "value": 1003200.0,
+      "returns": 0.32,
+      "daily_return": 0.32,
+      "drawdown": 0.0
+    }
+  ],
   "trades": [],
   "exposures": [],
+  "tearsheet": {
+    "overview": {"final_value": 1012345.67},
+    "benchmark": {"beta": 0.94, "alpha": 1.85, "information_ratio": 0.42},
+    "costs": {"total_cost_drag": 0.0}
+  },
   "logs": []
 }
 ```
@@ -107,6 +124,11 @@ Common `metrics_summary` keys include:
 - `total_trades`, `win_rate`, `profit_factor`
 - `average_win`, `average_loss`, `largest_win`, `largest_loss`
 - `total_commissions`
+- benchmark-relative metrics such as `beta`, `alpha`, `tracking_error`, `information_ratio`, and `excess_return`
+
+Additional top-level result fields include:
+- `benchmark_symbol`, `benchmark_curve`
+- `tearsheet`
 
 Notes:
 - `returns`, `daily_return`, `max_drawdown`, and `volatility` are expressed as percentages.
@@ -123,4 +145,5 @@ Notes:
 
 - Storage is in‑memory; restarting the service clears runs.
 - The mock engine emits progress updates and a sample result.
+- Benchmark-relative metrics are computed from the returned strategy and benchmark curves, not placeholder percentages.
 - Replace the mock adapter with `gb-python` bindings or a CLI bridge in Phase 2.
