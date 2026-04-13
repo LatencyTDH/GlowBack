@@ -113,6 +113,75 @@ class BuyAndHoldTwoSymbols:
             ])
         )
 
+    def test_run_backtest_surfaces_real_benchmark_metrics_and_cost_drag(self):
+        strategy_code = """
+class BuyThenSell:
+    name = "Buy Then Sell"
+
+    def on_bar(self, bar, portfolio):
+        if portfolio.get_position(bar.symbol) == 0:
+            portfolio.buy(bar.symbol, 5, bar.close, bar.timestamp)
+        elif bar.close >= 110:
+            portfolio.sell(bar.symbol, portfolio.get_position(bar.symbol), bar.close, bar.timestamp)
+        return []
+"""
+        market_data = pd.DataFrame(
+            [
+                {
+                    'timestamp': pd.Timestamp('2026-01-01'),
+                    'symbol': 'AAPL',
+                    'open': 100.0,
+                    'high': 100.0,
+                    'low': 100.0,
+                    'close': 100.0,
+                    'volume': 1000,
+                    'resolution': 'day',
+                },
+                {
+                    'timestamp': pd.Timestamp('2026-01-02'),
+                    'symbol': 'AAPL',
+                    'open': 110.0,
+                    'high': 110.0,
+                    'low': 110.0,
+                    'close': 110.0,
+                    'volume': 1000,
+                    'resolution': 'day',
+                },
+                {
+                    'timestamp': pd.Timestamp('2026-01-03'),
+                    'symbol': 'AAPL',
+                    'open': 108.0,
+                    'high': 108.0,
+                    'low': 108.0,
+                    'close': 108.0,
+                    'volume': 1000,
+                    'resolution': 'day',
+                },
+            ]
+        )
+
+        results = run_backtest(
+            strategy_code,
+            market_data,
+            {
+                'initial_capital': 1000.0,
+                'commission': 0.001,
+                'slippage_bps': 5,
+                'benchmark_symbol': 'AAPL',
+            },
+            queue.Queue(),
+            queue.Queue(),
+        )
+
+        self.assertIsNotNone(results)
+        self.assertEqual(results['benchmark_symbol'], 'AAPL')
+        self.assertTrue(results['benchmark_curve'])
+        self.assertIn('beta', results['benchmark_metrics'])
+        self.assertGreater(results['cost_summary']['total_commissions'], 0.0)
+        self.assertGreater(results['cost_summary']['total_slippage_cost'], 0.0)
+        self.assertTrue(results['attribution'])
+        self.assertIn('overview', results['tearsheet'])
+
 
 if __name__ == '__main__':
     unittest.main()

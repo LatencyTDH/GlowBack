@@ -55,14 +55,19 @@ def show():
             
             col1, col2 = st.columns(2)
             with col1:
-                start_date = st.date_input("Start Date", value=None)
-                commission_override = st.number_input("Commission Override", value=0.001, format="%.4f")
+                st.date_input("Start Date", value=None, key="backtest_start_date")
+                st.number_input("Commission Override", value=0.001, format="%.4f", key="backtest_commission_override")
             
             with col2:
-                end_date = st.date_input("End Date", value=None)
-                slippage_override = st.number_input("Slippage Override (bps)", value=5)
+                st.date_input("End Date", value=None, key="backtest_end_date")
+                st.number_input("Slippage Override (bps)", value=5, key="backtest_slippage_override")
             
-            benchmark_symbol = st.text_input("Benchmark Symbol", value="SPY", help="Symbol to compare against")
+            st.text_input(
+                "Benchmark Symbol",
+                value="SPY",
+                help="Use a symbol present in the loaded market data to compute actual benchmark-relative metrics.",
+                key="backtest_benchmark_symbol",
+            )
             
             submitted = st.form_submit_button("🚀 Run Backtest", type="primary")
     
@@ -116,8 +121,24 @@ def run_backtest_execution():
         
         # Prepare data and run backtest
         market_data = st.session_state.market_data.copy()
+        if st.session_state.get("backtest_start_date") is not None:
+            market_data = market_data[market_data["timestamp"] >= pd.Timestamp(st.session_state.backtest_start_date)]
+        if st.session_state.get("backtest_end_date") is not None:
+            market_data = market_data[market_data["timestamp"] <= pd.Timestamp(st.session_state.backtest_end_date)]
+        market_data = market_data.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+
+        if market_data.empty:
+            st.error("❌ No market data left after applying the selected date range.")
+            st.session_state.backtest_running = False
+            return
+
         strategy_code = st.session_state.strategy_code
-        config = st.session_state.strategy_config
+        config = {
+            **st.session_state.strategy_config,
+            "commission": float(st.session_state.get("backtest_commission_override", st.session_state.strategy_config.get("commission", 0.0)) or 0.0),
+            "slippage_bps": float(st.session_state.get("backtest_slippage_override", st.session_state.strategy_config.get("slippage", 0.0)) or 0.0),
+            "benchmark_symbol": (st.session_state.get("backtest_benchmark_symbol") or "").strip().upper() or None,
+        }
         
         # Create queues for communication
         progress_queue = queue.Queue()
@@ -177,7 +198,15 @@ def run_backtest_execution():
             status_text.text("✅ Backtest completed!")
             
             # Show success message
-            st.success(f"🎉 Backtest completed! Final value: ${result['final_value']:,.2f}")
+            benchmark_metrics = result.get("benchmark_metrics") or {}
+            if benchmark_metrics:
+                st.success(
+                    f"🎉 Backtest completed! Final value: ${result['final_value']:,.2f} · "
+                    f"Excess return vs {benchmark_metrics.get('benchmark_symbol') or result.get('benchmark_symbol')}: "
+                    f"{benchmark_metrics.get('excess_return', 0.0):.2f}%"
+                )
+            else:
+                st.success(f"🎉 Backtest completed! Final value: ${result['final_value']:,.2f}")
             
         else:
             st.error("❌ Backtest failed. Check the logs for details.")
@@ -207,8 +236,11 @@ def show_quick_results():
     
     st.subheader("📊 Quick Results")
     
+    benchmark_metrics = results.get('benchmark_metrics') or {}
+    cost_summary = results.get('cost_summary') or {}
+
     # Key metrics
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric("Total Return", f"{results['total_return']:.2f}%")
@@ -221,6 +253,13 @@ def show_quick_results():
     
     with col4:
         st.metric("Total Trades", results['total_trades'])
+
+    with col5:
+        information_ratio = benchmark_metrics.get('information_ratio')
+        if benchmark_metrics and information_ratio is not None:
+            st.metric("Information Ratio", f"{information_ratio:.2f}")
+        else:
+            st.metric("Cost Drag", f"{cost_summary.get('cost_drag_pct_initial', 0.0):.2f}%")
     
     # Final portfolio
     col1, col2 = st.columns(2)
@@ -231,6 +270,14 @@ def show_quick_results():
         if results['final_positions']:
             for symbol, shares in results['final_positions'].items():
                 st.write(f"{symbol}: {shares} shares")
+
+        if benchmark_metrics:
+            st.write("**Benchmark Snapshot:**")
+            benchmark_name = benchmark_metrics.get('benchmark_symbol') or results.get('benchmark_symbol')
+            st.write(f"Benchmark: {benchmark_name}")
+            st.write(f"Beta: {benchmark_metrics.get('beta', 0.0):.2f}" if benchmark_metrics.get('beta') is not None else "Beta: N/A")
+            st.write(f"Alpha: {benchmark_metrics.get('alpha', 0.0):.2f}%" if benchmark_metrics.get('alpha') is not None else "Alpha: N/A")
+            st.write(f"Excess Return: {benchmark_metrics.get('excess_return', 0.0):.2f}%")
     
     with col2:
         st.write("**Trade Summary:**")
@@ -240,6 +287,9 @@ def show_quick_results():
             sell_trades = len(trades_df[trades_df['action'] == 'SELL'])
             st.write(f"Buy orders: {buy_trades}")
             st.write(f"Sell orders: {sell_trades}")
+            st.write(f"Commissions: ${cost_summary.get('total_commissions', 0.0):,.2f}")
+            st.write(f"Slippage drag: ${cost_summary.get('total_slippage_cost', 0.0):,.2f}")
+            st.write(f"Turnover: {cost_summary.get('turnover_multiple', 0.0):.2f}x initial capital")
     
     # Quick actions
     col1, col2, col3 = st.columns(3)

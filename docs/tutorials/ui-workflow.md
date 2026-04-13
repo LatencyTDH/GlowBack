@@ -20,7 +20,7 @@ The **🔬 Advanced Analytics** page provides:
 ### Rolling Statistics
 - Rolling Sharpe ratio with configurable window (30/60/90/252 days).
 - Annualised rolling volatility with percentile bands.
-- Rolling beta against a benchmark.
+- Rolling beta against an actual benchmark series loaded into the run.
 - Rolling maximum drawdown (trailing window).
 
 ### Compare Runs
@@ -32,6 +32,7 @@ Sweep two parameters across a grid and visualise the impact on return, Sharpe, d
 ### Export
 - Download equity curve and trades as CSV.
 - Download summary metrics as JSON.
+- Download an institutional-style tearsheet in JSON or Markdown.
 - Use browser print (Ctrl+P) for a quick PDF snapshot.
 
 ## Dark Mode
@@ -42,5 +43,6 @@ Toggle **🌙 Dark Mode** in the sidebar for a dark colour scheme.
 
 - Start with sample data to validate logic quickly.
 - Save configurations for reproducibility.
-- Export results for offline analysis.
+- Include benchmark bars in the loaded dataset to unlock real beta/alpha/information-ratio analytics.
+- Export results or tearsheets for offline analysis.
 - Use the *Compare Runs* tab to evaluate strategies against each other.

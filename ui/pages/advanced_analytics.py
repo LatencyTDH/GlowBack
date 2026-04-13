@@ -32,6 +32,18 @@ def _equity_df(results: dict) -> Optional[pd.DataFrame]:
     return df
 
 
+def _benchmark_df(results: dict) -> Optional[pd.DataFrame]:
+    raw = results.get("benchmark_curve", [])
+    if not raw:
+        return None
+    df = pd.DataFrame(raw)
+    if "timestamp" not in df.columns or "value" not in df.columns:
+        return None
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp").set_index("timestamp")
+    return df
+
+
 def _daily_returns(eq: pd.DataFrame) -> pd.Series:
     """Compute daily simple returns from an equity DataFrame."""
     return eq["value"].pct_change().dropna()
@@ -73,7 +85,7 @@ def show():
         _show_heatmaps(eq, results)
 
     with tab_rolling:
-        _show_rolling_statistics(eq)
+        _show_rolling_statistics(eq, results)
 
     with tab_compare:
         _show_compare_runs()
@@ -261,7 +273,7 @@ def _drawdown_heatmap(eq: pd.DataFrame):
 # Rolling Statistics
 # ---------------------------------------------------------------------------
 
-def _show_rolling_statistics(eq: pd.DataFrame):
+def _show_rolling_statistics(eq: pd.DataFrame, results: dict):
     st.subheader("📈 Rolling Statistics")
 
     rets = _daily_returns(eq)
@@ -269,8 +281,16 @@ def _show_rolling_statistics(eq: pd.DataFrame):
         st.info("Need ≥ 30 trading days for rolling statistics.")
         return
 
+    benchmark_eq = _benchmark_df(results)
+    benchmark_name = (results.get("benchmark_metrics") or {}).get("benchmark_symbol") or results.get("benchmark_symbol")
+
     # Configurable window
-    col_cfg1, col_cfg2 = st.columns(2)
+    if benchmark_eq is not None:
+        col_cfg1, col_cfg2 = st.columns(2)
+    else:
+        col_cfg1 = st.container()
+        col_cfg2 = None
+
     with col_cfg1:
         window = st.selectbox(
             "Rolling window (days)",
@@ -278,13 +298,11 @@ def _show_rolling_statistics(eq: pd.DataFrame):
             index=0,
             help="Number of trading days for the rolling window.",
         )
-    with col_cfg2:
-        benchmark_ret_annual = st.number_input(
-            "Benchmark annual return (%) for beta",
-            value=10.0,
-            step=1.0,
-            help="Used to generate a synthetic benchmark for beta calculation.",
-        )
+    if col_cfg2 is not None:
+        with col_cfg2:
+            st.caption(f"Using actual benchmark series: {benchmark_name}")
+    else:
+        st.caption("Load benchmark bars into the run to unlock actual rolling beta and benchmark-relative analytics.")
 
     # --- Rolling Sharpe ---
     rolling_mean = rets.rolling(window).mean()
@@ -295,21 +313,19 @@ def _show_rolling_statistics(eq: pd.DataFrame):
     rolling_vol = rolling_std * np.sqrt(252) * 100
 
     # Percentile bands for volatility
-    vol_median = rolling_vol.median()
     vol_p25 = rolling_vol.quantile(0.25)
     vol_p75 = rolling_vol.quantile(0.75)
 
-    # --- Rolling Beta (vs synthetic benchmark) ---
-    np.random.seed(42)
-    bench_daily = benchmark_ret_annual / 100 / 252
-    bench_vol = rolling_vol.median() / 100 / np.sqrt(252) if vol_median > 0 else 0.01
-    bench_returns = pd.Series(
-        np.random.normal(bench_daily, bench_vol, size=len(rets)),
-        index=rets.index,
-    )
-    rolling_cov = rets.rolling(window).cov(bench_returns)
-    rolling_bench_var = bench_returns.rolling(window).var()
-    rolling_beta = rolling_cov / rolling_bench_var
+    # --- Rolling Beta (vs actual benchmark when available) ---
+    rolling_beta = pd.Series(index=rets.index, dtype=float)
+    if benchmark_eq is not None:
+        bench_rets = _daily_returns(benchmark_eq)
+        aligned = pd.concat([rets.rename("strategy"), bench_rets.rename("benchmark")], axis=1, join="inner").dropna()
+        if not aligned.empty:
+            rolling_cov = aligned["strategy"].rolling(window).cov(aligned["benchmark"])
+            rolling_bench_var = aligned["benchmark"].rolling(window).var()
+            rolling_beta = (rolling_cov / rolling_bench_var).replace([np.inf, -np.inf], np.nan)
+            rolling_beta = rolling_beta.reindex(rets.index)
 
     # --- Rolling Max Drawdown ---
     rolling_max_dd = pd.Series(index=eq.index, dtype=float)
@@ -417,7 +433,7 @@ def _show_rolling_statistics(eq: pd.DataFrame):
             f"{rolling_sharpe.iloc[-1]:.2f}" if not np.isnan(rolling_sharpe.iloc[-1]) else "N/A",
             f"{rolling_vol.mean():.1f}%",
             f"{rolling_vol.iloc[-1]:.1f}%" if not np.isnan(rolling_vol.iloc[-1]) else "N/A",
-            f"{rolling_beta.mean():.2f}",
+            "N/A" if rolling_beta.dropna().empty else f"{rolling_beta.dropna().mean():.2f}",
             f"{rolling_max_dd.min():.1f}%",
         ],
     }
@@ -654,6 +670,68 @@ def _show_export(eq: pd.DataFrame, results: dict):
             file_name="glowback_summary.json",
             mime="application/json",
         )
+
+        tearsheet = results.get("tearsheet") or {}
+        if tearsheet:
+            st.download_button(
+                "⬇️ Download Institutional Tearsheet (JSON)",
+                data=json.dumps(tearsheet, indent=2, default=str),
+                file_name="glowback_tearsheet.json",
+                mime="application/json",
+            )
+
+            benchmark_metrics = results.get("benchmark_metrics") or {}
+            cost_summary = results.get("cost_summary") or {}
+            attribution = results.get("attribution") or []
+            beta = benchmark_metrics.get("beta")
+            alpha = benchmark_metrics.get("alpha")
+            tracking_error = benchmark_metrics.get("tracking_error")
+            information_ratio = benchmark_metrics.get("information_ratio")
+            lines = [
+                "# GlowBack Institutional Tearsheet",
+                "",
+                f"Generated: {datetime.utcnow().isoformat()}Z",
+                "",
+                "## Overview",
+                f"- Final value: ${results.get('final_value', 0.0):,.2f}",
+                f"- Total return: {results.get('total_return', 0.0):.2f}%",
+                f"- Annualized return: {results.get('annualized_return', 0.0):.2f}%",
+                f"- Sharpe ratio: {results.get('sharpe_ratio', 0.0):.2f}",
+                f"- Max drawdown: {results.get('max_drawdown', 0.0):.2f}%",
+                "",
+                "## Benchmark",
+                f"- Benchmark: {benchmark_metrics.get('benchmark_symbol') or results.get('benchmark_symbol') or 'N/A'}",
+                f"- Beta: {'N/A' if beta is None else format(beta, '.2f')}",
+                f"- Alpha: {'N/A' if alpha is None else format(alpha, '.2f') + '%'}",
+                f"- Tracking error: {'N/A' if tracking_error is None else format(tracking_error, '.2f') + '%'}",
+                f"- Information ratio: {'N/A' if information_ratio is None else format(information_ratio, '.2f')}",
+                f"- Excess return: {benchmark_metrics.get('excess_return', 0.0):.2f}%",
+                "",
+                "## Cost Drag",
+                f"- Total commissions: ${cost_summary.get('total_commissions', 0.0):,.2f}",
+                f"- Total slippage drag: ${cost_summary.get('total_slippage_cost', 0.0):,.2f}",
+                f"- Cost drag vs initial capital: {cost_summary.get('cost_drag_pct_initial', 0.0):.2f}%",
+                f"- Turnover: {cost_summary.get('turnover_multiple', 0.0):.2f}x initial capital",
+                "",
+                "## Attribution",
+            ]
+            if attribution:
+                lines.extend(
+                    [
+                        f"- {row.get('component')}: {row.get('contribution_pct', 0.0):.2f}% contribution "
+                        f"(${row.get('total_pnl', 0.0):,.2f} total P&L)"
+                        for row in attribution
+                    ]
+                )
+            else:
+                lines.append("- No realized attribution available.")
+
+            st.download_button(
+                "⬇️ Download Institutional Tearsheet (Markdown)",
+                data="\n".join(lines),
+                file_name="glowback_tearsheet.md",
+                mime="text/markdown",
+            )
 
     st.markdown("---")
     st.markdown("**🖨️ PDF Report**")
