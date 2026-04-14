@@ -60,6 +60,7 @@ def show_performance_overview(results):
     st.subheader("🎯 Performance Overview")
 
     equity_curve = prepare_equity_curve_frame(results['equity_curve'])
+    benchmark_metrics = results.get('benchmark_metrics') or {}
     period_returns = calculate_period_return_series(equity_curve).dropna()
     win_rate = calculate_closed_trade_win_rate(results.get('trades', []))
     annualized_return = calculate_annualized_return_pct(equity_curve)
@@ -140,8 +141,10 @@ def show_performance_overview(results):
                 "Drawdown Duration",
                 "Value at Risk (95%)",
                 "Expected Shortfall",
-                "Beta (vs Market)",
+                "Beta (vs Benchmark)",
                 "Alpha (Annual)",
+                "Tracking Error",
+                "Information Ratio",
             ],
             "Value": [
                 f"{results['sharpe_ratio']:.2f}",
@@ -151,8 +154,10 @@ def show_performance_overview(results):
                 f"{period_returns[period_returns <= period_returns.quantile(0.05)].mean() * 100:.2f}%"
                 if len(period_returns) > 0 and not period_returns[period_returns <= period_returns.quantile(0.05)].empty
                 else "N/A",
-                "N/A",
-                "N/A",
+                "N/A" if benchmark_metrics.get('beta') is None else f"{benchmark_metrics['beta']:.2f}",
+                "N/A" if benchmark_metrics.get('alpha') is None else f"{benchmark_metrics['alpha']:.2f}%",
+                "N/A" if benchmark_metrics.get('tracking_error') is None else f"{benchmark_metrics['tracking_error']:.2f}%",
+                "N/A" if benchmark_metrics.get('information_ratio') is None else f"{benchmark_metrics['information_ratio']:.2f}",
             ],
         }
 
@@ -236,6 +241,22 @@ def show_performance_charts(results):
     fig.update_yaxes(title_text="Drawdown (%)", row=3, col=1)
 
     st.plotly_chart(fig, use_container_width=True)
+
+    benchmark_curve = prepare_equity_curve_frame(results.get('benchmark_curve', []))
+    if not benchmark_curve.empty and {'timestamp', 'value'}.issubset(benchmark_curve.columns):
+        benchmark_chart = benchmark_curve[['timestamp', 'value']].rename(columns={'value': 'benchmark_value'})
+        comparison = equity_curve[['timestamp', 'value']].merge(benchmark_chart, on='timestamp', how='inner')
+        if len(comparison) > 1:
+            comparison['strategy_index'] = comparison['value'] / comparison['value'].iloc[0] * 100
+            comparison['benchmark_index'] = comparison['benchmark_value'] / comparison['benchmark_value'].iloc[0] * 100
+            benchmark_name = (results.get('benchmark_metrics') or {}).get('benchmark_symbol') or results.get('benchmark_symbol') or 'Benchmark'
+
+            st.markdown("**📏 Strategy vs Benchmark**")
+            comp_fig = go.Figure()
+            comp_fig.add_trace(go.Scatter(x=comparison['timestamp'], y=comparison['strategy_index'], mode='lines', name='Strategy'))
+            comp_fig.add_trace(go.Scatter(x=comparison['timestamp'], y=comparison['benchmark_index'], mode='lines', name=benchmark_name))
+            comp_fig.update_layout(height=350, yaxis_title='Indexed Value (Start = 100)')
+            st.plotly_chart(comp_fig, use_container_width=True)
 
     col1, col2 = st.columns(2)
 
