@@ -113,12 +113,127 @@ def _calculate_benchmark_metrics(
     }
 
 
+def _build_sample_portfolio_diagnostics(
+    equity_curve: list[dict],
+    portfolio_config: dict[str, object] | None,
+) -> tuple[list[dict], list[dict], dict[str, float | str | dict[str, float]], list[dict[str, object]]]:
+    if not portfolio_config:
+        return [], [], {}, []
+
+    raw_target_weights = {
+        str(symbol).strip().upper(): float(weight)
+        for symbol, weight in dict(portfolio_config.get("target_weights") or {}).items()
+        if str(symbol).strip() and float(weight) > 0
+    }
+    total_weight = sum(raw_target_weights.values())
+    if total_weight <= 0:
+        return [], [], {}, []
+
+    normalized_weights = {
+        symbol: weight / total_weight for symbol, weight in raw_target_weights.items()
+    }
+    cash_floor_pct = float(portfolio_config.get("cash_floor_pct") or 0.0)
+    investable_weight = max(0.0, 1.0 - cash_floor_pct / 100.0)
+    capped_target_weights = {
+        symbol: weight * investable_weight for symbol, weight in normalized_weights.items()
+    }
+
+    constraint_hits: list[dict[str, object]] = []
+    max_weight_pct = portfolio_config.get("max_weight_pct")
+    if max_weight_pct is not None:
+        max_weight_fraction = float(max_weight_pct) / 100.0
+        for symbol, weight in list(capped_target_weights.items()):
+            if weight > max_weight_fraction:
+                constraint_hits.append(
+                    {
+                        "type": "max_weight_cap",
+                        "symbol": symbol,
+                        "requested_weight_pct": round(weight * 100, 2),
+                        "applied_weight_pct": round(max_weight_fraction * 100, 2),
+                    }
+                )
+                capped_target_weights[symbol] = max_weight_fraction
+
+    schedule = str(portfolio_config.get("rebalance_frequency") or "weekly")
+    cadence = {"daily": 1, "weekly": 5, "monthly": 21}.get(schedule, 5)
+    max_turnover_pct = float(portfolio_config.get("max_turnover_pct") or 0.0)
+    drift_threshold_pct = float(portfolio_config.get("drift_threshold_pct") or 0.0)
+
+    diagnostics: list[dict] = []
+    turnover_samples: list[float] = []
+    symbols = list(capped_target_weights)
+
+    for index, point in enumerate(equity_curve):
+        is_rebalance = index == 0 or index % cadence == 0
+        realized_weights = dict(capped_target_weights)
+        if not is_rebalance:
+            for symbol_index, symbol in enumerate(symbols):
+                drift = min(0.03, 0.004 * ((index % cadence) + 1))
+                signed_drift = drift if symbol_index % 2 == 0 else -drift
+                realized_weights[symbol] = max(capped_target_weights[symbol] + signed_drift, 0.0)
+            total_realized = sum(realized_weights.values())
+            if total_realized > investable_weight and total_realized > 0:
+                scale = investable_weight / total_realized
+                realized_weights = {symbol: weight * scale for symbol, weight in realized_weights.items()}
+
+        drift_map = {
+            symbol: realized_weights.get(symbol, 0.0) - capped_target_weights.get(symbol, 0.0)
+            for symbol in set(capped_target_weights) | set(realized_weights)
+        }
+        max_abs_drift_pct = max((abs(value) * 100 for value in drift_map.values()), default=0.0)
+        turnover_pct = 0.0 if not is_rebalance else (100.0 if index == 0 else min(max_turnover_pct or 12.5, 20.0))
+        turnover_samples.append(turnover_pct)
+
+        if not is_rebalance and drift_threshold_pct and max_abs_drift_pct >= drift_threshold_pct:
+            is_rebalance = True
+            turnover_pct = min(max_turnover_pct or 15.0, 25.0)
+            turnover_samples[-1] = turnover_pct
+            realized_weights = dict(capped_target_weights)
+            drift_map = {symbol: 0.0 for symbol in drift_map}
+            max_abs_drift_pct = 0.0
+
+        cash_weight_pct = max(0.0, 100.0 - sum(realized_weights.values()) * 100)
+        diagnostics.append(
+            {
+                "timestamp": point["timestamp"],
+                "target_weights": {symbol: round(weight * 100, 2) for symbol, weight in capped_target_weights.items()},
+                "realized_weights": {symbol: round(weight * 100, 2) for symbol, weight in realized_weights.items()},
+                "drift_by_symbol_pct": {symbol: round(weight * 100, 2) for symbol, weight in drift_map.items()},
+                "max_abs_drift_pct": round(max_abs_drift_pct, 2),
+                "turnover_pct": round(turnover_pct, 2),
+                "rebalanced": is_rebalance,
+                "rebalance_reason": "initial_allocation" if index == 0 else (f"{schedule}_schedule" if is_rebalance else "drift_monitor"),
+                "cash_weight_pct": round(cash_weight_pct, 2),
+                "portfolio_value": round(float(point["value"]), 2),
+                "constraint_hits": [],
+            }
+        )
+
+    portfolio_summary = {
+        "method": "target_weights",
+        "rebalance_frequency": schedule,
+        "cash_floor_pct": cash_floor_pct,
+        "max_weight_pct": float(max_weight_pct) if max_weight_pct is not None else None,
+        "max_turnover_pct": float(max_turnover_pct) if max_turnover_pct else None,
+        "drift_threshold_pct": float(drift_threshold_pct) if drift_threshold_pct else None,
+        "target_weights": {symbol: round(weight * 100, 2) for symbol, weight in capped_target_weights.items()},
+    }
+    portfolio_metrics = {
+        "portfolio_rebalances": float(sum(1 for row in diagnostics if row["rebalanced"])),
+        "average_turnover_pct": float(sum(turnover_samples) / len(turnover_samples)) if turnover_samples else 0.0,
+        "max_weight_drift_pct": float(max((row["max_abs_drift_pct"] for row in diagnostics), default=0.0)),
+        "constraint_hit_count": float(len(constraint_hits)),
+    }
+    return diagnostics, constraint_hits, portfolio_summary, portfolio_metrics
+
+
 def _build_sample_results(
     initial_capital: float,
     start_date: datetime,
     end_date: datetime,
     benchmark_symbol: str | None,
-) -> tuple[list[dict], list[dict], dict, dict]:
+    portfolio_config: dict[str, object] | None = None,
+) -> tuple[list[dict], list[dict], dict, dict, list[dict], list[dict], dict]:
     equity_curve, daily_returns = _build_sample_curve(
         initial_capital=initial_capital,
         start_date=start_date,
@@ -203,6 +318,11 @@ def _build_sample_results(
         "total_notional": 0.0,
     }
 
+    portfolio_diagnostics, constraint_hits, portfolio_summary, portfolio_metrics = _build_sample_portfolio_diagnostics(
+        equity_curve,
+        portfolio_config,
+    )
+
     metrics_summary = {
         "initial_capital": initial_capital,
         "final_value": equity_curve[-1]["value"],
@@ -226,6 +346,7 @@ def _build_sample_results(
         "largest_win": 0.0,
         "largest_loss": 0.0,
         "total_commissions": 0.0,
+        **portfolio_metrics,
         **benchmark_metrics,
     }
 
@@ -238,12 +359,13 @@ def _build_sample_results(
             "max_drawdown": max_drawdown,
         },
         "benchmark": benchmark_metrics,
+        "portfolio": portfolio_summary,
         "costs": cost_summary,
         "top_contributors": [],
         "biggest_detractors": [],
     }
 
-    return equity_curve, benchmark_curve, metrics_summary, tearsheet
+    return equity_curve, benchmark_curve, metrics_summary, tearsheet, portfolio_diagnostics, constraint_hits, portfolio_summary
 
 
 class MockEngineAdapter:
@@ -260,11 +382,13 @@ class MockEngineAdapter:
                 await self._store.update_progress(run_id, progress, message=f"Step {step}/{total_steps}")
 
             benchmark_symbol = request.benchmark_symbol or (request.symbols[0] if request.symbols else "SPY")
-            equity_curve, benchmark_curve, metrics_summary, tearsheet = _build_sample_results(
+            portfolio_config = request.portfolio_construction.model_dump() if request.portfolio_construction else None
+            equity_curve, benchmark_curve, metrics_summary, tearsheet, portfolio_diagnostics, constraint_hits, portfolio_summary = _build_sample_results(
                 request.initial_capital,
                 request.start_date,
                 request.end_date,
                 benchmark_symbol,
+                portfolio_config,
             )
 
             result = BacktestResult(
@@ -275,6 +399,9 @@ class MockEngineAdapter:
                 benchmark_symbol=benchmark_symbol,
                 trades=[],
                 exposures=[],
+                portfolio_construction=portfolio_summary,
+                portfolio_diagnostics=portfolio_diagnostics,
+                constraint_hits=constraint_hits,
                 tearsheet=tearsheet,
                 logs=[f"Mock run completed against benchmark {benchmark_symbol}"],
             )

@@ -307,75 +307,179 @@ def show_risk_analysis():
         st.plotly_chart(fig, use_container_width=True)
 
 def show_optimization_analysis():
-    """Show portfolio optimization analysis"""
-    st.subheader("🎯 Portfolio Optimization")
-    
-    st.info("🚧 Portfolio optimization features coming soon! This will include:")
-    
-    col1, col2 = st.columns(2)
-    
+    """Show portfolio construction and rebalancing diagnostics."""
+    st.subheader("🎯 Portfolio Construction & Rebalancing")
+
+    results = st.session_state.backtest_results
+    portfolio_summary = results.get('portfolio_construction') or {}
+    portfolio_metrics = results.get('metrics_summary') or {}
+    diagnostics = pd.DataFrame(results.get('portfolio_diagnostics') or [])
+    constraint_hits = results.get('constraint_hits') or []
+
+    if not portfolio_summary:
+        st.info(
+            "Run a backtest in target-weight portfolio construction mode to unlock rebalance schedules, "
+            "drift diagnostics, turnover controls, and constraint-hit reporting."
+        )
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown("""
-        **📊 Mean Reversion Optimization**
-        - Parameter sweep analysis
-        - Walk-forward optimization
-        - Out-of-sample testing
-        - Robust optimization methods
-        """)
-        
-        # Placeholder optimization interface
-        st.markdown("**⚙️ Optimization Settings**")
-        
-        param_to_optimize = st.selectbox(
-            "Parameter to Optimize",
-            ["Moving Average Period", "Position Size", "Stop Loss", "Take Profit"]
-        )
-        
-        optimization_method = st.selectbox(
-            "Optimization Method",
-            ["Grid Search", "Bayesian Optimization", "Genetic Algorithm"]
-        )
-        
-        col1a, col1b = st.columns(2)
-        with col1a:
-            min_value = st.number_input("Min Value", value=10)
-        with col1b:
-            max_value = st.number_input("Max Value", value=50)
-        
-        if st.button("🚀 Run Optimization"):
-            st.info("Optimization would run here with the selected parameters.")
-    
+        st.metric("Rebalances", int(portfolio_metrics.get('portfolio_rebalances', 0)))
     with col2:
-        st.markdown("""
-        **🎯 Risk Management**
-        - Position sizing optimization
-        - Kelly criterion calculation
-        - Risk parity allocation
-        - Maximum drawdown constraints
-        """)
-        
-        # Placeholder risk management tools
-        st.markdown("**⚖️ Risk Management Tools**")
-        
-        risk_target = st.slider("Target Volatility (%)", 5, 25, 15)
-        max_drawdown_limit = st.slider("Max Drawdown Limit (%)", 5, 50, 20)
-        
-        st.markdown("**💰 Position Sizing**")
-        kelly_fraction = st.slider("Kelly Fraction", 0.1, 1.0, 0.25, step=0.05)
-        
-        # Simple Kelly criterion calculation (placeholder)
-        if st.session_state.backtest_results:
-            total_return = st.session_state.backtest_results['total_return']
-            win_rate = 0.6  # Placeholder
-            avg_win = abs(total_return) * 1.5  # Placeholder
-            avg_loss = abs(total_return) * 0.8  # Placeholder
-            
-            if avg_loss > 0:
-                kelly_optimal = (win_rate * avg_win - (1 - win_rate) * avg_loss) / avg_win
-                st.write(f"**Optimal Kelly Fraction:** {kelly_optimal:.3f}")
-            
-        if st.button("📊 Calculate Optimal Allocation"):
-            st.info("Risk-adjusted allocation calculation would run here.")
+        st.metric("Avg Turnover", f"{portfolio_metrics.get('average_turnover_pct', 0.0):.2f}%")
+    with col3:
+        st.metric("Max Drift", f"{portfolio_metrics.get('max_weight_drift_pct', 0.0):.2f}%")
+    with col4:
+        st.metric("Constraint Hits", int(portfolio_metrics.get('constraint_hit_count', 0)))
+
+    target_weights = portfolio_summary.get('target_weights') or {}
+    target_df = pd.DataFrame(
+        [
+            {"Symbol": symbol, "Target Weight (%)": weight}
+            for symbol, weight in sorted(target_weights.items())
+        ]
+    )
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.markdown("**🎯 Allocation Policy**")
+        if not target_df.empty:
+            st.dataframe(target_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No target weights captured for this run.")
+    with col2:
+        st.markdown("**⚙️ Policy Controls**")
+        st.write(f"Method: {portfolio_summary.get('method', 'target_weights')}")
+        st.write(f"Rebalance Frequency: {portfolio_summary.get('rebalance_frequency', 'weekly')}")
+        st.write(f"Cash Floor: {portfolio_summary.get('cash_floor_pct', 0.0):.2f}%")
+        st.write(
+            f"Max Weight: {portfolio_summary.get('max_weight_pct', 'N/A')}"
+            + ("%" if portfolio_summary.get('max_weight_pct') is not None else "")
+        )
+        st.write(
+            f"Drift Threshold: {portfolio_summary.get('drift_threshold_pct', 'N/A')}"
+            + ("%" if portfolio_summary.get('drift_threshold_pct') is not None else "")
+        )
+        st.write(
+            f"Max Turnover: {portfolio_summary.get('max_turnover_pct', 'N/A')}"
+            + ("%" if portfolio_summary.get('max_turnover_pct') is not None else "")
+        )
+        st.write(
+            f"Drawdown Guardrail: {portfolio_summary.get('max_drawdown_pct', 'N/A')}"
+            + ("%" if portfolio_summary.get('max_drawdown_pct') is not None else "")
+        )
+
+    if diagnostics.empty:
+        st.warning("No portfolio diagnostics were recorded for this run.")
+        return
+
+    diagnostics['timestamp'] = pd.to_datetime(diagnostics['timestamp'])
+
+    monitor_fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        subplot_titles=('Turnover & Drift', 'Drawdown & Cash Buffer'),
+        vertical_spacing=0.12,
+    )
+    monitor_fig.add_trace(
+        go.Bar(
+            x=diagnostics['timestamp'],
+            y=diagnostics['turnover_pct'],
+            name='Turnover (%)',
+            marker_color='#4C78A8',
+        ),
+        row=1,
+        col=1,
+    )
+    monitor_fig.add_trace(
+        go.Scatter(
+            x=diagnostics['timestamp'],
+            y=diagnostics['max_abs_drift_pct'],
+            mode='lines+markers',
+            name='Max drift (%)',
+            line=dict(color='#F58518'),
+        ),
+        row=1,
+        col=1,
+    )
+    monitor_fig.add_trace(
+        go.Scatter(
+            x=diagnostics['timestamp'],
+            y=diagnostics['drawdown_pct'],
+            mode='lines',
+            name='Drawdown (%)',
+            line=dict(color='#E45756'),
+        ),
+        row=2,
+        col=1,
+    )
+    monitor_fig.add_trace(
+        go.Scatter(
+            x=diagnostics['timestamp'],
+            y=diagnostics['cash_weight_pct'],
+            mode='lines',
+            name='Cash weight (%)',
+            line=dict(color='#72B7B2'),
+        ),
+        row=2,
+        col=1,
+    )
+    monitor_fig.update_layout(height=550, barmode='group')
+    st.plotly_chart(monitor_fig, use_container_width=True)
+
+    weight_rows = []
+    for row in diagnostics.itertuples(index=False):
+        target_map = getattr(row, 'target_weights', {}) or {}
+        realized_map = getattr(row, 'realized_weights', {}) or {}
+        for symbol in sorted(set(target_map) | set(realized_map)):
+            weight_rows.append(
+                {
+                    'timestamp': row.timestamp,
+                    'symbol': symbol,
+                    'target_weight_pct': target_map.get(symbol, 0.0),
+                    'realized_weight_pct': realized_map.get(symbol, 0.0),
+                }
+            )
+    weights_df = pd.DataFrame(weight_rows)
+    if not weights_df.empty:
+        st.markdown("**📊 Target vs Realized Weights**")
+        weights_fig = go.Figure()
+        for symbol, frame in weights_df.groupby('symbol'):
+            weights_fig.add_trace(
+                go.Scatter(
+                    x=frame['timestamp'],
+                    y=frame['realized_weight_pct'],
+                    mode='lines+markers',
+                    name=f'{symbol} realized',
+                )
+            )
+            weights_fig.add_trace(
+                go.Scatter(
+                    x=frame['timestamp'],
+                    y=frame['target_weight_pct'],
+                    mode='lines',
+                    name=f'{symbol} target',
+                    line=dict(dash='dash'),
+                )
+            )
+        weights_fig.update_layout(height=450, yaxis_title='Weight (%)')
+        st.plotly_chart(weights_fig, use_container_width=True)
+
+    rebalance_table = diagnostics.loc[
+        :, ['timestamp', 'rebalanced', 'rebalance_reason', 'turnover_pct', 'max_abs_drift_pct', 'cash_weight_pct']
+    ].copy()
+    rebalance_table['timestamp'] = rebalance_table['timestamp'].dt.strftime('%Y-%m-%d')
+    st.markdown("**🗓️ Rebalance Timeline**")
+    st.dataframe(rebalance_table, use_container_width=True, hide_index=True)
+
+    if constraint_hits:
+        st.markdown("**🧱 Constraint Hits**")
+        constraint_df = pd.DataFrame(constraint_hits)
+        if 'timestamp' in constraint_df.columns:
+            constraint_df['timestamp'] = pd.to_datetime(constraint_df['timestamp']).dt.strftime('%Y-%m-%d')
+        st.dataframe(constraint_df, use_container_width=True, hide_index=True)
 
 def show_scenario_analysis():
     """Show scenario analysis"""

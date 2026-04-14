@@ -51,13 +51,23 @@ The gateway also sets basic security headers (`X-Content-Type-Options`, `X-Frame
 ```json
 POST /backtests
 {
-  "symbols": ["AAPL"],
+  "symbols": ["AAPL", "MSFT"],
   "start_date": "2024-01-01T00:00:00Z",
   "end_date": "2024-12-31T23:59:59Z",
   "resolution": "day",
   "strategy": {"name": "buy_and_hold"},
   "execution": {"slippage_bps": 1.0, "commission_bps": 0.5},
-  "benchmark_symbol": "SPY"
+  "benchmark_symbol": "SPY",
+  "portfolio_construction": {
+    "method": "target_weights",
+    "target_weights": {"AAPL": 0.6, "MSFT": 0.4},
+    "rebalance_frequency": "weekly",
+    "drift_threshold_pct": 5.0,
+    "max_weight_pct": 40.0,
+    "max_turnover_pct": 50.0,
+    "cash_floor_pct": 5.0,
+    "max_drawdown_pct": 20.0
+  }
 }
 ```
 
@@ -105,9 +115,33 @@ POST /backtests
   ],
   "trades": [],
   "exposures": [],
+  "portfolio_construction": {
+    "method": "target_weights",
+    "rebalance_frequency": "weekly",
+    "target_weights": {"AAPL": 57.0, "MSFT": 38.0},
+    "cash_floor_pct": 5.0,
+    "max_weight_pct": 40.0,
+    "max_turnover_pct": 50.0,
+    "drift_threshold_pct": 5.0,
+    "max_drawdown_pct": 20.0
+  },
+  "portfolio_diagnostics": [
+    {
+      "timestamp": "2024-01-01T00:00:00+00:00",
+      "target_weights": {"AAPL": 57.0, "MSFT": 38.0},
+      "realized_weights": {"AAPL": 57.0, "MSFT": 38.0},
+      "max_abs_drift_pct": 0.0,
+      "turnover_pct": 50.0,
+      "rebalanced": true,
+      "rebalance_reason": "initial_allocation",
+      "cash_weight_pct": 5.0
+    }
+  ],
+  "constraint_hits": [],
   "tearsheet": {
     "overview": {"final_value": 1012345.67},
     "benchmark": {"beta": 0.94, "alpha": 1.85, "information_ratio": 0.42},
+    "portfolio": {"method": "target_weights", "rebalance_frequency": "weekly"},
     "costs": {"total_cost_drag": 0.0}
   },
   "logs": []
@@ -124,10 +158,12 @@ Common `metrics_summary` keys include:
 - `total_trades`, `win_rate`, `profit_factor`
 - `average_win`, `average_loss`, `largest_win`, `largest_loss`
 - `total_commissions`
+- portfolio construction metrics such as `portfolio_rebalances`, `average_turnover_pct`, `max_weight_drift_pct`, and `constraint_hit_count`
 - benchmark-relative metrics such as `beta`, `alpha`, `tracking_error`, `information_ratio`, and `excess_return`
 
 Additional top-level result fields include:
 - `benchmark_symbol`, `benchmark_curve`
+- `portfolio_construction`, `portfolio_diagnostics`, `constraint_hits`
 - `tearsheet`
 
 Notes:
@@ -146,4 +182,5 @@ Notes:
 - Storage is in‑memory; restarting the service clears runs.
 - The mock engine emits progress updates and a sample result.
 - Benchmark-relative metrics are computed from the returned strategy and benchmark curves, not placeholder percentages.
+- Portfolio construction requests are accepted directly in the API surface so the same target-weight spec can flow between UI, API payloads, and saved results.
 - Replace the mock adapter with `gb-python` bindings or a CLI bridge in Phase 2.

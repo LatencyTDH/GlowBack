@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import unittest
 
 from api.app.adapter import MockEngineAdapter
-from api.app.models import BacktestRequest
+from api.app.models import BacktestRequest, PortfolioConstructionConfig
 from api.app.store import RunStore
 
 
@@ -17,6 +17,12 @@ class BacktestAdapterTests(unittest.IsolatedAsyncioTestCase):
             start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
             end_date=datetime(2024, 3, 1, tzinfo=timezone.utc),
             benchmark_symbol="SPY",
+            portfolio_construction=PortfolioConstructionConfig(
+                target_weights={"AAPL": 1.0},
+                rebalance_frequency="weekly",
+                cash_floor_pct=5.0,
+                max_turnover_pct=50.0,
+            ),
         )
 
         status_obj = await store.create_run(request)
@@ -31,6 +37,9 @@ class BacktestAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("information_ratio", result.metrics_summary)
         self.assertIn("benchmark", result.tearsheet)
         self.assertEqual(result.tearsheet["benchmark"]["benchmark_symbol"], "SPY")
+        self.assertEqual(result.portfolio_construction.get("rebalance_frequency"), "weekly")
+        self.assertTrue(result.portfolio_diagnostics)
+        self.assertIn("constraint_hit_count", result.metrics_summary)
 
 
 if __name__ == "__main__":

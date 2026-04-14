@@ -11,6 +11,39 @@ import streamlit as st
 
 from backtest_core import run_backtest
 
+
+def _loaded_symbols() -> list[str]:
+    if not st.session_state.get("data_loaded"):
+        return []
+    market_data = st.session_state.get("market_data")
+    if market_data is None or market_data.empty or "symbol" not in market_data.columns:
+        return []
+    return sorted({str(symbol).strip().upper() for symbol in market_data["symbol"].dropna().tolist() if str(symbol).strip()})
+
+
+def _default_target_weights_text() -> str:
+    symbols = _loaded_symbols()[:4]
+    if not symbols:
+        return "AAPL=60, MSFT=40"
+    equal_weight = round(100 / len(symbols), 2)
+    return ", ".join(f"{symbol}={equal_weight}" for symbol in symbols)
+
+
+def _parse_target_weights(raw_text: str) -> dict[str, float]:
+    target_weights: dict[str, float] = {}
+    for chunk in raw_text.replace("\n", ",").split(","):
+        if not chunk.strip():
+            continue
+        if "=" not in chunk:
+            raise ValueError(f"Invalid target weight entry '{chunk.strip()}'. Use SYMBOL=percent.")
+        symbol, raw_weight = chunk.split("=", 1)
+        normalized_symbol = symbol.strip().upper()
+        weight_pct = float(raw_weight.strip())
+        if not normalized_symbol or weight_pct <= 0:
+            continue
+        target_weights[normalized_symbol] = weight_pct / 100.0
+    return target_weights
+
 def show():
     """Main backtest runner page"""
     
@@ -33,9 +66,12 @@ def show():
             st.write(f"  • Bars: {len(df)}")
             st.write(f"  • Period: {df['timestamp'].min().date()} to {df['timestamp'].max().date()}")
         
-        # Check strategy
-        strategy_status = "✅ Ready" if 'strategy_code' in st.session_state else "❌ No Strategy"
-        st.write(f"**Strategy Code:** {strategy_status}")
+        # Check strategy / portfolio construction mode
+        if st.session_state.get("enable_portfolio_construction"):
+            st.write("**Strategy Code:** ℹ️ Optional (portfolio construction mode)")
+        else:
+            strategy_status = "✅ Ready" if 'strategy_code' in st.session_state else "❌ No Strategy"
+            st.write(f"**Strategy Code:** {strategy_status}")
         
         # Check config
         config_status = "✅ Ready" if st.session_state.strategy_config else "❌ No Config"
@@ -68,7 +104,33 @@ def show():
                 help="Use a symbol present in the loaded market data to compute actual benchmark-relative metrics.",
                 key="backtest_benchmark_symbol",
             )
-            
+
+            st.markdown("**Portfolio Construction (optional)**")
+            st.checkbox(
+                "Use target-weight portfolio construction",
+                value=st.session_state.get("enable_portfolio_construction", False),
+                help="Define portfolio weights, rebalance rules, and risk constraints instead of relying on strategy sizing.",
+                key="enable_portfolio_construction",
+            )
+            if st.session_state.get("enable_portfolio_construction"):
+                st.caption("Enter weights as percent allocations, e.g. `AAPL=60, MSFT=40`.")
+                st.text_area(
+                    "Target Weights",
+                    value=st.session_state.get("portfolio_target_weights_input") or _default_target_weights_text(),
+                    key="portfolio_target_weights_input",
+                    height=80,
+                )
+                port_col1, port_col2, port_col3 = st.columns(3)
+                with port_col1:
+                    st.selectbox("Rebalance Frequency", ["daily", "weekly", "monthly"], key="portfolio_rebalance_frequency")
+                    st.number_input("Cash Floor (%)", min_value=0.0, max_value=95.0, value=5.0, step=1.0, key="portfolio_cash_floor_pct")
+                with port_col2:
+                    st.number_input("Drift Threshold (%)", min_value=0.0, max_value=100.0, value=5.0, step=1.0, key="portfolio_drift_threshold_pct")
+                    st.number_input("Max Weight (%)", min_value=1.0, max_value=100.0, value=40.0, step=1.0, key="portfolio_max_weight_pct")
+                with port_col3:
+                    st.number_input("Max Turnover / Rebalance (%)", min_value=0.0, max_value=500.0, value=50.0, step=5.0, key="portfolio_max_turnover_pct")
+                    st.number_input("Drawdown Guardrail (%)", min_value=0.0, max_value=100.0, value=20.0, step=1.0, key="portfolio_max_drawdown_pct")
+
             submitted = st.form_submit_button("🚀 Run Backtest", type="primary")
     
     # Backtest execution
@@ -92,7 +154,8 @@ def run_backtest_execution():
         st.error("❌ No market data loaded. Please go to Data Loader first.")
         return
     
-    if 'strategy_code' not in st.session_state:
+    portfolio_mode = bool(st.session_state.get("enable_portfolio_construction"))
+    if not portfolio_mode and 'strategy_code' not in st.session_state:
         st.error("❌ No strategy code found. Please go to Strategy Editor first.")
         return
     
@@ -132,12 +195,36 @@ def run_backtest_execution():
             st.session_state.backtest_running = False
             return
 
-        strategy_code = st.session_state.strategy_code
+        strategy_code = st.session_state.get("strategy_code", "")
+        portfolio_construction = None
+        if portfolio_mode:
+            try:
+                target_weights = _parse_target_weights(st.session_state.get("portfolio_target_weights_input") or "")
+            except ValueError as exc:
+                st.error(f"❌ {exc}")
+                st.session_state.backtest_running = False
+                return
+            if not target_weights:
+                st.error("❌ Enter at least one positive target weight in portfolio construction mode.")
+                st.session_state.backtest_running = False
+                return
+            portfolio_construction = {
+                "enabled": True,
+                "target_weights": target_weights,
+                "rebalance_frequency": st.session_state.get("portfolio_rebalance_frequency") or "weekly",
+                "drift_threshold_pct": float(st.session_state.get("portfolio_drift_threshold_pct") or 0.0),
+                "max_weight_pct": float(st.session_state.get("portfolio_max_weight_pct") or 0.0),
+                "max_turnover_pct": float(st.session_state.get("portfolio_max_turnover_pct") or 0.0),
+                "cash_floor_pct": float(st.session_state.get("portfolio_cash_floor_pct") or 0.0),
+                "max_drawdown_pct": float(st.session_state.get("portfolio_max_drawdown_pct") or 0.0),
+            }
+
         config = {
             **st.session_state.strategy_config,
             "commission": float(st.session_state.get("backtest_commission_override", st.session_state.strategy_config.get("commission", 0.0)) or 0.0),
             "slippage_bps": float(st.session_state.get("backtest_slippage_override", st.session_state.strategy_config.get("slippage", 0.0)) or 0.0),
             "benchmark_symbol": (st.session_state.get("backtest_benchmark_symbol") or "").strip().upper() or None,
+            "portfolio_construction": portfolio_construction,
         }
         
         # Create queues for communication
@@ -199,14 +286,20 @@ def run_backtest_execution():
             
             # Show success message
             benchmark_metrics = result.get("benchmark_metrics") or {}
+            portfolio_summary = result.get("portfolio_construction") or {}
             if benchmark_metrics:
-                st.success(
+                message = (
                     f"🎉 Backtest completed! Final value: ${result['final_value']:,.2f} · "
                     f"Excess return vs {benchmark_metrics.get('benchmark_symbol') or result.get('benchmark_symbol')}: "
                     f"{benchmark_metrics.get('excess_return', 0.0):.2f}%"
                 )
             else:
-                st.success(f"🎉 Backtest completed! Final value: ${result['final_value']:,.2f}")
+                message = f"🎉 Backtest completed! Final value: ${result['final_value']:,.2f}"
+            if portfolio_summary:
+                message += (
+                    f" · Rebalances: {int(result.get('metrics_summary', {}).get('portfolio_rebalances', 0))}"
+                )
+            st.success(message)
             
         else:
             st.error("❌ Backtest failed. Check the logs for details.")
@@ -238,6 +331,8 @@ def show_quick_results():
     
     benchmark_metrics = results.get('benchmark_metrics') or {}
     cost_summary = results.get('cost_summary') or {}
+    portfolio_summary = results.get('portfolio_construction') or {}
+    portfolio_metrics = results.get('metrics_summary') or {}
 
     # Key metrics
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -255,11 +350,14 @@ def show_quick_results():
         st.metric("Total Trades", results['total_trades'])
 
     with col5:
-        information_ratio = benchmark_metrics.get('information_ratio')
-        if benchmark_metrics and information_ratio is not None:
-            st.metric("Information Ratio", f"{information_ratio:.2f}")
+        if portfolio_summary:
+            st.metric("Rebalances", int(portfolio_metrics.get('portfolio_rebalances', 0)))
         else:
-            st.metric("Cost Drag", f"{cost_summary.get('cost_drag_pct_initial', 0.0):.2f}%")
+            information_ratio = benchmark_metrics.get('information_ratio')
+            if benchmark_metrics and information_ratio is not None:
+                st.metric("Information Ratio", f"{information_ratio:.2f}")
+            else:
+                st.metric("Cost Drag", f"{cost_summary.get('cost_drag_pct_initial', 0.0):.2f}%")
     
     # Final portfolio
     col1, col2 = st.columns(2)
@@ -280,16 +378,24 @@ def show_quick_results():
             st.write(f"Excess Return: {benchmark_metrics.get('excess_return', 0.0):.2f}%")
     
     with col2:
-        st.write("**Trade Summary:**")
-        if results['trades']:
-            trades_df = pd.DataFrame(results['trades'])
-            buy_trades = len(trades_df[trades_df['action'] == 'BUY'])
-            sell_trades = len(trades_df[trades_df['action'] == 'SELL'])
-            st.write(f"Buy orders: {buy_trades}")
-            st.write(f"Sell orders: {sell_trades}")
-            st.write(f"Commissions: ${cost_summary.get('total_commissions', 0.0):,.2f}")
-            st.write(f"Slippage drag: ${cost_summary.get('total_slippage_cost', 0.0):,.2f}")
-            st.write(f"Turnover: {cost_summary.get('turnover_multiple', 0.0):.2f}x initial capital")
+        if portfolio_summary:
+            st.write("**Portfolio Construction:**")
+            st.write(f"Method: {portfolio_summary.get('method', 'target_weights')}")
+            st.write(f"Rebalance: {portfolio_summary.get('rebalance_frequency', 'weekly')}")
+            st.write(f"Avg turnover: {portfolio_metrics.get('average_turnover_pct', 0.0):.2f}%")
+            st.write(f"Max drift: {portfolio_metrics.get('max_weight_drift_pct', 0.0):.2f}%")
+            st.write(f"Constraint hits: {int(portfolio_metrics.get('constraint_hit_count', 0))}")
+        else:
+            st.write("**Trade Summary:**")
+            if results['trades']:
+                trades_df = pd.DataFrame(results['trades'])
+                buy_trades = len(trades_df[trades_df['action'] == 'BUY'])
+                sell_trades = len(trades_df[trades_df['action'] == 'SELL'])
+                st.write(f"Buy orders: {buy_trades}")
+                st.write(f"Sell orders: {sell_trades}")
+                st.write(f"Commissions: ${cost_summary.get('total_commissions', 0.0):,.2f}")
+                st.write(f"Slippage drag: ${cost_summary.get('total_slippage_cost', 0.0):,.2f}")
+                st.write(f"Turnover: {cost_summary.get('turnover_multiple', 0.0):.2f}x initial capital")
     
     # Quick actions
     col1, col2, col3 = st.columns(3)
