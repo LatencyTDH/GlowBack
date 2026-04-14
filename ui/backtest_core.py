@@ -533,11 +533,459 @@ def calculate_symbol_attribution(
     return attribution
 
 
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _round_share_quantity(shares: float) -> float:
+    if shares <= 0:
+        return 0.0
+    return math.floor(shares * 1_000_000) / 1_000_000
+
+
+def _calculate_weight_map(
+    positions: dict[str, float],
+    latest_prices: dict[str, float],
+    portfolio_value: float,
+) -> dict[str, float]:
+    if portfolio_value <= 0:
+        return {}
+
+    return {
+        symbol: float(shares * latest_prices.get(symbol, 0.0) / portfolio_value)
+        for symbol, shares in positions.items()
+        if latest_prices.get(symbol, 0.0) > 0 and shares != 0
+    }
+
+
+def _normalize_portfolio_construction_config(
+    raw_config: dict[str, Any] | None,
+    market_data: pd.DataFrame,
+) -> dict[str, Any] | None:
+    if not raw_config or not raw_config.get("enabled"):
+        return None
+
+    available_symbols = {
+        str(symbol).strip().upper()
+        for symbol in market_data.get("symbol", pd.Series(dtype=str)).dropna().tolist()
+    }
+    cleaned_weights: dict[str, float] = {}
+    validation_errors: list[str] = []
+    for raw_symbol, raw_weight in dict(raw_config.get("target_weights") or {}).items():
+        symbol = str(raw_symbol).strip().upper()
+        weight = _coerce_float(raw_weight)
+        if not symbol or weight <= 0:
+            continue
+        if available_symbols and symbol not in available_symbols:
+            validation_errors.append(f"Target weight symbol {symbol} is not present in the loaded market data.")
+            continue
+        cleaned_weights[symbol] = weight
+
+    total_weight = sum(cleaned_weights.values())
+    if total_weight <= 0:
+        return {
+            "enabled": True,
+            "validation_errors": validation_errors or ["Portfolio construction requires at least one positive target weight."],
+            "target_weights": {},
+        }
+
+    normalized = {symbol: weight / total_weight for symbol, weight in cleaned_weights.items()}
+    cash_floor_fraction = min(max(_coerce_float(raw_config.get("cash_floor_pct")) / 100.0, 0.0), 0.95)
+    investable_fraction = max(0.0, 1.0 - cash_floor_fraction)
+    max_weight_fraction = None
+    if raw_config.get("max_weight_pct") not in (None, ""):
+        max_weight_fraction = min(max(_coerce_float(raw_config.get("max_weight_pct")) / 100.0, 0.0), 1.0)
+
+    target_weights: dict[str, float] = {}
+    upfront_constraint_hits: list[dict[str, Any]] = []
+    for symbol, weight in normalized.items():
+        scaled_weight = weight * investable_fraction
+        if max_weight_fraction is not None and scaled_weight > max_weight_fraction:
+            upfront_constraint_hits.append(
+                {
+                    "type": "max_weight_cap",
+                    "symbol": symbol,
+                    "requested_weight_pct": round(scaled_weight * 100, 2),
+                    "applied_weight_pct": round(max_weight_fraction * 100, 2),
+                }
+            )
+            scaled_weight = max_weight_fraction
+        target_weights[symbol] = scaled_weight
+
+    return {
+        "enabled": True,
+        "method": "target_weights",
+        "target_weights": target_weights,
+        "rebalance_frequency": str(raw_config.get("rebalance_frequency") or "weekly").lower(),
+        "drift_threshold": min(max(_coerce_float(raw_config.get("drift_threshold_pct")) / 100.0, 0.0), 1.0),
+        "max_weight": max_weight_fraction,
+        "max_turnover": min(max(_coerce_float(raw_config.get("max_turnover_pct")) / 100.0, 0.0), 5.0),
+        "cash_floor": cash_floor_fraction,
+        "max_drawdown": min(max(_coerce_float(raw_config.get("max_drawdown_pct")) / 100.0, 0.0), 1.0),
+        "validation_errors": validation_errors,
+        "upfront_constraint_hits": upfront_constraint_hits,
+        "target_weights_pct": {symbol: round(weight * 100, 2) for symbol, weight in target_weights.items()},
+    }
+
+
+def _rebalance_due(
+    last_rebalance_at: pd.Timestamp | None,
+    current_timestamp: pd.Timestamp,
+    frequency: str,
+) -> bool:
+    if last_rebalance_at is None:
+        return True
+    if frequency == "daily":
+        return current_timestamp.normalize() > last_rebalance_at.normalize()
+    if frequency == "monthly":
+        return current_timestamp.to_period("M") != last_rebalance_at.to_period("M")
+    return current_timestamp.to_period("W") != last_rebalance_at.to_period("W")
+
+
+def _apply_target_weight_rebalance(
+    portfolio: SimplePortfolio,
+    latest_prices: dict[str, float],
+    target_weights: dict[str, float],
+    timestamp: pd.Timestamp,
+    max_turnover: float | None,
+    log_queue,
+) -> tuple[float, list[dict[str, Any]]]:
+    portfolio_value = portfolio.calculate_value(latest_prices)
+    if portfolio_value <= 0:
+        return 0.0, []
+
+    desired_shares: dict[str, float] = {}
+    for symbol, target_weight in target_weights.items():
+        price = _coerce_float(latest_prices.get(symbol))
+        if price <= 0:
+            continue
+        desired_shares[symbol] = (portfolio_value * target_weight) / price
+
+    symbols = set(portfolio.positions) | set(desired_shares)
+    planned_deltas: dict[str, float] = {
+        symbol: desired_shares.get(symbol, 0.0) - _coerce_float(portfolio.positions.get(symbol))
+        for symbol in symbols
+    }
+    planned_turnover_notional = sum(
+        abs(delta) * _coerce_float(latest_prices.get(symbol))
+        for symbol, delta in planned_deltas.items()
+        if _coerce_float(latest_prices.get(symbol)) > 0
+    )
+
+    scale = 1.0
+    constraint_hits: list[dict[str, Any]] = []
+    if max_turnover and planned_turnover_notional > 0:
+        allowed_turnover = portfolio_value * max_turnover
+        if planned_turnover_notional > allowed_turnover:
+            scale = allowed_turnover / planned_turnover_notional
+            constraint_hits.append(
+                {
+                    "type": "turnover_cap",
+                    "requested_turnover_pct": round(planned_turnover_notional / portfolio_value * 100, 2),
+                    "applied_turnover_pct": round(max_turnover * 100, 2),
+                }
+            )
+
+    trade_start_index = len(portfolio.trades)
+
+    for symbol in sorted(symbols):
+        delta = planned_deltas.get(symbol, 0.0)
+        price = _coerce_float(latest_prices.get(symbol))
+        if delta >= 0 or price <= 0:
+            continue
+        shares_to_sell = min(_round_share_quantity(abs(delta) * scale), _coerce_float(portfolio.positions.get(symbol)))
+        if shares_to_sell > 0:
+            portfolio.sell(symbol, shares_to_sell, price, timestamp)
+            _queue_put(log_queue, f"{timestamp:%Y-%m-%d}: Rebalanced SELL {shares_to_sell:.4f} {symbol} @ {price:.2f}")
+
+    for symbol in sorted(symbols):
+        delta = planned_deltas.get(symbol, 0.0)
+        price = _coerce_float(latest_prices.get(symbol))
+        if delta <= 0 or price <= 0:
+            continue
+        target_shares = _round_share_quantity(delta * scale)
+        if target_shares <= 0:
+            continue
+        per_share_cost = price * (1 + portfolio._slippage_multiplier()) * (1 + portfolio.commission_rate)
+        affordable_shares = portfolio.cash / per_share_cost if per_share_cost > 0 else 0.0
+        shares_to_buy = _round_share_quantity(min(target_shares, affordable_shares))
+        if shares_to_buy > 0:
+            portfolio.buy(symbol, shares_to_buy, price, timestamp)
+            _queue_put(log_queue, f"{timestamp:%Y-%m-%d}: Rebalanced BUY {shares_to_buy:.4f} {symbol} @ {price:.2f}")
+
+    actual_turnover_notional = sum(
+        _coerce_float(trade.get("gross_notional"))
+        for trade in portfolio.trades[trade_start_index:]
+    )
+    turnover_pct = actual_turnover_notional / portfolio_value * 100 if portfolio_value > 0 else 0.0
+    return turnover_pct, constraint_hits
+
+
+def _finalize_backtest_results(
+    market_data: pd.DataFrame,
+    portfolio: SimplePortfolio,
+    equity_curve: list[dict[str, Any]],
+    latest_prices: dict[str, float],
+    all_logs: list[str],
+    benchmark_symbol: str | None,
+    portfolio_construction: dict[str, Any] | None = None,
+    portfolio_diagnostics: list[dict[str, Any]] | None = None,
+    constraint_hits: list[dict[str, Any]] | None = None,
+    log_queue=None,
+) -> dict[str, Any]:
+    final_value = equity_curve[-1]["value"]
+    total_return = (final_value - portfolio.initial_cash) / portfolio.initial_cash * 100
+    annualized_return = calculate_annualized_return_pct(equity_curve)
+    sharpe_ratio = calculate_sharpe_ratio(equity_curve)
+    max_drawdown = calculate_max_drawdown(equity_curve) * 100
+    win_rate = calculate_closed_trade_win_rate(portfolio.trades)
+
+    benchmark_curve = build_buy_and_hold_benchmark_curve(market_data, benchmark_symbol, portfolio.initial_cash)
+    benchmark_metrics = calculate_benchmark_metrics(equity_curve, benchmark_curve) if benchmark_curve else {}
+    if benchmark_symbol and not benchmark_curve:
+        _queue_put(log_queue, f"Benchmark symbol {benchmark_symbol} was not present in the loaded market data; benchmark metrics were skipped.")
+
+    cost_summary = calculate_trading_cost_summary(portfolio.trades, portfolio.initial_cash, final_value)
+    attribution = calculate_symbol_attribution(
+        portfolio.trades,
+        portfolio.positions,
+        latest_prices,
+        portfolio.initial_cash,
+    )
+
+    diagnostics = portfolio_diagnostics or []
+    constraint_events = constraint_hits or []
+    portfolio_metrics = {}
+    if diagnostics:
+        rebalances = [row for row in diagnostics if row.get("rebalanced")]
+        portfolio_metrics = {
+            "portfolio_rebalances": float(len(rebalances)),
+            "average_turnover_pct": float(np.mean([row.get("turnover_pct", 0.0) for row in diagnostics])) if diagnostics else 0.0,
+            "max_weight_drift_pct": float(max((row.get("max_abs_drift_pct", 0.0) for row in diagnostics), default=0.0)),
+            "constraint_hit_count": float(len(constraint_events)),
+        }
+
+    results = {
+        "equity_curve": equity_curve,
+        "benchmark_curve": benchmark_curve or [],
+        "trades": portfolio.trades,
+        "exposures": diagnostics,
+        "portfolio_construction": portfolio_construction or {},
+        "portfolio_diagnostics": diagnostics,
+        "constraint_hits": constraint_events,
+        "initial_capital": portfolio.initial_cash,
+        "final_value": final_value,
+        "total_return": total_return,
+        "annualized_return": annualized_return,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown": max_drawdown,
+        "total_trades": len(portfolio.trades),
+        "final_cash": portfolio.cash,
+        "final_positions": portfolio.positions,
+        "logs": all_logs,
+        "benchmark_symbol": benchmark_symbol,
+        "benchmark_metrics": benchmark_metrics,
+        "cost_summary": cost_summary,
+        "attribution": attribution,
+        "total_commissions": cost_summary["total_commissions"],
+        "total_slippage_cost": cost_summary["total_slippage_cost"],
+        "win_rate": win_rate,
+    }
+    results["metrics_summary"] = {
+        "initial_capital": portfolio.initial_cash,
+        "final_value": final_value,
+        "total_return": total_return,
+        "annualized_return": annualized_return,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown": max_drawdown,
+        "total_trades": len(portfolio.trades),
+        "win_rate": 0.0 if win_rate is None else win_rate,
+        "total_commissions": cost_summary["total_commissions"],
+        "total_slippage_cost": cost_summary["total_slippage_cost"],
+        **portfolio_metrics,
+        **benchmark_metrics,
+    }
+    results["tearsheet"] = build_tearsheet(results)
+    return results
+
+
+def _run_portfolio_construction_backtest(market_data, config, portfolio_config, progress_queue, log_queue):
+    commission_rate = float(config.get("commission", 0.0) or 0.0)
+    slippage_bps = float(config.get("slippage_bps", config.get("slippage", 0.0)) or 0.0)
+    portfolio = SimplePortfolio(
+        config.get("initial_capital", 100000),
+        commission_rate=commission_rate,
+        slippage_bps=slippage_bps,
+    )
+
+    _queue_put(log_queue, "Started backtest: Portfolio Construction (target weights)")
+    _queue_put(log_queue, f"Initial capital: ${portfolio.initial_cash:,.2f}")
+    _queue_put(log_queue, f"Execution costs: commission={commission_rate:.4f}, slippage={slippage_bps:.2f} bps")
+
+    validation_errors = portfolio_config.get("validation_errors") or []
+    if not portfolio_config.get("target_weights"):
+        for error in validation_errors or ["Portfolio construction requires at least one valid target weight."]:
+            _queue_put(log_queue, f"ERROR: {error}")
+        return None
+
+    all_logs: list[str] = []
+    for warning in validation_errors:
+        _queue_put(log_queue, f"WARNING: {warning}")
+        all_logs.append(f"WARNING: {warning}")
+    latest_prices: dict[str, float] = {}
+    equity_curve: list[dict[str, Any]] = []
+    portfolio_diagnostics: list[dict[str, Any]] = []
+    constraint_hits: list[dict[str, Any]] = []
+    previous_value = float(portfolio.initial_cash)
+    last_rebalance_at: pd.Timestamp | None = None
+    peak_value = float(portfolio.initial_cash)
+
+    for hit in portfolio_config.get("upfront_constraint_hits") or []:
+        stamped_hit = {"timestamp": pd.Timestamp(market_data["timestamp"].min()), **hit}
+        constraint_hits.append(stamped_hit)
+
+    grouped = list(market_data.sort_values(["timestamp", "symbol"]).groupby("timestamp", sort=True))
+    total_steps = len(grouped)
+    if total_steps == 0:
+        _queue_put(log_queue, "ERROR: No market data available for portfolio construction backtest")
+        return None
+
+    for index, (timestamp, rows) in enumerate(grouped, start=1):
+        current_timestamp = pd.Timestamp(timestamp)
+        for row in rows.itertuples(index=False):
+            latest_prices[str(row.symbol)] = float(row.close)
+
+        portfolio_value_before = portfolio.calculate_value(latest_prices)
+        peak_value = max(peak_value, portfolio_value_before)
+        drawdown_pct = ((peak_value - portfolio_value_before) / peak_value * 100) if peak_value > 0 else 0.0
+        current_weights = _calculate_weight_map(portfolio.positions, latest_prices, portfolio_value_before)
+        drift_map = {
+            symbol: current_weights.get(symbol, 0.0) - portfolio_config["target_weights"].get(symbol, 0.0)
+            for symbol in set(current_weights) | set(portfolio_config["target_weights"])
+        }
+        max_abs_drift_pct = max((abs(weight) * 100 for weight in drift_map.values()), default=0.0)
+
+        rebalance_reason = None
+        effective_target_weights = dict(portfolio_config["target_weights"])
+        step_constraint_hits: list[dict[str, Any]] = []
+        max_drawdown_fraction = portfolio_config.get("max_drawdown") or 0.0
+        if max_drawdown_fraction and drawdown_pct >= max_drawdown_fraction * 100 and portfolio.positions:
+            effective_target_weights = {}
+            rebalance_reason = "drawdown_guard"
+            step_constraint_hits.append(
+                {
+                    "timestamp": current_timestamp,
+                    "type": "max_drawdown_guard",
+                    "observed_drawdown_pct": round(drawdown_pct, 2),
+                    "limit_pct": round(max_drawdown_fraction * 100, 2),
+                }
+            )
+        elif _rebalance_due(last_rebalance_at, current_timestamp, portfolio_config.get("rebalance_frequency", "weekly")):
+            rebalance_reason = "initial_allocation" if last_rebalance_at is None else f"{portfolio_config.get('rebalance_frequency', 'weekly')}_schedule"
+        elif portfolio_config.get("drift_threshold") and max_abs_drift_pct >= portfolio_config["drift_threshold"] * 100:
+            rebalance_reason = "drift_threshold"
+
+        turnover_pct = 0.0
+        if rebalance_reason is not None:
+            turnover_pct, turnover_hits = _apply_target_weight_rebalance(
+                portfolio,
+                latest_prices,
+                effective_target_weights,
+                current_timestamp,
+                portfolio_config.get("max_turnover"),
+                log_queue,
+            )
+            step_constraint_hits.extend({"timestamp": current_timestamp, **hit} for hit in turnover_hits)
+            last_rebalance_at = current_timestamp
+
+        portfolio_value_after = portfolio.calculate_value(latest_prices)
+        peak_value = max(peak_value, portfolio_value_after)
+        realized_weights = _calculate_weight_map(portfolio.positions, latest_prices, portfolio_value_after)
+        realized_drift_map = {
+            symbol: realized_weights.get(symbol, 0.0) - portfolio_config["target_weights"].get(symbol, 0.0)
+            for symbol in set(realized_weights) | set(portfolio_config["target_weights"])
+        }
+        realized_max_abs_drift_pct = max((abs(weight) * 100 for weight in realized_drift_map.values()), default=0.0)
+        position_value = portfolio.calculate_position_value(latest_prices)
+        period_return = 0.0 if previous_value == 0 else (portfolio_value_after - previous_value) / previous_value
+        cumulative_return_pct = (
+            0.0
+            if portfolio.initial_cash == 0
+            else (portfolio_value_after - portfolio.initial_cash) / portfolio.initial_cash * 100
+        )
+
+        equity_curve.append(
+            {
+                "timestamp": current_timestamp,
+                "value": portfolio_value_after,
+                "cash": portfolio.cash,
+                "positions": sum(portfolio.positions.values()),
+                "position_value": position_value,
+                "returns": cumulative_return_pct,
+                "period_return": period_return,
+                "exposures": realized_weights,
+            }
+        )
+        previous_value = portfolio_value_after
+
+        portfolio_diagnostics.append(
+            {
+                "timestamp": current_timestamp,
+                "portfolio_value": portfolio_value_after,
+                "target_weights": {symbol: round(weight * 100, 2) for symbol, weight in portfolio_config["target_weights"].items()},
+                "realized_weights": {symbol: round(weight * 100, 2) for symbol, weight in realized_weights.items()},
+                "drift_by_symbol_pct": {symbol: round(weight * 100, 2) for symbol, weight in realized_drift_map.items()},
+                "max_abs_drift_pct": round(realized_max_abs_drift_pct, 2),
+                "turnover_pct": round(turnover_pct, 2),
+                "rebalanced": rebalance_reason is not None,
+                "rebalance_reason": rebalance_reason,
+                "cash_weight_pct": round((portfolio.cash / portfolio_value_after * 100) if portfolio_value_after > 0 else 0.0, 2),
+                "drawdown_pct": round(((peak_value - portfolio_value_after) / peak_value * 100) if peak_value > 0 else 0.0, 2),
+                "constraint_hits": step_constraint_hits,
+            }
+        )
+        constraint_hits.extend(step_constraint_hits)
+
+        progress = index / total_steps
+        _queue_put(progress_queue, progress)
+        time.sleep(0.01)
+
+    _queue_put(log_queue, "Backtest completed!")
+    all_logs.extend([f"Portfolio construction method: {portfolio_config.get('method', 'target_weights')}" if portfolio_config else ""])
+    benchmark_symbol = config.get("benchmark_symbol")
+    portfolio_summary = {
+        "method": portfolio_config.get("method", "target_weights"),
+        "rebalance_frequency": portfolio_config.get("rebalance_frequency", "weekly"),
+        "target_weights": portfolio_config.get("target_weights_pct") or {symbol: round(weight * 100, 2) for symbol, weight in portfolio_config.get("target_weights", {}).items()},
+        "cash_floor_pct": round((portfolio_config.get("cash_floor") or 0.0) * 100, 2),
+        "max_weight_pct": None if portfolio_config.get("max_weight") is None else round(portfolio_config["max_weight"] * 100, 2),
+        "max_turnover_pct": None if not portfolio_config.get("max_turnover") else round(portfolio_config["max_turnover"] * 100, 2),
+        "drift_threshold_pct": None if not portfolio_config.get("drift_threshold") else round(portfolio_config["drift_threshold"] * 100, 2),
+        "max_drawdown_pct": None if not portfolio_config.get("max_drawdown") else round(portfolio_config["max_drawdown"] * 100, 2),
+    }
+    return _finalize_backtest_results(
+        market_data,
+        portfolio,
+        equity_curve,
+        latest_prices,
+        [line for line in all_logs if line],
+        benchmark_symbol,
+        portfolio_construction=portfolio_summary,
+        portfolio_diagnostics=portfolio_diagnostics,
+        constraint_hits=constraint_hits,
+        log_queue=log_queue,
+    )
+
+
 def build_tearsheet(results: dict[str, Any]) -> dict[str, Any]:
     """Assemble a reusable institutional-style tearsheet payload."""
     benchmark_metrics = results.get("benchmark_metrics") or {}
     cost_summary = results.get("cost_summary") or {}
     attribution = results.get("attribution") or []
+    portfolio_summary = results.get("portfolio_construction") or {}
     top_contributors = sorted(attribution, key=lambda row: row.get("contribution_pct", 0), reverse=True)[:5]
     biggest_detractors = sorted(attribution, key=lambda row: row.get("contribution_pct", 0))[:5]
 
@@ -553,6 +1001,7 @@ def build_tearsheet(results: dict[str, Any]) -> dict[str, Any]:
             "total_trades": results.get("total_trades"),
         },
         "benchmark": benchmark_metrics,
+        "portfolio": portfolio_summary,
         "costs": cost_summary,
         "top_contributors": top_contributors,
         "biggest_detractors": biggest_detractors,
@@ -567,6 +1016,10 @@ def _queue_put(queue_obj, value):
 def run_backtest(strategy_code, market_data, config, progress_queue, log_queue):
     """Run a simple UI backtest in a worker thread."""
     try:
+        portfolio_config = _normalize_portfolio_construction_config(config.get("portfolio_construction"), market_data)
+        if portfolio_config is not None:
+            return _run_portfolio_construction_backtest(market_data, config, portfolio_config, progress_queue, log_queue)
+
         namespace = {}
         exec(strategy_code, namespace)
 
@@ -657,64 +1110,15 @@ def run_backtest(strategy_code, market_data, config, progress_queue, log_queue):
 
         _queue_put(log_queue, "Backtest completed!")
 
-        final_value = equity_curve[-1]["value"]
-        total_return = (final_value - portfolio.initial_cash) / portfolio.initial_cash * 100
-        annualized_return = calculate_annualized_return_pct(equity_curve)
-        sharpe_ratio = calculate_sharpe_ratio(equity_curve)
-        max_drawdown = calculate_max_drawdown(equity_curve) * 100
-        win_rate = calculate_closed_trade_win_rate(portfolio.trades)
-
-        benchmark_symbol = config.get("benchmark_symbol")
-        benchmark_curve = build_buy_and_hold_benchmark_curve(market_data, benchmark_symbol, portfolio.initial_cash)
-        benchmark_metrics = calculate_benchmark_metrics(equity_curve, benchmark_curve) if benchmark_curve else {}
-        if benchmark_symbol and not benchmark_curve:
-            _queue_put(log_queue, f"Benchmark symbol {benchmark_symbol} was not present in the loaded market data; benchmark metrics were skipped.")
-
-        cost_summary = calculate_trading_cost_summary(portfolio.trades, portfolio.initial_cash, final_value)
-        attribution = calculate_symbol_attribution(
-            portfolio.trades,
-            portfolio.positions,
+        return _finalize_backtest_results(
+            market_data,
+            portfolio,
+            equity_curve,
             latest_prices,
-            portfolio.initial_cash,
+            all_logs,
+            config.get("benchmark_symbol"),
+            log_queue=log_queue,
         )
-
-        results = {
-            "equity_curve": equity_curve,
-            "benchmark_curve": benchmark_curve or [],
-            "trades": portfolio.trades,
-            "initial_capital": portfolio.initial_cash,
-            "final_value": final_value,
-            "total_return": total_return,
-            "annualized_return": annualized_return,
-            "sharpe_ratio": sharpe_ratio,
-            "max_drawdown": max_drawdown,
-            "total_trades": len(portfolio.trades),
-            "final_cash": portfolio.cash,
-            "final_positions": portfolio.positions,
-            "logs": all_logs,
-            "benchmark_symbol": benchmark_symbol,
-            "benchmark_metrics": benchmark_metrics,
-            "cost_summary": cost_summary,
-            "attribution": attribution,
-            "total_commissions": cost_summary["total_commissions"],
-            "total_slippage_cost": cost_summary["total_slippage_cost"],
-            "win_rate": win_rate,
-        }
-        results["metrics_summary"] = {
-            "initial_capital": portfolio.initial_cash,
-            "final_value": final_value,
-            "total_return": total_return,
-            "annualized_return": annualized_return,
-            "sharpe_ratio": sharpe_ratio,
-            "max_drawdown": max_drawdown,
-            "total_trades": len(portfolio.trades),
-            "win_rate": 0.0 if win_rate is None else win_rate,
-            "total_commissions": cost_summary["total_commissions"],
-            "total_slippage_cost": cost_summary["total_slippage_cost"],
-            **benchmark_metrics,
-        }
-        results["tearsheet"] = build_tearsheet(results)
-        return results
     except Exception as exc:
         _queue_put(log_queue, f"FATAL ERROR: {str(exc)}")
         return None

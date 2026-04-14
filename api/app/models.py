@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class StrategyConfig(BaseModel):
@@ -24,6 +24,41 @@ class ExecutionConfig(BaseModel):
     latency_ms: int | None = Field(default=None, description="Latency in milliseconds")
 
 
+class PortfolioConstructionConfig(BaseModel):
+    method: str = Field(default="target_weights", pattern=r"^target_weights$")
+    target_weights: dict[str, float] = Field(default_factory=dict, description="Symbol -> weight fraction")
+    rebalance_frequency: str = Field(
+        default="weekly",
+        description="daily|weekly|monthly",
+        pattern=r"^(daily|weekly|monthly)$",
+    )
+    drift_threshold_pct: float | None = Field(default=None, ge=0.0, le=100.0)
+    max_weight_pct: float | None = Field(default=None, gt=0.0, le=100.0)
+    max_turnover_pct: float | None = Field(default=None, ge=0.0, le=500.0)
+    cash_floor_pct: float = Field(default=0.0, ge=0.0, le=95.0)
+    max_drawdown_pct: float | None = Field(default=None, gt=0.0, le=100.0)
+
+    @model_validator(mode="after")
+    def validate_target_weights(self) -> "PortfolioConstructionConfig":
+        cleaned: dict[str, float] = {}
+        total_weight = 0.0
+        for raw_symbol, raw_weight in self.target_weights.items():
+            symbol = str(raw_symbol).strip().upper()
+            weight = float(raw_weight)
+            if not symbol or weight <= 0:
+                continue
+            cleaned[symbol] = weight
+            total_weight += weight
+
+        if not cleaned:
+            raise ValueError("portfolio_construction.target_weights must include at least one positive symbol weight")
+        if total_weight <= 0:
+            raise ValueError("portfolio_construction.target_weights must sum to a positive value")
+
+        self.target_weights = cleaned
+        return self
+
+
 class BacktestRequest(BaseModel):
     symbols: list[str] = Field(min_length=1, max_length=100)
     start_date: datetime
@@ -39,6 +74,7 @@ class BacktestRequest(BaseModel):
     currency: str = Field(default="USD", min_length=3, max_length=5, pattern=r"^[A-Z]{3,5}$")
     timezone: str = Field(default="UTC", max_length=64)
     benchmark_symbol: str | None = Field(default=None, min_length=1, max_length=16)
+    portfolio_construction: PortfolioConstructionConfig | None = None
 
 
 class RunState(str, Enum):
@@ -81,5 +117,8 @@ class BacktestResult(BaseModel):
     benchmark_symbol: str | None = None
     trades: list[dict[str, Any]] = Field(default_factory=list)
     exposures: list[dict[str, Any]] = Field(default_factory=list)
+    portfolio_construction: dict[str, Any] = Field(default_factory=dict)
+    portfolio_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    constraint_hits: list[dict[str, Any]] = Field(default_factory=list)
     tearsheet: dict[str, Any] = Field(default_factory=dict)
     logs: list[str] = Field(default_factory=list)
