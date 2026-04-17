@@ -9,10 +9,11 @@ The UI provides a full research loop: load data, edit strategies, run backtests,
 ## Features
 
 - Data loader (sample data, CSV, Alpha Vantage)
-- Strategy editor with templates and validation
-- Backtest runner with progress and logs
+- Strategy editor with templates, validation, and durable saved-strategy snapshots
+- Backtest runner with progress, logs, and persisted experiment history
 - Results dashboard (equity curve, drawdowns, metrics)
 - Portfolio analyzer (risk metrics, scenario analysis)
+- Advanced analytics compare view that can reload and compare historical runs across restarts
 
 ## Quick Start
 

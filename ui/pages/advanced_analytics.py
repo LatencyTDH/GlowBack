@@ -3,16 +3,24 @@ Advanced Analytics Page - Heatmaps, rolling statistics & interactive features
 Implements enhancements from issue #47.
 """
 
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import numpy as np
-from typing import Optional, Dict, List
 import io
 import json
-from datetime import datetime
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+from research_registry import (
+    delete_saved_run,
+    list_streamlit_runs,
+    rename_saved_run,
+    run_display_name,
+    run_summary_rows,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -62,14 +70,7 @@ def show():
     )
 
     results = st.session_state.get("backtest_results")
-    if not results:
-        st.warning("⚠️ No backtest results available. Run a backtest first.")
-        return
-
-    eq = _equity_df(results)
-    if eq is None or len(eq) < 2:
-        st.error("❌ Equity curve data is missing or too short for analytics.")
-        return
+    eq = _equity_df(results) if results else None
 
     tab_heatmaps, tab_rolling, tab_compare, tab_sensitivity, tab_export = st.tabs(
         [
@@ -82,19 +83,31 @@ def show():
     )
 
     with tab_heatmaps:
-        _show_heatmaps(eq, results)
+        if eq is None or len(eq) < 2 or not results:
+            st.warning("⚠️ Run a backtest to unlock heatmaps.")
+        else:
+            _show_heatmaps(eq, results)
 
     with tab_rolling:
-        _show_rolling_statistics(eq, results)
+        if eq is None or len(eq) < 2 or not results:
+            st.warning("⚠️ Run a backtest to unlock rolling statistics.")
+        else:
+            _show_rolling_statistics(eq, results)
 
     with tab_compare:
         _show_compare_runs()
 
     with tab_sensitivity:
-        _show_sensitivity()
+        if not results:
+            st.warning("⚠️ Run a backtest first to seed the sensitivity analysis.")
+        else:
+            _show_sensitivity()
 
     with tab_export:
-        _show_export(eq, results)
+        if eq is None or len(eq) < 2 or not results:
+            st.warning("⚠️ Run a backtest first to export analytics artifacts.")
+        else:
+            _show_export(eq, results)
 
 
 # ---------------------------------------------------------------------------
@@ -447,88 +460,94 @@ def _show_rolling_statistics(eq: pd.DataFrame, results: dict):
 def _show_compare_runs():
     st.subheader("🔀 Compare Backtest Runs")
 
-    saved_runs: Dict[str, dict] = st.session_state.get("saved_runs", {})
-
-    # Save current run
-    current = st.session_state.get("backtest_results")
-    if current:
-        run_name = st.text_input(
-            "Save current run as",
-            value=f"Run {len(saved_runs) + 1}",
+    current = st.session_state.get("backtest_results") or {}
+    if current.get("run_id"):
+        save_label = st.text_input(
+            "Name the current run for later comparison",
+            value=str(current.get("strategy_name") or "Current Run"),
             key="save_run_name",
         )
-        if st.button("💾 Save Current Run"):
-            saved_runs[run_name] = {
-                "results": current,
-                "saved_at": datetime.now().isoformat(),
-            }
-            st.session_state.saved_runs = saved_runs
-            st.success(f"Saved as **{run_name}**")
+        if st.button("💾 Save Current Run Name"):
+            rename_saved_run(current["run_id"], save_label.strip() or None)
+            st.success(f"Saved current run as **{save_label.strip() or current['run_id']}**")
 
-    if len(saved_runs) < 2:
-        st.info(
-            "Save ≥ 2 backtest runs to compare them side-by-side. "
-            "Run different strategies or parameters and save each result."
-        )
-        if saved_runs:
-            st.markdown(f"**Saved runs:** {', '.join(saved_runs.keys())}")
+    persisted_runs = list_streamlit_runs()
+    if not persisted_runs:
+        st.info("No persisted runs yet. Run a backtest to create durable experiment history.")
         return
 
-    # Select runs to compare
+    st.markdown("**Persisted experiment history**")
+    st.dataframe(pd.DataFrame(run_summary_rows(persisted_runs)), use_container_width=True, hide_index=True)
+
+    option_lookup = {
+        f"{run_display_name(record)} [{record['run_id'][:8]}]": record for record in persisted_runs
+    }
+    default_selection = list(option_lookup.keys())[: min(2, len(option_lookup))]
     selected = st.multiselect(
         "Select runs to compare",
-        options=list(saved_runs.keys()),
-        default=list(saved_runs.keys())[:2],
+        options=list(option_lookup.keys()),
+        default=default_selection,
     )
     if len(selected) < 2:
-        st.warning("Select at least 2 runs.")
-        return
-
-    # Metrics comparison table
-    rows = []
-    for name in selected:
-        r = saved_runs[name]["results"]
-        rows.append(
-            {
-                "Run": name,
-                "Total Return (%)": f"{r.get('total_return', 0):.2f}",
-                "Sharpe": f"{r.get('sharpe_ratio', 0):.2f}",
-                "Max DD (%)": f"{r.get('max_drawdown', 0):.2f}",
-                "Trades": r.get("total_trades", 0),
-                "Final Value ($)": f"{r.get('final_value', 0):,.2f}",
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    # Equity overlay chart
-    fig = go.Figure()
-    for name in selected:
-        r = saved_runs[name]["results"]
-        edf = _equity_df(r)
-        if edf is not None:
-            fig.add_trace(
-                go.Scatter(
-                    x=edf.index,
-                    y=edf["value"],
-                    mode="lines",
-                    name=name,
-                )
+        st.info("Select at least 2 persisted runs to compare them across sessions.")
+    else:
+        rows = []
+        fig = go.Figure()
+        for name in selected:
+            record = option_lookup[name]
+            results = record.get("result") or {}
+            rows.append(
+                {
+                    "Run": name,
+                    "Total Return (%)": f"{results.get('total_return', 0):.2f}",
+                    "Sharpe": f"{results.get('sharpe_ratio', 0):.2f}",
+                    "Max DD (%)": f"{results.get('max_drawdown', 0):.2f}",
+                    "Trades": results.get("total_trades", 0),
+                    "Final Value ($)": f"{results.get('final_value', 0):,.2f}",
+                }
             )
-    fig.update_layout(
-        title="Equity Curve Comparison",
-        xaxis_title="Date",
-        yaxis_title="Portfolio Value ($)",
-        height=450,
-    )
-    st.plotly_chart(fig, use_container_width=True)
+            edf = _equity_df(results)
+            if edf is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=edf.index,
+                        y=edf["value"],
+                        mode="lines",
+                        name=name,
+                    )
+                )
 
-    # Delete a saved run
-    with st.expander("🗑️ Manage saved runs"):
-        to_delete = st.selectbox("Delete a run", options=[""] + list(saved_runs.keys()))
-        if to_delete and st.button("Delete"):
-            del saved_runs[to_delete]
-            st.session_state.saved_runs = saved_runs
-            st.rerun()
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        fig.update_layout(
+            title="Equity Curve Comparison",
+            xaxis_title="Date",
+            yaxis_title="Portfolio Value ($)",
+            height=450,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("🗂️ Manage persisted runs"):
+        selected_run_name = st.selectbox(
+            "Choose a persisted run",
+            options=[""] + list(option_lookup.keys()),
+            key="manage_persisted_run",
+        )
+        if selected_run_name:
+            selected_record = option_lookup[selected_run_name]
+            action_col1, action_col2 = st.columns(2)
+            with action_col1:
+                st.download_button(
+                    "⬇️ Export Run JSON",
+                    data=json.dumps(selected_record, indent=2),
+                    file_name=f"{selected_record['run_id']}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            with action_col2:
+                if st.button("🗑️ Delete Run", type="secondary"):
+                    if delete_saved_run(selected_record["run_id"]):
+                        st.success(f"Deleted {selected_run_name}.")
+                        st.rerun()
 
 
 # ---------------------------------------------------------------------------
