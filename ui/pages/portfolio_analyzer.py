@@ -2,6 +2,8 @@
 Portfolio Analyzer Page - Advanced portfolio analysis and optimization
 """
 
+import os
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -14,28 +16,36 @@ def show():
     
     st.title("💼 Portfolio Analyzer")
     st.markdown("Advanced portfolio analysis, optimization, and risk management tools.")
-    
-    if not st.session_state.backtest_results:
-        st.warning("⚠️ No backtest results available. Please run a backtest first.")
+
+    has_results = bool(st.session_state.backtest_results)
+    if not has_results:
+        st.warning("⚠️ No backtest results available yet. Optimization can still run against the API, but the performance/risk tabs need a completed backtest.")
         if st.button("🚀 Go to Backtest Runner"):
-            # Force navigation by setting query params (Streamlit navigation)
             st.info("💡 Please use the sidebar navigation to go to 'Backtest Runner'")
-        return
     
     # Portfolio analysis tabs
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "⚖️ Risk Analysis", "🎯 Optimization", "📈 Scenarios"])
     
     with tab1:
-        show_performance_analysis()
+        if has_results:
+            show_performance_analysis()
+        else:
+            st.info("Run a backtest to unlock the performance view.")
     
     with tab2:
-        show_risk_analysis()
+        if has_results:
+            show_risk_analysis()
+        else:
+            st.info("Run a backtest to unlock the risk analysis view.")
     
     with tab3:
         show_optimization_analysis()
     
     with tab4:
-        show_scenario_analysis()
+        if has_results:
+            show_scenario_analysis()
+        else:
+            st.info("Run a backtest to unlock scenario analysis.")
 
 def show_performance_analysis():
     """Show detailed performance analysis"""
@@ -307,179 +317,469 @@ def show_risk_analysis():
         st.plotly_chart(fig, use_container_width=True)
 
 def show_optimization_analysis():
-    """Show portfolio construction and rebalancing diagnostics."""
-    st.subheader("🎯 Portfolio Construction & Rebalancing")
+    """Show portfolio-construction diagnostics and live API optimization controls."""
+    st.subheader("🎯 Portfolio Construction & Optimization")
 
-    results = st.session_state.backtest_results
+    results = st.session_state.get("backtest_results") or {}
     portfolio_summary = results.get('portfolio_construction') or {}
     portfolio_metrics = results.get('metrics_summary') or {}
     diagnostics = pd.DataFrame(results.get('portfolio_diagnostics') or [])
     constraint_hits = results.get('constraint_hits') or []
 
-    if not portfolio_summary:
-        st.info(
-            "Run a backtest in target-weight portfolio construction mode to unlock rebalance schedules, "
-            "drift diagnostics, turnover controls, and constraint-hit reporting."
+    if portfolio_summary:
+        st.markdown("### Portfolio Construction & Rebalancing")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Rebalances", int(portfolio_metrics.get('portfolio_rebalances', 0)))
+        with col2:
+            st.metric("Avg Turnover", f"{portfolio_metrics.get('average_turnover_pct', 0.0):.2f}%")
+        with col3:
+            st.metric("Max Drift", f"{portfolio_metrics.get('max_weight_drift_pct', 0.0):.2f}%")
+        with col4:
+            st.metric("Constraint Hits", int(portfolio_metrics.get('constraint_hit_count', 0)))
+
+        target_weights = portfolio_summary.get('target_weights') or {}
+        target_df = pd.DataFrame(
+            [{"Symbol": symbol, "Target Weight (%)": weight} for symbol, weight in sorted(target_weights.items())]
         )
-        return
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Rebalances", int(portfolio_metrics.get('portfolio_rebalances', 0)))
-    with col2:
-        st.metric("Avg Turnover", f"{portfolio_metrics.get('average_turnover_pct', 0.0):.2f}%")
-    with col3:
-        st.metric("Max Drift", f"{portfolio_metrics.get('max_weight_drift_pct', 0.0):.2f}%")
-    with col4:
-        st.metric("Constraint Hits", int(portfolio_metrics.get('constraint_hit_count', 0)))
+        info_col1, info_col2 = st.columns([1, 1])
+        with info_col1:
+            st.markdown("**🎯 Allocation Policy**")
+            if not target_df.empty:
+                st.dataframe(target_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No target weights captured for this run.")
+        with info_col2:
+            st.markdown("**⚙️ Policy Controls**")
+            st.write(f"Method: {portfolio_summary.get('method', 'target_weights')}")
+            st.write(f"Rebalance Frequency: {portfolio_summary.get('rebalance_frequency', 'weekly')}")
+            st.write(f"Cash Floor: {portfolio_summary.get('cash_floor_pct', 0.0):.2f}%")
+            st.write(
+                f"Max Weight: {portfolio_summary.get('max_weight_pct', 'N/A')}"
+                + ("%" if portfolio_summary.get('max_weight_pct') is not None else "")
+            )
+            st.write(
+                f"Drift Threshold: {portfolio_summary.get('drift_threshold_pct', 'N/A')}"
+                + ("%" if portfolio_summary.get('drift_threshold_pct') is not None else "")
+            )
+            st.write(
+                f"Max Turnover: {portfolio_summary.get('max_turnover_pct', 'N/A')}"
+                + ("%" if portfolio_summary.get('max_turnover_pct') is not None else "")
+            )
+            st.write(
+                f"Drawdown Guardrail: {portfolio_summary.get('max_drawdown_pct', 'N/A')}"
+                + ("%" if portfolio_summary.get('max_drawdown_pct') is not None else "")
+            )
 
-    target_weights = portfolio_summary.get('target_weights') or {}
-    target_df = pd.DataFrame(
-        [
-            {"Symbol": symbol, "Target Weight (%)": weight}
-            for symbol, weight in sorted(target_weights.items())
-        ]
-    )
-
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.markdown("**🎯 Allocation Policy**")
-        if not target_df.empty:
-            st.dataframe(target_df, use_container_width=True, hide_index=True)
+        if diagnostics.empty:
+            st.warning("No portfolio diagnostics were recorded for this run.")
         else:
-            st.info("No target weights captured for this run.")
-    with col2:
-        st.markdown("**⚙️ Policy Controls**")
-        st.write(f"Method: {portfolio_summary.get('method', 'target_weights')}")
-        st.write(f"Rebalance Frequency: {portfolio_summary.get('rebalance_frequency', 'weekly')}")
-        st.write(f"Cash Floor: {portfolio_summary.get('cash_floor_pct', 0.0):.2f}%")
-        st.write(
-            f"Max Weight: {portfolio_summary.get('max_weight_pct', 'N/A')}"
-            + ("%" if portfolio_summary.get('max_weight_pct') is not None else "")
-        )
-        st.write(
-            f"Drift Threshold: {portfolio_summary.get('drift_threshold_pct', 'N/A')}"
-            + ("%" if portfolio_summary.get('drift_threshold_pct') is not None else "")
-        )
-        st.write(
-            f"Max Turnover: {portfolio_summary.get('max_turnover_pct', 'N/A')}"
-            + ("%" if portfolio_summary.get('max_turnover_pct') is not None else "")
-        )
-        st.write(
-            f"Drawdown Guardrail: {portfolio_summary.get('max_drawdown_pct', 'N/A')}"
-            + ("%" if portfolio_summary.get('max_drawdown_pct') is not None else "")
+            diagnostics['timestamp'] = pd.to_datetime(diagnostics['timestamp'])
+
+            monitor_fig = make_subplots(
+                rows=2,
+                cols=1,
+                shared_xaxes=True,
+                subplot_titles=('Turnover & Drift', 'Drawdown & Cash Buffer'),
+                vertical_spacing=0.12,
+            )
+            monitor_fig.add_trace(
+                go.Bar(
+                    x=diagnostics['timestamp'],
+                    y=diagnostics['turnover_pct'],
+                    name='Turnover (%)',
+                    marker_color='#4C78A8',
+                ),
+                row=1,
+                col=1,
+            )
+            monitor_fig.add_trace(
+                go.Scatter(
+                    x=diagnostics['timestamp'],
+                    y=diagnostics['max_abs_drift_pct'],
+                    mode='lines+markers',
+                    name='Max drift (%)',
+                    line=dict(color='#F58518'),
+                ),
+                row=1,
+                col=1,
+            )
+            if 'drawdown_pct' in diagnostics.columns:
+                monitor_fig.add_trace(
+                    go.Scatter(
+                        x=diagnostics['timestamp'],
+                        y=diagnostics['drawdown_pct'],
+                        mode='lines',
+                        name='Drawdown (%)',
+                        line=dict(color='#E45756'),
+                    ),
+                    row=2,
+                    col=1,
+                )
+            monitor_fig.add_trace(
+                go.Scatter(
+                    x=diagnostics['timestamp'],
+                    y=diagnostics['cash_weight_pct'],
+                    mode='lines',
+                    name='Cash weight (%)',
+                    line=dict(color='#72B7B2'),
+                ),
+                row=2,
+                col=1,
+            )
+            monitor_fig.update_layout(height=550, barmode='group')
+            st.plotly_chart(monitor_fig, use_container_width=True)
+
+            weight_rows = []
+            for row in diagnostics.itertuples(index=False):
+                target_map = getattr(row, 'target_weights', {}) or {}
+                realized_map = getattr(row, 'realized_weights', {}) or {}
+                for symbol in sorted(set(target_map) | set(realized_map)):
+                    weight_rows.append(
+                        {
+                            'timestamp': row.timestamp,
+                            'symbol': symbol,
+                            'target_weight_pct': target_map.get(symbol, 0.0),
+                            'realized_weight_pct': realized_map.get(symbol, 0.0),
+                        }
+                    )
+            weights_df = pd.DataFrame(weight_rows)
+            if not weights_df.empty:
+                st.markdown("**📊 Target vs Realized Weights**")
+                weights_fig = go.Figure()
+                for symbol, frame in weights_df.groupby('symbol'):
+                    weights_fig.add_trace(
+                        go.Scatter(
+                            x=frame['timestamp'],
+                            y=frame['realized_weight_pct'],
+                            mode='lines+markers',
+                            name=f'{symbol} realized',
+                        )
+                    )
+                    weights_fig.add_trace(
+                        go.Scatter(
+                            x=frame['timestamp'],
+                            y=frame['target_weight_pct'],
+                            mode='lines',
+                            name=f'{symbol} target',
+                            line=dict(dash='dash'),
+                        )
+                    )
+                weights_fig.update_layout(height=450, yaxis_title='Weight (%)')
+                st.plotly_chart(weights_fig, use_container_width=True)
+
+            rebalance_table = diagnostics.loc[
+                :, ['timestamp', 'rebalanced', 'rebalance_reason', 'turnover_pct', 'max_abs_drift_pct', 'cash_weight_pct']
+            ].copy()
+            rebalance_table['timestamp'] = rebalance_table['timestamp'].dt.strftime('%Y-%m-%d')
+            st.markdown("**🗓️ Rebalance Timeline**")
+            st.dataframe(rebalance_table, use_container_width=True, hide_index=True)
+
+            if constraint_hits:
+                st.markdown("**🧱 Constraint Hits**")
+                constraint_df = pd.DataFrame(constraint_hits)
+                if 'timestamp' in constraint_df.columns:
+                    constraint_df['timestamp'] = pd.to_datetime(constraint_df['timestamp']).dt.strftime('%Y-%m-%d')
+                st.dataframe(constraint_df, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+    else:
+        st.info(
+            "Run a backtest in target-weight portfolio construction mode to unlock rebalance schedules, drift diagnostics, turnover controls, and constraint-hit reporting."
         )
 
-    if diagnostics.empty:
-        st.warning("No portfolio diagnostics were recorded for this run.")
-        return
+    st.markdown("### API Optimization Runner")
 
-    diagnostics['timestamp'] = pd.to_datetime(diagnostics['timestamp'])
+    import requests
 
-    monitor_fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        subplot_titles=('Turnover & Drift', 'Drawdown & Cash Buffer'),
-        vertical_spacing=0.12,
-    )
-    monitor_fig.add_trace(
-        go.Bar(
-            x=diagnostics['timestamp'],
-            y=diagnostics['turnover_pct'],
-            name='Turnover (%)',
-            marker_color='#4C78A8',
-        ),
-        row=1,
-        col=1,
-    )
-    monitor_fig.add_trace(
-        go.Scatter(
-            x=diagnostics['timestamp'],
-            y=diagnostics['max_abs_drift_pct'],
-            mode='lines+markers',
-            name='Max drift (%)',
-            line=dict(color='#F58518'),
-        ),
-        row=1,
-        col=1,
-    )
-    monitor_fig.add_trace(
-        go.Scatter(
-            x=diagnostics['timestamp'],
-            y=diagnostics['drawdown_pct'],
-            mode='lines',
-            name='Drawdown (%)',
-            line=dict(color='#E45756'),
-        ),
-        row=2,
-        col=1,
-    )
-    monitor_fig.add_trace(
-        go.Scatter(
-            x=diagnostics['timestamp'],
-            y=diagnostics['cash_weight_pct'],
-            mode='lines',
-            name='Cash weight (%)',
-            line=dict(color='#72B7B2'),
-        ),
-        row=2,
-        col=1,
-    )
-    monitor_fig.update_layout(height=550, barmode='group')
-    st.plotly_chart(monitor_fig, use_container_width=True)
+    api_base_url = os.getenv("GLOWBACK_API_BASE_URL", "http://localhost:8000").rstrip("/")
+    api_key = os.getenv("GLOWBACK_API_KEY", "").strip()
+    default_symbols = []
+    if st.session_state.get("symbol"):
+        default_symbols.append(st.session_state.symbol)
+    if results:
+        default_symbols.extend(results.get("final_positions", {}).keys())
+    default_symbols = [symbol for i, symbol in enumerate(default_symbols) if symbol and symbol not in default_symbols[:i]] or ["AAPL"]
 
-    weight_rows = []
-    for row in diagnostics.itertuples(index=False):
-        target_map = getattr(row, 'target_weights', {}) or {}
-        realized_map = getattr(row, 'realized_weights', {}) or {}
-        for symbol in sorted(set(target_map) | set(realized_map)):
-            weight_rows.append(
+    default_start = pd.Timestamp("2024-01-01").date()
+    default_end = pd.Timestamp("2024-12-31").date()
+    if results:
+        equity_curve = pd.DataFrame(results.get("equity_curve", []))
+        if not equity_curve.empty and "timestamp" in equity_curve.columns:
+            timestamps = pd.to_datetime(equity_curve["timestamp"])
+            default_start = timestamps.min().date()
+            default_end = timestamps.max().date()
+
+    strategy_presets = {
+        "ma_crossover": {
+            "label": "Moving Average Crossover",
+            "params": [
+                ("short_period", "Short MA", 5, 20, 1),
+                ("long_period", "Long MA", 20, 80, 1),
+            ],
+        },
+        "momentum": {
+            "label": "Momentum",
+            "params": [
+                ("lookback_period", "Lookback", 5, 30, 1),
+                ("momentum_threshold", "Momentum Threshold (%)", 1.0, 10.0, 0.5),
+            ],
+        },
+        "mean_reversion": {
+            "label": "Mean Reversion",
+            "params": [
+                ("lookback_period", "Lookback", 10, 40, 1),
+                ("entry_threshold", "Entry Threshold (σ)", 1.0, 3.0, 0.1),
+                ("exit_threshold", "Exit Threshold (σ)", 0.5, 2.0, 0.1),
+            ],
+        },
+        "rsi": {
+            "label": "RSI",
+            "params": [
+                ("lookback_period", "Lookback", 7, 21, 1),
+                ("oversold_threshold", "Oversold", 20.0, 40.0, 1.0),
+                ("overbought_threshold", "Overbought", 60.0, 85.0, 1.0),
+            ],
+        },
+    }
+
+    def optimization_headers():
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        return headers
+
+    def fetch_status(opt_id: str):
+        response = requests.get(
+            f"{api_base_url}/optimizations/{opt_id}",
+            headers=optimization_headers(),
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def fetch_results(opt_id: str):
+        response = requests.get(
+            f"{api_base_url}/optimizations/{opt_id}/results",
+            headers=optimization_headers(),
+            timeout=30,
+        )
+        if response.status_code == 409:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+    col1, col2 = st.columns([1.7, 1.0])
+
+    with col1:
+        st.caption(f"API endpoint: {api_base_url}/optimizations")
+
+        symbols_text = st.text_input(
+            "Symbols",
+            value=", ".join(default_symbols),
+            help="Comma-separated symbols for the optimization backtests.",
+        )
+        symbol_list = [symbol.strip().upper() for symbol in symbols_text.split(",") if symbol.strip()]
+
+        form_col1, form_col2 = st.columns(2)
+        with form_col1:
+            strategy_name = st.selectbox(
+                "Strategy",
+                options=list(strategy_presets.keys()),
+                format_func=lambda key: strategy_presets[key]["label"],
+            )
+            search_strategy = st.selectbox(
+                "Search Method",
+                options=["grid", "random", "bayesian"],
+                format_func=lambda value: {
+                    "grid": "Grid Search",
+                    "random": "Random Search",
+                    "bayesian": "Bayesian Search",
+                }[value],
+            )
+            objective_metric = st.selectbox(
+                "Objective Metric",
+                options=["sharpe_ratio", "total_return", "sortino_ratio", "max_drawdown"],
+                format_func=lambda value: {
+                    "sharpe_ratio": "Sharpe Ratio",
+                    "total_return": "Total Return",
+                    "sortino_ratio": "Sortino Ratio",
+                    "max_drawdown": "Minimize Max Drawdown",
+                }[value],
+            )
+            validation_mode = st.selectbox(
+                "Validation Mode",
+                options=["walk_forward", "holdout"],
+                format_func=lambda value: "Walk-forward" if value == "walk_forward" else "Single holdout",
+            )
+        with form_col2:
+            start_date = st.date_input("Start Date", value=default_start)
+            end_date = st.date_input("End Date", value=default_end)
+            max_trials = st.number_input("Max Trials", min_value=1, max_value=200, value=12, step=1)
+            walk_forward_windows = st.slider("Validation Windows", 1, 6, 3)
+            validation_fraction = st.slider("Validation Fraction", 0.10, 0.50, 0.25, step=0.05)
+
+        st.markdown("**Parameter Ranges**")
+        search_space = []
+        param_columns = st.columns(2)
+        for index, (param_name, label, default_low, default_high, step) in enumerate(strategy_presets[strategy_name]["params"]):
+            with param_columns[index % 2]:
+                low_value = st.number_input(
+                    f"{label} Min",
+                    value=default_low,
+                    step=step,
+                    key=f"opt-{strategy_name}-{param_name}-low",
+                )
+                high_value = st.number_input(
+                    f"{label} Max",
+                    value=default_high,
+                    step=step,
+                    key=f"opt-{strategy_name}-{param_name}-high",
+                )
+            kind = "int_range" if float(step).is_integer() and float(default_low).is_integer() and float(default_high).is_integer() else "float_range"
+            search_space.append(
                 {
-                    'timestamp': row.timestamp,
-                    'symbol': symbol,
-                    'target_weight_pct': target_map.get(symbol, 0.0),
-                    'realized_weight_pct': realized_map.get(symbol, 0.0),
+                    "name": param_name,
+                    "kind": kind,
+                    "low": int(low_value) if kind == "int_range" else float(low_value),
+                    "high": int(high_value) if kind == "int_range" else float(high_value),
                 }
             )
-    weights_df = pd.DataFrame(weight_rows)
-    if not weights_df.empty:
-        st.markdown("**📊 Target vs Realized Weights**")
-        weights_fig = go.Figure()
-        for symbol, frame in weights_df.groupby('symbol'):
-            weights_fig.add_trace(
-                go.Scatter(
-                    x=frame['timestamp'],
-                    y=frame['realized_weight_pct'],
-                    mode='lines+markers',
-                    name=f'{symbol} realized',
-                )
-            )
-            weights_fig.add_trace(
-                go.Scatter(
-                    x=frame['timestamp'],
-                    y=frame['target_weight_pct'],
-                    mode='lines',
-                    name=f'{symbol} target',
-                    line=dict(dash='dash'),
-                )
-            )
-        weights_fig.update_layout(height=450, yaxis_title='Weight (%)')
-        st.plotly_chart(weights_fig, use_container_width=True)
 
-    rebalance_table = diagnostics.loc[
-        :, ['timestamp', 'rebalanced', 'rebalance_reason', 'turnover_pct', 'max_abs_drift_pct', 'cash_weight_pct']
-    ].copy()
-    rebalance_table['timestamp'] = rebalance_table['timestamp'].dt.strftime('%Y-%m-%d')
-    st.markdown("**🗓️ Rebalance Timeline**")
-    st.dataframe(rebalance_table, use_container_width=True, hide_index=True)
+        data_source = st.selectbox(
+            "Data Source",
+            options=["sample"],
+            help="The first shipping optimization flow uses the real engine against explicit sample data.",
+        )
+        initial_capital = st.number_input("Initial Capital", min_value=1000.0, value=100000.0, step=1000.0)
 
-    if constraint_hits:
-        st.markdown("**🧱 Constraint Hits**")
-        constraint_df = pd.DataFrame(constraint_hits)
-        if 'timestamp' in constraint_df.columns:
-            constraint_df['timestamp'] = pd.to_datetime(constraint_df['timestamp']).dt.strftime('%Y-%m-%d')
-        st.dataframe(constraint_df, use_container_width=True, hide_index=True)
+        if st.button("🚀 Run Optimization", type="primary"):
+            if not symbol_list:
+                st.error("Please provide at least one symbol.")
+            elif start_date >= end_date:
+                st.error("Start date must be before end date.")
+            else:
+                direction = "minimize" if objective_metric == "max_drawdown" else "maximize"
+                payload = {
+                    "name": f"{strategy_presets[strategy_name]['label']} optimization",
+                    "description": "Launched from the Streamlit portfolio optimizer",
+                    "strategy": search_strategy,
+                    "max_trials": int(max_trials),
+                    "concurrency": 1,
+                    "objective_metric": objective_metric,
+                    "direction": direction,
+                    "validation_mode": validation_mode,
+                    "validation_fraction": float(validation_fraction),
+                    "walk_forward_windows": int(walk_forward_windows),
+                    "search_space": {"parameters": search_space},
+                    "base_backtest": {
+                        "symbols": symbol_list,
+                        "start_date": f"{start_date.isoformat()}T00:00:00Z",
+                        "end_date": f"{end_date.isoformat()}T00:00:00Z",
+                        "resolution": "day",
+                        "initial_capital": float(initial_capital),
+                        "data_source": data_source,
+                        "strategy": {
+                            "name": strategy_name,
+                            "params": {},
+                        },
+                    },
+                }
+                try:
+                    response = requests.post(
+                        f"{api_base_url}/optimizations",
+                        json=payload,
+                        headers=optimization_headers(),
+                        timeout=30,
+                    )
+                    response.raise_for_status()
+                    created = response.json()
+                    st.session_state.last_optimization_id = created["optimization_id"]
+                    st.success(f"Optimization started: {created['optimization_id']}")
+                except Exception as exc:
+                    st.error(f"Failed to start optimization: {exc}")
+
+        active_optimization_id = st.session_state.get("last_optimization_id")
+        if active_optimization_id:
+            action_col1, action_col2, action_col3 = st.columns([1, 1, 2])
+            with action_col1:
+                refresh = st.button("🔄 Refresh Status")
+            with action_col2:
+                clear = st.button("🧹 Clear Selection")
+            if clear:
+                st.session_state.pop("last_optimization_id", None)
+                st.rerun()
+
+            if refresh or active_optimization_id:
+                try:
+                    status_payload = fetch_status(active_optimization_id)
+                    st.markdown("---")
+                    st.markdown(f"**Active optimization:** `{active_optimization_id}`")
+                    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+                    metric_col1.metric("State", status_payload["state"].title())
+                    metric_col2.metric("Completed", status_payload["trials_completed"])
+                    metric_col3.metric("Failed", status_payload["trials_failed"])
+                    metric_col4.metric("Objective", status_payload["objective_metric"])
+
+                    if status_payload["state"] in {"completed", "failed", "cancelled"}:
+                        result_payload = fetch_results(active_optimization_id)
+                        if result_payload:
+                            best_trial = result_payload.get("best_trial")
+                            if best_trial:
+                                st.success(
+                                    f"Best trial #{best_trial['trial_number']} scored {best_trial['objective']:.4f} on {status_payload['objective_metric']}."
+                                )
+                                st.json(result_payload.get("replay_backtest"))
+
+                            trials = result_payload.get("all_trials") or []
+                            if trials:
+                                trials_df = pd.DataFrame(
+                                    {
+                                        "trial": [trial["trial_number"] for trial in trials],
+                                        "status": [trial["status"] for trial in trials],
+                                        "objective": [trial.get("objective") for trial in trials],
+                                        "parameters": [trial.get("parameters") for trial in trials],
+                                    }
+                                )
+                                trials_df = trials_df.sort_values(
+                                    "objective",
+                                    ascending=status_payload["direction"] == "minimize",
+                                )
+                                st.dataframe(trials_df, use_container_width=True)
+                    else:
+                        st.info("Optimization is still running. Refresh to pull the latest status.")
+                except Exception as exc:
+                    st.error(f"Failed to load optimization state: {exc}")
+
+    with col2:
+        st.markdown("**What this ships**")
+        st.markdown(
+            """
+            - Real engine-backed trial execution via `/optimizations`
+            - Grid, random, and Bayesian search
+            - Holdout or walk-forward validation
+            - Replayable best-trial backtest payloads
+            """
+        )
+
+        st.markdown("**Risk Management**")
+        risk_target = st.slider("Target Volatility (%)", 5, 25, 15)
+        max_drawdown_limit = st.slider("Max Drawdown Limit (%)", 5, 50, 20)
+        kelly_fraction = st.slider("Kelly Fraction", 0.1, 1.0, 0.25, step=0.05)
+
+        if results:
+            total_return = results.get("total_return", 0.0)
+            win_rate = max(0.01, results.get("win_rate", 50) / 100)
+            avg_win = max(abs(total_return), 1.0)
+            avg_loss = max(avg_win * 0.8, 0.1)
+            kelly_optimal = (win_rate * avg_win - (1 - win_rate) * avg_loss) / avg_win
+            st.write(f"**Estimated Kelly Fraction:** {kelly_optimal:.3f}")
+
+        if st.button("📊 Calculate Optimal Allocation"):
+            st.info(
+                f"Target vol {risk_target}% • max drawdown {max_drawdown_limit}% • Kelly fraction {kelly_fraction:.2f}"
+            )
 
 def show_scenario_analysis():
     """Show scenario analysis"""

@@ -1,10 +1,4 @@
-"""In-memory store for optimization runs.
-
-The HTTP optimization API is intentionally fail-closed until GlowBack wires it
-to a real backtest execution backend. This store keeps the status/result data
-model available for future integration, but it no longer fabricates trial
-metrics from random numbers.
-"""
+"""In-memory store for optimization runs backed by real backtest execution."""
 
 from __future__ import annotations
 
@@ -22,11 +16,7 @@ from .optimization_models import (
     TrialStatus,
     TrialSummary,
 )
-
-OPTIMIZATION_BACKEND_UNAVAILABLE_ERROR = (
-    "Optimization execution is not wired to a real backtest backend yet. "
-    "GlowBack now fails closed instead of fabricating synthetic trial metrics."
-)
+from .optimization_runtime import OptimizationExecution, OptimizationExecutor
 
 
 @dataclass
@@ -39,8 +29,19 @@ class TrialRecord:
     metrics: dict[str, float] = field(default_factory=dict)
     duration_seconds: int | None = None
     error: str | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+
+    @classmethod
+    def from_summary(cls, summary: TrialSummary) -> "TrialRecord":
+        return cls(
+            trial_id=summary.trial_id,
+            trial_number=summary.trial_number,
+            parameters=summary.parameters,
+            status=summary.status,
+            objective=summary.objective,
+            metrics=summary.metrics,
+            duration_seconds=summary.duration_seconds,
+            error=summary.error,
+        )
 
     def to_summary(self) -> TrialSummary:
         return TrialSummary(
@@ -62,6 +63,7 @@ class OptimizationRecord:
     state: OptimizationState = OptimizationState.pending
     trials: list[TrialRecord] = field(default_factory=list)
     best_trial: TrialRecord | None = None
+    replay_backtest: dict[str, Any] | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -103,15 +105,18 @@ class OptimizationRecord:
             all_trials=[t.to_summary() for t in self.trials],
             total_duration_seconds=total_dur,
             search_space=self.request.search_space,
+            validation_mode=self.request.validation_mode.value,
+            replay_backtest=self.replay_backtest,
         )
 
 
 class OptimizationStore:
     """In-memory store for optimization runs."""
 
-    def __init__(self) -> None:
+    def __init__(self, executor: OptimizationExecutor | None = None) -> None:
         self._optimizations: dict[str, OptimizationRecord] = {}
         self._lock = asyncio.Lock()
+        self._executor = executor or OptimizationExecutor()
 
     async def create(self, request: OptimizationRequest) -> OptimizationStatus:
         opt_id = str(uuid4())
@@ -160,14 +165,56 @@ class OptimizationStore:
             return True
 
     async def run_optimization(self, opt_id: str) -> None:
-        """Fail closed until optimization execution is connected to a real backend."""
         async with self._lock:
             record = self._optimizations.get(opt_id)
             if not record or record.state == OptimizationState.cancelled:
                 return
+            record.state = OptimizationState.running
+            record.started_at = datetime.now(timezone.utc)
+            record.error = None
+            request = record.request
 
-            now = datetime.now(timezone.utc)
-            record.started_at = now
-            record.finished_at = now
-            record.state = OptimizationState.failed
-            record.error = OPTIMIZATION_BACKEND_UNAVAILABLE_ERROR
+        try:
+            execution = await self._executor.execute(
+                request,
+                is_cancelled=lambda: self._is_cancelled(opt_id),
+            )
+        except Exception as exc:
+            async with self._lock:
+                record = self._optimizations.get(opt_id)
+                if not record:
+                    return
+                record.state = OptimizationState.failed
+                record.finished_at = datetime.now(timezone.utc)
+                record.error = str(exc)
+            return
+
+        await self._apply_execution(opt_id, execution)
+
+    async def _is_cancelled(self, opt_id: str) -> bool:
+        async with self._lock:
+            record = self._optimizations.get(opt_id)
+            return bool(record and record.state == OptimizationState.cancelled)
+
+    async def _apply_execution(
+        self,
+        opt_id: str,
+        execution: OptimizationExecution,
+    ) -> None:
+        async with self._lock:
+            record = self._optimizations.get(opt_id)
+            if not record:
+                return
+            record.trials = [TrialRecord.from_summary(trial) for trial in execution.trials]
+            record.best_trial = (
+                TrialRecord.from_summary(execution.best_trial)
+                if execution.best_trial
+                else None
+            )
+            record.replay_backtest = execution.replay_backtest
+            if record.state != OptimizationState.cancelled:
+                record.state = execution.state
+                record.error = execution.error
+                record.finished_at = datetime.now(timezone.utc)
+            elif record.finished_at is None:
+                record.finished_at = datetime.now(timezone.utc)

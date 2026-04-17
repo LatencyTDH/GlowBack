@@ -180,7 +180,7 @@ Notes:
 ## Notes
 
 - Storage is in‑memory; restarting the service clears runs.
-- The mock engine emits progress updates and a sample result.
+- `/backtests` still uses the mock adapter today and emits a sample result.
 - Benchmark-relative metrics are computed from the returned strategy and benchmark curves, not placeholder percentages.
 - Portfolio construction requests are accepted directly in the API surface so the same target-weight spec can flow between UI, API payloads, and saved results.
-- Replace the mock adapter with `gb-python` bindings or a CLI bridge in Phase 2.
+- `/optimizations` uses the real `gb-python` execution path for built-in strategies.
