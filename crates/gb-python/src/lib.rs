@@ -22,6 +22,7 @@ fn glowback(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyBacktestEngine>()?;
     m.add_class::<PyBacktestResult>()?;
     m.add_function(wrap_pyfunction!(run_buy_and_hold, m)?)?;
+    m.add_function(wrap_pyfunction!(run_builtin_strategy, m)?)?;
 
     // Backwards-compatible aliases (Py* names)
     m.add("PySymbol", m.getattr("Symbol")?)?;
@@ -142,6 +143,271 @@ fn run_buy_and_hold(
         None,
     )?;
     engine.run_buy_and_hold()
+}
+
+fn build_backtest_config(
+    symbols: Vec<String>,
+    start_date: &str,
+    end_date: &str,
+    resolution: Option<&str>,
+    initial_capital: Option<f64>,
+    name: Option<&str>,
+    data_source: Option<&str>,
+    commission_bps: Option<f64>,
+    slippage_bps: Option<f64>,
+    latency_ms: Option<u64>,
+    strategy_config: StrategyConfig,
+) -> PyResult<BacktestConfig> {
+    if symbols.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "symbols list cannot be empty",
+        ));
+    }
+
+    let start_date = chrono::DateTime::parse_from_rfc3339(start_date)
+        .map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Invalid start_date format: {}", e))
+        })?
+        .with_timezone(&chrono::Utc);
+
+    let end_date = chrono::DateTime::parse_from_rfc3339(end_date)
+        .map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Invalid end_date format: {}", e))
+        })?
+        .with_timezone(&chrono::Utc);
+
+    let resolution = parse_resolution(resolution.unwrap_or("day"))?;
+    let initial_capital = Decimal::from_f64(initial_capital.unwrap_or(100_000.0))
+        .unwrap_or_else(|| Decimal::from(100_000));
+
+    let rust_symbols: Vec<Symbol> = symbols
+        .iter()
+        .map(|symbol| Symbol::equity(symbol))
+        .collect();
+
+    let mut strategy_config = strategy_config;
+    strategy_config.symbols = rust_symbols.clone();
+    strategy_config.initial_capital = initial_capital;
+
+    let mut config = BacktestConfig::new(
+        name.unwrap_or("Python Backtest").to_string(),
+        strategy_config.clone(),
+    );
+    config.start_date = start_date;
+    config.end_date = end_date;
+    config.initial_capital = initial_capital;
+    config.resolution = resolution;
+    config.symbols = rust_symbols;
+    config.strategy_config = strategy_config;
+
+    if let Some(source) = data_source {
+        if !source.trim().is_empty() {
+            config.data_settings.data_source = source.trim().to_string();
+        }
+    }
+
+    if let Some(commission_bps) = commission_bps {
+        let commission_fraction = (commission_bps.max(0.0)) / 10_000.0;
+        if let Some(decimal) = Decimal::from_f64(commission_fraction) {
+            config.execution_settings.commission_percentage = decimal;
+        }
+    }
+
+    if let Some(slippage_bps) = slippage_bps {
+        config.execution_settings.slippage_model = SlippageModel::Linear {
+            basis_points: slippage_bps.max(0.0).round() as u32,
+        };
+    }
+
+    if let Some(latency_ms) = latency_ms {
+        config.execution_settings.latency_model = LatencyModel::Fixed {
+            milliseconds: latency_ms,
+        };
+    }
+
+    Ok(config)
+}
+
+fn apply_strategy_params(
+    strategy_config: &mut StrategyConfig,
+    strategy_params: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let Some(strategy_params) = strategy_params else {
+        return Ok(());
+    };
+
+    for (key, value) in strategy_params.iter() {
+        let key: String = key.extract()?;
+
+        if let Ok(extracted) = value.extract::<bool>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<i64>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<f64>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<String>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<Vec<i64>>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<Vec<f64>>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<Vec<String>>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<Vec<bool>>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+
+        return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "Unsupported parameter type for strategy parameter '{}'",
+            key
+        )));
+    }
+
+    Ok(())
+}
+
+fn build_builtin_strategy(
+    strategy_name: &str,
+    strategy_config: &StrategyConfig,
+) -> PyResult<Box<dyn Strategy>> {
+    match strategy_name.trim().to_lowercase().as_str() {
+        "buy_and_hold" => Ok(Box::new(BuyAndHoldStrategy::new())),
+        "ma_crossover" | "moving_average_crossover" => {
+            let short_period = strategy_config.get_parameter("short_period").unwrap_or(10);
+            let long_period = strategy_config.get_parameter("long_period").unwrap_or(20);
+            Ok(Box::new(MovingAverageCrossoverStrategy::new(
+                short_period,
+                long_period,
+            )))
+        }
+        "momentum" => {
+            let lookback_period = strategy_config
+                .get_parameter("lookback_period")
+                .unwrap_or(10);
+            let momentum_threshold = strategy_config
+                .get_parameter("momentum_threshold")
+                .unwrap_or(5.0f64);
+            Ok(Box::new(MomentumStrategy::new(
+                lookback_period,
+                momentum_threshold,
+            )))
+        }
+        "mean_reversion" => {
+            let lookback_period = strategy_config
+                .get_parameter("lookback_period")
+                .unwrap_or(20);
+            let entry_threshold = strategy_config
+                .get_parameter("entry_threshold")
+                .unwrap_or(2.0f64);
+            let exit_threshold = strategy_config
+                .get_parameter("exit_threshold")
+                .unwrap_or(1.0f64);
+            Ok(Box::new(MeanReversionStrategy::new(
+                lookback_period,
+                entry_threshold,
+                exit_threshold,
+            )))
+        }
+        "rsi" => {
+            let lookback_period = strategy_config
+                .get_parameter("lookback_period")
+                .unwrap_or(14);
+            let oversold_threshold = strategy_config
+                .get_parameter("oversold_threshold")
+                .unwrap_or(30.0f64);
+            let overbought_threshold = strategy_config
+                .get_parameter("overbought_threshold")
+                .unwrap_or(70.0f64);
+            Ok(Box::new(RsiStrategy::new(
+                lookback_period,
+                oversold_threshold,
+                overbought_threshold,
+            )))
+        }
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Unsupported built-in strategy: {}",
+            other
+        ))),
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (symbols, start_date, end_date, strategy_name, strategy_params=None, resolution=None, initial_capital=None, name=None, data_source=None, commission_bps=None, slippage_bps=None, latency_ms=None))]
+fn run_builtin_strategy(
+    symbols: Vec<String>,
+    start_date: &str,
+    end_date: &str,
+    strategy_name: &str,
+    strategy_params: Option<&Bound<'_, PyDict>>,
+    resolution: Option<&str>,
+    initial_capital: Option<f64>,
+    name: Option<&str>,
+    data_source: Option<&str>,
+    commission_bps: Option<f64>,
+    slippage_bps: Option<f64>,
+    latency_ms: Option<u64>,
+) -> PyResult<PyBacktestResult> {
+    let strategy_name = strategy_name.trim().to_lowercase();
+    let mut strategy_config = StrategyConfig::new(strategy_name.clone(), strategy_name.clone());
+    apply_strategy_params(&mut strategy_config, strategy_params)?;
+
+    let config = build_backtest_config(
+        symbols,
+        start_date,
+        end_date,
+        resolution,
+        initial_capital,
+        name,
+        data_source,
+        commission_bps,
+        slippage_bps,
+        latency_ms,
+        strategy_config.clone(),
+    )?;
+
+    let strategy = build_builtin_strategy(&strategy_name, &strategy_config)?;
+
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "Failed to create async runtime: {}",
+            e
+        ))
+    })?;
+
+    let mut engine = runtime
+        .block_on(async { RustBacktestEngine::new(config).await })
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to create backtest engine: {}",
+                e
+            ))
+        })?;
+
+    let result = runtime
+        .block_on(async { engine.run_with_strategy(strategy).await })
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Backtest execution failed: {}",
+                e
+            ))
+        })?;
+
+    Ok(PyBacktestResult::from_backtest_result(result))
 }
 
 /// Python wrapper for Symbol

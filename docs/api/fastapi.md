@@ -1,6 +1,6 @@
 # FastAPI Gateway
 
-GlowBack exposes an HTTP + WebSocket gateway for backtests. This service is the API surface between clients (SDK/UI) and the Rust engine. Backtests execute through the real engine via the `gb-python` bindings, while run metadata is stored in-memory.
+GlowBack exposes an HTTP + WebSocket gateway for backtests. This service is the API surface between clients (SDK/UI) and the Rust engine. Backtests execute through the real engine via the `gb-python` bindings, while run metadata is persisted in a local SQLite experiment registry.
 
 ## Quickstart
 
@@ -183,7 +183,9 @@ Notes:
 
 ## Notes
 
-- Storage is in‑memory; restarting the service clears runs.
+- Backtest runs, event history, and completed results are persisted in a local SQLite experiment registry, so `/backtests` survives service restarts.
 - Backtests execute through the same Rust engine-backed path used by the embedded Python runtime.
 - Request `data_source: "sample"` for the built-in sample provider, or `data_source: "csv"` plus `csv_data_path` for local CSV bundles.
-- Benchmark and portfolio-construction fields remain part of the API contract and are preserved in result payloads when available.
+- Benchmark-relative metrics are computed from the returned strategy and benchmark curves, and portfolio-construction fields remain part of the API contract and result payloads when available.
+- `/optimizations` uses the same real `gb-python` execution path for built-in strategies.
+

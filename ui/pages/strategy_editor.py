@@ -2,8 +2,12 @@
 Strategy Editor Page - Create and edit trading strategies
 """
 
+import json
+
 import streamlit as st
 from streamlit_ace import st_ace
+
+from research_registry import delete_saved_strategy, get_saved_strategy, list_saved_strategies, save_strategy_snapshot
 
 # Strategy templates
 ENGINE_STRATEGY_TYPES = {
@@ -203,10 +207,21 @@ def show():
     
     with col1:
         st.subheader("🎯 Strategy Templates")
-        
+
+        existing_config = st.session_state.get("strategy_config", {})
+        template_options = list(STRATEGY_TEMPLATES.keys()) + ["Custom Strategy"]
+        reverse_strategy_types = {value: key for key, value in ENGINE_STRATEGY_TYPES.items()}
+        saved_template = existing_config.get("strategy_template") or reverse_strategy_types.get(
+            existing_config.get("strategy_type"),
+            "Custom Strategy",
+        )
+        if saved_template not in template_options:
+            saved_template = "Custom Strategy"
+
         selected_template = st.selectbox(
             "Choose Template",
-            list(STRATEGY_TEMPLATES.keys()) + ["Custom Strategy"],
+            template_options,
+            index=template_options.index(saved_template),
             help="Select a pre-built strategy template or start from scratch"
         )
         
@@ -216,44 +231,111 @@ def show():
                 st.success(f"✅ Loaded {selected_template} template")
                 st.rerun()
             else:
-                st.session_state.strategy_code = "# Your custom strategy here\n\nclass CustomStrategy:\n    def __init__(self):\n        self.name = 'Custom Strategy'\n    \n    def on_bar(self, bar, portfolio):\n        # Implement your strategy logic here\n        return []\n"
+                st.session_state.strategy_code = (
+                    "# Your custom strategy here\n\n"
+                    "class CustomStrategy:\n"
+                    "    def __init__(self):\n"
+                    "        self.name = 'Custom Strategy'\n"
+                    "    \n"
+                    "    def on_bar(self, bar, portfolio):\n"
+                    "        # Implement your strategy logic here\n"
+                    "        return []\n"
+                )
                 st.success("✅ Loaded custom strategy template")
                 st.rerun()
         
         # Strategy configuration
         st.markdown("---")
         st.subheader("⚙️ Configuration")
-        
-        strategy_name = st.text_input("Strategy Name", value="My Strategy")
-        initial_capital = st.number_input("Initial Capital", value=100000, min_value=1000, step=1000)
 
+        strategy_name = st.text_input("Strategy Name", value=existing_config.get("name", "My Strategy"))
+        initial_capital = st.number_input(
+            "Initial Capital",
+            value=int(existing_config.get("initial_capital", 100000)),
+            min_value=1000,
+            step=1000,
+        )
+
+        existing_params = dict(existing_config.get("strategy_params") or {})
         strategy_params = {}
         strategy_type = ENGINE_STRATEGY_TYPES.get(selected_template, "custom")
 
         if strategy_type == "ma_crossover":
-            short_period = st.number_input("Short MA Period", value=10, min_value=1, step=1)
-            long_period = st.number_input("Long MA Period", value=20, min_value=2, step=1)
+            short_period = st.number_input(
+                "Short MA Period",
+                value=int(existing_params.get("short_period", existing_config.get("short_period", 10))),
+                min_value=1,
+                step=1,
+            )
+            long_period = st.number_input(
+                "Long MA Period",
+                value=int(existing_params.get("long_period", existing_config.get("long_period", 20))),
+                min_value=2,
+                step=1,
+            )
             strategy_params = {"short_period": short_period, "long_period": long_period}
         elif strategy_type == "momentum":
-            lookback_period = st.number_input("Momentum Lookback", value=10, min_value=1, step=1)
-            momentum_threshold = st.number_input("Momentum Threshold", value=0.05, min_value=0.0, format="%.4f")
+            lookback_period = st.number_input(
+                "Momentum Lookback",
+                value=int(existing_params.get("lookback_period", existing_config.get("lookback_period", 10))),
+                min_value=1,
+                step=1,
+            )
+            momentum_threshold = st.number_input(
+                "Momentum Threshold",
+                value=float(existing_params.get("momentum_threshold", existing_config.get("momentum_threshold", 0.05))),
+                min_value=0.0,
+                format="%.4f",
+            )
             strategy_params = {
                 "lookback_period": lookback_period,
                 "momentum_threshold": momentum_threshold,
             }
         elif strategy_type == "mean_reversion":
-            lookback_period = st.number_input("Reversion Lookback", value=20, min_value=2, step=1)
-            entry_threshold = st.number_input("Entry Threshold", value=2.0, min_value=0.1, format="%.2f")
-            exit_threshold = st.number_input("Exit Threshold", value=1.0, min_value=0.1, format="%.2f")
+            lookback_period = st.number_input(
+                "Reversion Lookback",
+                value=int(existing_params.get("lookback_period", existing_config.get("lookback_period", 20))),
+                min_value=2,
+                step=1,
+            )
+            entry_threshold = st.number_input(
+                "Entry Threshold",
+                value=float(existing_params.get("entry_threshold", existing_config.get("entry_threshold", 2.0))),
+                min_value=0.1,
+                format="%.2f",
+            )
+            exit_threshold = st.number_input(
+                "Exit Threshold",
+                value=float(existing_params.get("exit_threshold", existing_config.get("exit_threshold", 1.0))),
+                min_value=0.1,
+                format="%.2f",
+            )
             strategy_params = {
                 "lookback_period": lookback_period,
                 "entry_threshold": entry_threshold,
                 "exit_threshold": exit_threshold,
             }
         elif strategy_type == "rsi":
-            lookback_period = st.number_input("RSI Lookback", value=14, min_value=2, step=1)
-            oversold_threshold = st.number_input("Oversold Threshold", value=30.0, min_value=0.0, max_value=100.0, format="%.1f")
-            overbought_threshold = st.number_input("Overbought Threshold", value=70.0, min_value=0.0, max_value=100.0, format="%.1f")
+            lookback_period = st.number_input(
+                "RSI Lookback",
+                value=int(existing_params.get("lookback_period", existing_config.get("lookback_period", 14))),
+                min_value=2,
+                step=1,
+            )
+            oversold_threshold = st.number_input(
+                "Oversold Threshold",
+                value=float(existing_params.get("oversold_threshold", existing_config.get("oversold_threshold", 30.0))),
+                min_value=0.0,
+                max_value=100.0,
+                format="%.1f",
+            )
+            overbought_threshold = st.number_input(
+                "Overbought Threshold",
+                value=float(existing_params.get("overbought_threshold", existing_config.get("overbought_threshold", 70.0))),
+                min_value=0.0,
+                max_value=100.0,
+                format="%.1f",
+            )
             strategy_params = {
                 "lookback_period": lookback_period,
                 "oversold_threshold": oversold_threshold,
@@ -266,9 +348,23 @@ def show():
 
         # Advanced settings
         with st.expander("Advanced Settings"):
-            commission = st.number_input("Commission per Trade", value=0.001, min_value=0.0, format="%.4f")
-            slippage = st.number_input("Slippage (bps)", value=5, min_value=0)
-            max_position_size = st.slider("Max Position Size (%)", 1, 100, 95)
+            commission = st.number_input(
+                "Commission per Trade",
+                value=float(existing_config.get("commission", 0.001)),
+                min_value=0.0,
+                format="%.4f",
+            )
+            slippage = st.number_input(
+                "Slippage (bps)",
+                value=int(existing_config.get("slippage", 5)),
+                min_value=0,
+            )
+            max_position_size = st.slider(
+                "Max Position Size (%)",
+                1,
+                100,
+                int(float(existing_config.get("max_position_size", 0.95)) * 100),
+            )
         
         # Save configuration
         if st.button("💾 Save Config"):
@@ -281,10 +377,9 @@ def show():
                 "initial_capital": initial_capital,
                 "commission": commission,
                 "slippage": slippage,
-                "max_position_size": max_position_size / 100
+                "max_position_size": max_position_size / 100,
             }
             st.success("✅ Configuration saved!")
-    
     with col2:
         st.subheader("💻 Code Editor")
         
@@ -322,9 +417,38 @@ def show():
             if st.button("💾 Save Strategy"):
                 save_strategy_code(strategy_code, strategy_name)
         
+        saved_strategy_records = list_saved_strategies()
+        saved_strategy_lookup = {record["name"]: record for record in saved_strategy_records}
+        selected_saved_strategy = st.selectbox(
+            "Persisted Strategy Library",
+            options=[""] + list(saved_strategy_lookup.keys()),
+            key="persisted_strategy_selection",
+            help="Saved strategies survive restarts and can be exported or deleted intentionally.",
+        )
+
         with col3:
-            if st.button("📂 Load Strategy"):
-                load_saved_strategy()
+            if st.button("📂 Load Strategy", disabled=not selected_saved_strategy):
+                load_saved_strategy(selected_saved_strategy)
+
+        if selected_saved_strategy:
+            selected_record = saved_strategy_lookup[selected_saved_strategy]
+            st.caption(
+                f"Saved {selected_record['updated_at']} · code hash {selected_record['code_hash'][:12]}"
+            )
+            manage_col1, manage_col2 = st.columns(2)
+            with manage_col1:
+                st.download_button(
+                    "⬇️ Export Strategy JSON",
+                    data=json.dumps(selected_record, indent=2),
+                    file_name=f"{selected_saved_strategy.replace(' ', '_').lower()}_strategy.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            with manage_col2:
+                if st.button("🗑️ Delete Strategy", type="secondary"):
+                    if delete_saved_strategy(selected_saved_strategy):
+                        st.success(f"🗑️ Deleted strategy '{selected_saved_strategy}'.")
+                        st.rerun()
     
     st.markdown("---")
     
@@ -379,25 +503,26 @@ def validate_strategy_code(code):
         return False
 
 def save_strategy_code(code, name):
-    """Save strategy code to session state"""
+    """Persist strategy code so it survives restarts."""
+    record = save_strategy_snapshot(name, code, st.session_state.get('strategy_config', {}))
     if 'saved_strategies' not in st.session_state:
         st.session_state.saved_strategies = {}
-    
     st.session_state.saved_strategies[name] = code
-    st.success(f"✅ Strategy '{name}' saved!")
+    st.success(f"✅ Strategy '{name}' saved (hash {record['code_hash'][:12]}…).")
 
-def load_saved_strategy():
-    """Load a saved strategy"""
-    if 'saved_strategies' not in st.session_state or not st.session_state.saved_strategies:
+def load_saved_strategy(strategy_name):
+    """Load a persisted strategy snapshot."""
+    record = get_saved_strategy(strategy_name)
+    if not record:
         st.warning("⚠️ No saved strategies found.")
         return
-    
-    strategy_name = st.selectbox("Select Saved Strategy", list(st.session_state.saved_strategies.keys()))
-    
-    if st.button("📂 Load Selected Strategy"):
-        st.session_state.strategy_code = st.session_state.saved_strategies[strategy_name]
-        st.success(f"✅ Loaded strategy '{strategy_name}'")
-        st.rerun()
+
+    st.session_state.strategy_code = record['code']
+    config = record.get('config') or {}
+    if config:
+        st.session_state.strategy_config = config
+    st.success(f"✅ Loaded strategy '{strategy_name}'")
+    st.rerun()
 
 def show_strategy_documentation():
     """Show strategy development documentation"""

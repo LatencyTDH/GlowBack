@@ -1,7 +1,7 @@
 # GlowBack FastAPI Gateway
 
 This folder contains the FastAPI service that exposes the GlowBack backtesting API contract.
-Backtest runs execute through the real Rust engine via the `gb-python` bindings, while run metadata remains in process-local in-memory storage.
+Backtest runs execute through the real Rust engine via the `gb-python` bindings, while run metadata, event history, and completed results are persisted in a local SQLite-backed experiment registry.
 
 ## Quickstart
 
@@ -30,7 +30,7 @@ The server will be available at http://127.0.0.1:8000 with interactive docs at `
 
 ## Notes
 
-- Storage is in‑memory (process‑local).
+- Backtest run metadata, event history, and completed results are persisted in a local SQLite experiment registry so `GET /backtests` still shows historical runs after restart.
 - Backtests execute through the same Rust engine path used by the Python bindings/UI.
 - Use `data_source: "sample"` to opt into the built-in sample provider, or `data_source: "csv"` with `csv_data_path` pointing at a directory of `{symbol}_{resolution}.csv` files.
 - `GLOWBACK_API_KEY` enables a stub auth check (`Authorization: Bearer <token>` or `X-API-Key: <token>`).
