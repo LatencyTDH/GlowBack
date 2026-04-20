@@ -10,6 +10,15 @@ from streamlit_ace import st_ace
 from research_registry import delete_saved_strategy, get_saved_strategy, list_saved_strategies, save_strategy_snapshot
 
 # Strategy templates
+ENGINE_STRATEGY_TYPES = {
+    "Buy and Hold": "buy_and_hold",
+    "Moving Average Crossover": "ma_crossover",
+    "Mean Reversion": "mean_reversion",
+    "Momentum": "momentum",
+    "RSI": "rsi",
+    "Custom Strategy": "custom",
+}
+
 STRATEGY_TEMPLATES = {
     "Buy and Hold": '''
 # Buy and Hold Strategy
@@ -198,10 +207,21 @@ def show():
     
     with col1:
         st.subheader("🎯 Strategy Templates")
-        
+
+        existing_config = st.session_state.get("strategy_config", {})
+        template_options = list(STRATEGY_TEMPLATES.keys()) + ["Custom Strategy"]
+        reverse_strategy_types = {value: key for key, value in ENGINE_STRATEGY_TYPES.items()}
+        saved_template = existing_config.get("strategy_template") or reverse_strategy_types.get(
+            existing_config.get("strategy_type"),
+            "Custom Strategy",
+        )
+        if saved_template not in template_options:
+            saved_template = "Custom Strategy"
+
         selected_template = st.selectbox(
             "Choose Template",
-            list(STRATEGY_TEMPLATES.keys()) + ["Custom Strategy"],
+            template_options,
+            index=template_options.index(saved_template),
             help="Select a pre-built strategy template or start from scratch"
         )
         
@@ -211,7 +231,16 @@ def show():
                 st.success(f"✅ Loaded {selected_template} template")
                 st.rerun()
             else:
-                st.session_state.strategy_code = "# Your custom strategy here\n\nclass CustomStrategy:\n    def __init__(self):\n        self.name = 'Custom Strategy'\n    \n    def on_bar(self, bar, portfolio):\n        # Implement your strategy logic here\n        return []\n"
+                st.session_state.strategy_code = (
+                    "# Your custom strategy here\n\n"
+                    "class CustomStrategy:\n"
+                    "    def __init__(self):\n"
+                    "        self.name = 'Custom Strategy'\n"
+                    "    \n"
+                    "    def on_bar(self, bar, portfolio):\n"
+                    "        # Implement your strategy logic here\n"
+                    "        return []\n"
+                )
                 st.success("✅ Loaded custom strategy template")
                 st.rerun()
         
@@ -219,7 +248,6 @@ def show():
         st.markdown("---")
         st.subheader("⚙️ Configuration")
 
-        existing_config = st.session_state.get("strategy_config", {})
         strategy_name = st.text_input("Strategy Name", value=existing_config.get("name", "My Strategy"))
         initial_capital = st.number_input(
             "Initial Capital",
@@ -227,7 +255,97 @@ def show():
             min_value=1000,
             step=1000,
         )
-        
+
+        existing_params = dict(existing_config.get("strategy_params") or {})
+        strategy_params = {}
+        strategy_type = ENGINE_STRATEGY_TYPES.get(selected_template, "custom")
+
+        if strategy_type == "ma_crossover":
+            short_period = st.number_input(
+                "Short MA Period",
+                value=int(existing_params.get("short_period", existing_config.get("short_period", 10))),
+                min_value=1,
+                step=1,
+            )
+            long_period = st.number_input(
+                "Long MA Period",
+                value=int(existing_params.get("long_period", existing_config.get("long_period", 20))),
+                min_value=2,
+                step=1,
+            )
+            strategy_params = {"short_period": short_period, "long_period": long_period}
+        elif strategy_type == "momentum":
+            lookback_period = st.number_input(
+                "Momentum Lookback",
+                value=int(existing_params.get("lookback_period", existing_config.get("lookback_period", 10))),
+                min_value=1,
+                step=1,
+            )
+            momentum_threshold = st.number_input(
+                "Momentum Threshold",
+                value=float(existing_params.get("momentum_threshold", existing_config.get("momentum_threshold", 0.05))),
+                min_value=0.0,
+                format="%.4f",
+            )
+            strategy_params = {
+                "lookback_period": lookback_period,
+                "momentum_threshold": momentum_threshold,
+            }
+        elif strategy_type == "mean_reversion":
+            lookback_period = st.number_input(
+                "Reversion Lookback",
+                value=int(existing_params.get("lookback_period", existing_config.get("lookback_period", 20))),
+                min_value=2,
+                step=1,
+            )
+            entry_threshold = st.number_input(
+                "Entry Threshold",
+                value=float(existing_params.get("entry_threshold", existing_config.get("entry_threshold", 2.0))),
+                min_value=0.1,
+                format="%.2f",
+            )
+            exit_threshold = st.number_input(
+                "Exit Threshold",
+                value=float(existing_params.get("exit_threshold", existing_config.get("exit_threshold", 1.0))),
+                min_value=0.1,
+                format="%.2f",
+            )
+            strategy_params = {
+                "lookback_period": lookback_period,
+                "entry_threshold": entry_threshold,
+                "exit_threshold": exit_threshold,
+            }
+        elif strategy_type == "rsi":
+            lookback_period = st.number_input(
+                "RSI Lookback",
+                value=int(existing_params.get("lookback_period", existing_config.get("lookback_period", 14))),
+                min_value=2,
+                step=1,
+            )
+            oversold_threshold = st.number_input(
+                "Oversold Threshold",
+                value=float(existing_params.get("oversold_threshold", existing_config.get("oversold_threshold", 30.0))),
+                min_value=0.0,
+                max_value=100.0,
+                format="%.1f",
+            )
+            overbought_threshold = st.number_input(
+                "Overbought Threshold",
+                value=float(existing_params.get("overbought_threshold", existing_config.get("overbought_threshold", 70.0))),
+                min_value=0.0,
+                max_value=100.0,
+                format="%.1f",
+            )
+            strategy_params = {
+                "lookback_period": lookback_period,
+                "oversold_threshold": oversold_threshold,
+                "overbought_threshold": overbought_threshold,
+            }
+
+        st.caption(
+            "Backtests now run through the real Rust engine. The runner supports the built-in templates above; custom code can still be edited, but only built-in strategies execute end-to-end today."
+        )
+
         # Advanced settings
         with st.expander("Advanced Settings"):
             commission = st.number_input(
@@ -252,13 +370,16 @@ def show():
         if st.button("💾 Save Config"):
             st.session_state.strategy_config = {
                 "name": strategy_name,
+                "display_name": strategy_name,
+                "strategy_type": strategy_type,
+                "strategy_template": selected_template,
+                "strategy_params": strategy_params,
                 "initial_capital": initial_capital,
                 "commission": commission,
                 "slippage": slippage,
-                "max_position_size": max_position_size / 100
+                "max_position_size": max_position_size / 100,
             }
             st.success("✅ Configuration saved!")
-    
     with col2:
         st.subheader("💻 Code Editor")
         

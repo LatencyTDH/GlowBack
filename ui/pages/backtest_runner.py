@@ -149,7 +149,7 @@ def show():
         show_quick_results()
 
 def run_backtest_execution():
-    """Execute the backtest"""
+    """Execute the backtest."""
     
     # Validation
     if not st.session_state.data_loaded:
@@ -223,13 +223,28 @@ def run_backtest_execution():
                 "max_drawdown_pct": float(st.session_state.get("portfolio_max_drawdown_pct") or 0.0),
             }
 
+        selected_start = st.session_state.get("backtest_start_date")
+        selected_end = st.session_state.get("backtest_end_date")
+        commission_override = float(
+            st.session_state.get("backtest_commission_override", st.session_state.strategy_config.get("commission", 0.0)) or 0.0
+        )
+        slippage_override = float(
+            st.session_state.get("backtest_slippage_override", st.session_state.strategy_config.get("slippage", 0.0)) or 0.0
+        )
+        benchmark_symbol = (st.session_state.get("backtest_benchmark_symbol") or "").strip().upper() or None
+
         config = {
             **st.session_state.strategy_config,
-            "commission": float(st.session_state.get("backtest_commission_override", st.session_state.strategy_config.get("commission", 0.0)) or 0.0),
-            "slippage_bps": float(st.session_state.get("backtest_slippage_override", st.session_state.strategy_config.get("slippage", 0.0)) or 0.0),
-            "benchmark_symbol": (st.session_state.get("backtest_benchmark_symbol") or "").strip().upper() or None,
+            "start_date": selected_start,
+            "end_date": selected_end,
+            "commission": commission_override,
+            "commission_bps": commission_override * 10000,
+            "slippage_bps": slippage_override,
+            "benchmark_symbol": benchmark_symbol,
             "portfolio_construction": portfolio_construction,
         }
+        if "resolution" not in config and "resolution" in market_data.columns and not market_data.empty:
+            config["resolution"] = market_data["resolution"].iloc[0]
         
         # Create queues for communication
         progress_queue = queue.Queue()

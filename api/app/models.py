@@ -75,6 +75,8 @@ class BacktestRequest(BaseModel):
     timezone: str = Field(default="UTC", max_length=64)
     benchmark_symbol: str | None = Field(default=None, min_length=1, max_length=16)
     portfolio_construction: PortfolioConstructionConfig | None = None
+    data_source: str = Field(default="default", pattern=r"^(default|sample|csv)$")
+    csv_data_path: str | None = Field(default=None, description="Directory containing {symbol}_{resolution}.csv files")
 
 
 class RunState(str, Enum):
@@ -122,3 +124,5 @@ class BacktestResult(BaseModel):
     constraint_hits: list[dict[str, Any]] = Field(default_factory=list)
     tearsheet: dict[str, Any] = Field(default_factory=dict)
     logs: list[str] = Field(default_factory=list)
+    final_cash: float | None = None
+    final_positions: dict[str, float] = Field(default_factory=dict)

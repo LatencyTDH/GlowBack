@@ -6,12 +6,21 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Iterable
 import math
+import sys
 import time
 
 import numpy as np
 import pandas as pd
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from glowback_runtime import normalize_strategy_name, run_backtest as run_engine_backtest
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -1013,112 +1022,328 @@ def _queue_put(queue_obj, value):
         queue_obj.put(value)
 
 
+def _detect_strategy_name(strategy_code: str, config: dict[str, Any]) -> str:
+    configured = config.get("strategy_type") or config.get("strategy_template") or config.get("name")
+    if configured:
+        try:
+            return normalize_strategy_name(configured)
+        except ValueError:
+            pass
+
+    normalized_code = (strategy_code or "").lower()
+    if "movingaveragecrossover" in normalized_code or "ma crossover" in normalized_code:
+        return "ma_crossover"
+    if "meanreversionstrategy" in normalized_code or "mean reversion" in normalized_code:
+        return "mean_reversion"
+    if "momentumstrategy" in normalized_code or "momentum" in normalized_code:
+        return "momentum"
+    if "rsistrategy" in normalized_code or "rsi" in normalized_code:
+        return "rsi"
+    if "buyandhold" in normalized_code or "buy and hold" in normalized_code:
+        return "buy_and_hold"
+
+    raise ValueError(
+        "The real engine-backed runner supports built-in strategies only: buy_and_hold, ma_crossover, momentum, mean_reversion, rsi."
+    )
+
+
+def _strategy_params_for_engine(strategy_name: str, config: dict[str, Any]) -> dict[str, Any]:
+    params = dict(config.get("strategy_params") or {})
+
+    if strategy_name == "ma_crossover":
+        params.setdefault("short_period", int(config.get("short_period", 10)))
+        params.setdefault("long_period", int(config.get("long_period", 20)))
+    elif strategy_name == "momentum":
+        params.setdefault("lookback_period", int(config.get("lookback_period", 10)))
+        params.setdefault("momentum_threshold", float(config.get("momentum_threshold", 0.05)))
+    elif strategy_name == "mean_reversion":
+        params.setdefault("lookback_period", int(config.get("lookback_period", 20)))
+        params.setdefault("entry_threshold", float(config.get("entry_threshold", 2.0)))
+        params.setdefault("exit_threshold", float(config.get("exit_threshold", 1.0)))
+    elif strategy_name == "rsi":
+        params.setdefault("lookback_period", int(config.get("lookback_period", 14)))
+        params.setdefault("oversold_threshold", float(config.get("oversold_threshold", 30.0)))
+        params.setdefault("overbought_threshold", float(config.get("overbought_threshold", 70.0)))
+
+    return params
+
+
+def _write_market_data_bundle(temp_dir: str, market_data: pd.DataFrame, resolution: str) -> list[str]:
+    frame = market_data.copy()
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    resolution_suffix = {"day": "1d", "hour": "1h", "minute": "1m"}.get(resolution, resolution)
+    symbols: list[str] = []
+
+    for symbol, group in frame.groupby("symbol"):
+        output = group.sort_values("timestamp")[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+        output["timestamp"] = output["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        output.to_csv(Path(temp_dir) / f"{symbol}_{resolution_suffix}.csv", index=False)
+        symbols.append(symbol)
+
+    return symbols
+
+
+def _latest_prices_from_market_data(market_data: pd.DataFrame) -> dict[str, float]:
+    if market_data is None or market_data.empty:
+        return {}
+
+    ordered = market_data.sort_values(["timestamp", "symbol"])
+    latest: dict[str, float] = {}
+    for row in ordered.itertuples(index=False):
+        latest[str(row.symbol)] = float(row.close)
+    return latest
+
+
+def _enrich_real_engine_results(
+    result: dict[str, Any],
+    market_data: pd.DataFrame,
+    benchmark_symbol: str | None,
+    log_queue=None,
+) -> dict[str, Any]:
+    enriched = dict(result)
+    enriched["logs"] = list(enriched.get("logs") or [])
+    enriched["trades"] = list(enriched.get("trades") or [])
+    enriched["exposures"] = list(enriched.get("exposures") or [])
+    enriched["final_positions"] = dict(enriched.get("final_positions") or {})
+
+    metrics_summary = dict(enriched.get("metrics_summary") or {})
+    initial_capital = float(enriched.get("initial_capital") or metrics_summary.get("initial_capital") or 0.0)
+    final_value = float(enriched.get("final_value") or metrics_summary.get("final_value") or 0.0)
+    total_return = float(enriched.get("total_return") or metrics_summary.get("total_return") or 0.0)
+    sharpe_ratio = float(enriched.get("sharpe_ratio") or metrics_summary.get("sharpe_ratio") or 0.0)
+    max_drawdown = float(enriched.get("max_drawdown") or metrics_summary.get("max_drawdown") or 0.0)
+    total_trades = float(enriched.get("total_trades") or metrics_summary.get("total_trades") or len(enriched["trades"]))
+
+    latest_prices = _latest_prices_from_market_data(market_data)
+    benchmark_name = (benchmark_symbol or enriched.get("benchmark_symbol") or None)
+    benchmark_curve = list(enriched.get("benchmark_curve") or [])
+    if not benchmark_curve and benchmark_name:
+        benchmark_curve = build_buy_and_hold_benchmark_curve(market_data, benchmark_name, initial_capital) or []
+        if benchmark_name and not benchmark_curve:
+            message = f"Benchmark symbol {benchmark_name} was not present in the loaded market data; benchmark metrics were skipped."
+            enriched["logs"].append(message)
+            _queue_put(log_queue, message)
+
+    benchmark_metrics = dict(enriched.get("benchmark_metrics") or {})
+    if not benchmark_metrics and benchmark_curve:
+        benchmark_metrics = calculate_benchmark_metrics(enriched.get("equity_curve") or [], benchmark_curve)
+
+    cost_summary = dict(enriched.get("cost_summary") or {})
+    if not cost_summary:
+        cost_summary = calculate_trading_cost_summary(enriched["trades"], initial_capital, final_value)
+
+    attribution = list(enriched.get("attribution") or [])
+    if not attribution:
+        attribution = calculate_symbol_attribution(
+            enriched["trades"],
+            enriched["final_positions"],
+            latest_prices,
+            initial_capital,
+        )
+
+    enriched["initial_capital"] = initial_capital
+    enriched["final_value"] = final_value
+    enriched["total_return"] = total_return
+    enriched["sharpe_ratio"] = sharpe_ratio
+    enriched["max_drawdown"] = max_drawdown
+    enriched["total_trades"] = total_trades
+    enriched["benchmark_symbol"] = benchmark_name
+    enriched["benchmark_curve"] = benchmark_curve
+    enriched["benchmark_metrics"] = benchmark_metrics
+    enriched["cost_summary"] = cost_summary
+    enriched["attribution"] = attribution
+    enriched.setdefault("portfolio_construction", {})
+    enriched.setdefault("portfolio_diagnostics", [])
+    enriched.setdefault("constraint_hits", [])
+
+    metrics_summary.setdefault("initial_capital", initial_capital)
+    metrics_summary.setdefault("final_value", final_value)
+    metrics_summary.setdefault("total_return", total_return)
+    metrics_summary.setdefault("sharpe_ratio", sharpe_ratio)
+    metrics_summary.setdefault("max_drawdown", max_drawdown)
+    metrics_summary.setdefault("total_trades", total_trades)
+    metrics_summary["total_commissions"] = cost_summary.get("total_commissions", 0.0)
+    metrics_summary["total_slippage_cost"] = cost_summary.get("total_slippage_cost", 0.0)
+    metrics_summary.update(benchmark_metrics)
+    enriched["metrics_summary"] = metrics_summary
+    enriched["tearsheet"] = build_tearsheet(enriched)
+    return enriched
+
+
+def _run_real_engine_backtest(strategy_name, strategy_code, market_data, config, progress_queue, log_queue):
+    if market_data is None or market_data.empty:
+        raise ValueError("No market data available for the real engine runner")
+
+    strategy_params = _strategy_params_for_engine(strategy_name, config)
+    resolution = str(
+        config.get("resolution")
+        or (market_data["resolution"].iloc[0] if "resolution" in market_data.columns and not market_data.empty else "day")
+        or "day"
+    )
+    normalized_resolution = {"1d": "day", "1h": "hour", "1m": "minute", "5m": "minute"}.get(
+        resolution,
+        resolution,
+    )
+
+    start_date = pd.to_datetime(config.get("start_date") or market_data["timestamp"].min(), utc=True)
+    end_date = pd.to_datetime(config.get("end_date") or market_data["timestamp"].max(), utc=True)
+
+    filtered = market_data.copy()
+    filtered["timestamp"] = pd.to_datetime(filtered["timestamp"], utc=True)
+    filtered = filtered[(filtered["timestamp"] >= start_date) & (filtered["timestamp"] <= end_date)]
+    if filtered.empty:
+        raise ValueError("No market data remains after applying the selected date range")
+
+    commission_bps = config.get("commission_bps")
+    if commission_bps is None and config.get("commission") is not None:
+        commission_bps = float(config.get("commission") or 0.0) * 10000
+    slippage_bps = config.get("slippage_bps")
+    if slippage_bps is None and config.get("slippage") is not None:
+        slippage_bps = float(config.get("slippage") or 0.0)
+
+    _queue_put(log_queue, f"Using real engine strategy: {strategy_name}")
+    _queue_put(log_queue, f"Loaded {len(filtered)} bars across {filtered['symbol'].nunique()} symbols")
+    _queue_put(progress_queue, 0.1)
+
+    with TemporaryDirectory(prefix="glowback_ui_") as temp_dir:
+        symbols = _write_market_data_bundle(temp_dir, filtered, normalized_resolution)
+        _queue_put(log_queue, f"Prepared CSV bundle for symbols: {', '.join(symbols)}")
+        _queue_put(progress_queue, 0.35)
+
+        result = run_engine_backtest(
+            symbols=symbols,
+            start_date=start_date.to_pydatetime(),
+            end_date=end_date.to_pydatetime(),
+            resolution=normalized_resolution,
+            strategy_name=strategy_name,
+            strategy_params=strategy_params,
+            initial_capital=float(config.get("initial_capital", 100000.0)),
+            run_name=config.get("display_name") or config.get("name") or "UI Backtest",
+            commission_bps=float(commission_bps) if commission_bps is not None else None,
+            slippage_bps=float(slippage_bps) if slippage_bps is not None else None,
+            latency_ms=int(config["latency_ms"]) if config.get("latency_ms") is not None else None,
+            data_source="csv",
+            csv_data_path=temp_dir,
+        )
+
+    _queue_put(progress_queue, 1.0)
+    for line in result.get("logs", []):
+        _queue_put(log_queue, line)
+    return _enrich_real_engine_results(result, filtered, config.get("benchmark_symbol"), log_queue=log_queue)
+
+
+def _run_local_strategy_backtest(strategy_code, market_data, config, progress_queue, log_queue):
+    namespace = {}
+    exec(strategy_code, namespace)
+
+    strategy_classes = [obj for obj in namespace.values() if isinstance(obj, type) and hasattr(obj, "on_bar")]
+    if not strategy_classes:
+        _queue_put(log_queue, "ERROR: No strategy class found")
+        return None
+
+    strategy_class = strategy_classes[0]
+    strategy = strategy_class()
+    commission_rate = float(config.get("commission", 0.0) or 0.0)
+    slippage_bps = float(config.get("slippage_bps", config.get("slippage", 0.0)) or 0.0)
+    portfolio = SimplePortfolio(
+        config.get("initial_capital", 100000),
+        commission_rate=commission_rate,
+        slippage_bps=slippage_bps,
+    )
+
+    _queue_put(log_queue, f"Started backtest: {getattr(strategy, 'name', 'Unknown Strategy')}")
+    _queue_put(log_queue, f"Initial capital: ${portfolio.initial_cash:,.2f}")
+    _queue_put(log_queue, f"Execution costs: commission={commission_rate:.4f}, slippage={slippage_bps:.2f} bps")
+
+    total_bars = len(market_data)
+    equity_curve = []
+    all_logs = []
+    latest_prices: dict[str, float] = {}
+    previous_value = float(portfolio.initial_cash)
+
+    for i, row in market_data.iterrows():
+        bar = SimpleBar(
+            timestamp=row["timestamp"],
+            symbol=row["symbol"],
+            open_price=row["open"],
+            high=row["high"],
+            low=row["low"],
+            close=row["close"],
+            volume=row["volume"],
+            resolution=row["resolution"],
+        )
+
+        try:
+            logs = strategy.on_bar(bar, portfolio)
+            if logs:
+                for log in logs:
+                    log_line = f"{bar.timestamp.strftime('%Y-%m-%d')}: {log}"
+                    _queue_put(log_queue, log_line)
+                    all_logs.append(log_line)
+        except Exception as exc:
+            _queue_put(log_queue, f"ERROR on {bar.timestamp}: {str(exc)}")
+
+        latest_prices[row["symbol"]] = row["close"]
+        position_value = portfolio.calculate_position_value(latest_prices)
+        portfolio_value = portfolio.cash + position_value
+        period_return = 0.0 if previous_value == 0 else (portfolio_value - previous_value) / previous_value
+        cumulative_return_pct = (
+            0.0 if portfolio.initial_cash == 0 else (portfolio_value - portfolio.initial_cash) / portfolio.initial_cash * 100
+        )
+
+        exposures = {}
+        if portfolio_value > 0:
+            exposures = {
+                symbol: (shares * latest_prices.get(symbol, 0)) / portfolio_value
+                for symbol, shares in portfolio.positions.items()
+                if latest_prices.get(symbol, 0) is not None
+            }
+
+        equity_curve.append(
+            {
+                "timestamp": row["timestamp"],
+                "value": portfolio_value,
+                "cash": portfolio.cash,
+                "positions": sum(portfolio.positions.values()),
+                "position_value": position_value,
+                "returns": cumulative_return_pct,
+                "period_return": period_return,
+                "exposures": exposures,
+            }
+        )
+        previous_value = portfolio_value
+
+        progress = (i + 1) / total_bars
+        _queue_put(progress_queue, progress)
+        time.sleep(0.01)
+
+    _queue_put(log_queue, "Backtest completed!")
+
+    return _finalize_backtest_results(
+        market_data,
+        portfolio,
+        equity_curve,
+        latest_prices,
+        all_logs,
+        config.get("benchmark_symbol"),
+        log_queue=log_queue,
+    )
+
+
 def run_backtest(strategy_code, market_data, config, progress_queue, log_queue):
-    """Run a simple UI backtest in a worker thread."""
+    """Run a UI backtest using portfolio mode, the real engine, or the local Python runner."""
     try:
         portfolio_config = _normalize_portfolio_construction_config(config.get("portfolio_construction"), market_data)
         if portfolio_config is not None:
             return _run_portfolio_construction_backtest(market_data, config, portfolio_config, progress_queue, log_queue)
 
-        namespace = {}
-        exec(strategy_code, namespace)
+        try:
+            strategy_name = _detect_strategy_name(strategy_code, config)
+        except ValueError:
+            _queue_put(log_queue, "Falling back to the local Python strategy runner for custom strategy code.")
+            return _run_local_strategy_backtest(strategy_code, market_data, config, progress_queue, log_queue)
 
-        strategy_classes = [
-            obj for obj in namespace.values() if isinstance(obj, type) and hasattr(obj, "on_bar")
-        ]
-        if not strategy_classes:
-            _queue_put(log_queue, "ERROR: No strategy class found")
-            return None
-
-        strategy_class = strategy_classes[0]
-        strategy = strategy_class()
-        commission_rate = float(config.get("commission", 0.0) or 0.0)
-        slippage_bps = float(config.get("slippage_bps", config.get("slippage", 0.0)) or 0.0)
-        portfolio = SimplePortfolio(
-            config.get("initial_capital", 100000),
-            commission_rate=commission_rate,
-            slippage_bps=slippage_bps,
-        )
-
-        _queue_put(log_queue, f"Started backtest: {getattr(strategy, 'name', 'Unknown Strategy')}")
-        _queue_put(log_queue, f"Initial capital: ${portfolio.initial_cash:,.2f}")
-        _queue_put(log_queue, f"Execution costs: commission={commission_rate:.4f}, slippage={slippage_bps:.2f} bps")
-
-        total_bars = len(market_data)
-        equity_curve = []
-        all_logs = []
-        latest_prices: dict[str, float] = {}
-        previous_value = float(portfolio.initial_cash)
-
-        for i, row in market_data.iterrows():
-            bar = SimpleBar(
-                timestamp=row["timestamp"],
-                symbol=row["symbol"],
-                open_price=row["open"],
-                high=row["high"],
-                low=row["low"],
-                close=row["close"],
-                volume=row["volume"],
-                resolution=row["resolution"],
-            )
-
-            try:
-                logs = strategy.on_bar(bar, portfolio)
-                if logs:
-                    for log in logs:
-                        log_line = f"{bar.timestamp.strftime('%Y-%m-%d')}: {log}"
-                        _queue_put(log_queue, log_line)
-                        all_logs.append(log_line)
-            except Exception as exc:
-                _queue_put(log_queue, f"ERROR on {bar.timestamp}: {str(exc)}")
-
-            latest_prices[row["symbol"]] = row["close"]
-            position_value = portfolio.calculate_position_value(latest_prices)
-            portfolio_value = portfolio.cash + position_value
-            period_return = 0.0 if previous_value == 0 else (portfolio_value - previous_value) / previous_value
-            cumulative_return_pct = (
-                0.0
-                if portfolio.initial_cash == 0
-                else (portfolio_value - portfolio.initial_cash) / portfolio.initial_cash * 100
-            )
-
-            exposures = {}
-            if portfolio_value > 0:
-                exposures = {
-                    symbol: (shares * latest_prices.get(symbol, 0)) / portfolio_value
-                    for symbol, shares in portfolio.positions.items()
-                    if latest_prices.get(symbol, 0) is not None
-                }
-
-            equity_curve.append(
-                {
-                    "timestamp": row["timestamp"],
-                    "value": portfolio_value,
-                    "cash": portfolio.cash,
-                    "positions": sum(portfolio.positions.values()),
-                    "position_value": position_value,
-                    "returns": cumulative_return_pct,
-                    "period_return": period_return,
-                    "exposures": exposures,
-                }
-            )
-            previous_value = portfolio_value
-
-            progress = (i + 1) / total_bars
-            _queue_put(progress_queue, progress)
-            time.sleep(0.01)
-
-        _queue_put(log_queue, "Backtest completed!")
-
-        return _finalize_backtest_results(
-            market_data,
-            portfolio,
-            equity_curve,
-            latest_prices,
-            all_logs,
-            config.get("benchmark_symbol"),
-            log_queue=log_queue,
-        )
+        return _run_real_engine_backtest(strategy_name, strategy_code, market_data, config, progress_queue, log_queue)
     except Exception as exc:
         _queue_put(log_queue, f"FATAL ERROR: {str(exc)}")
         return None

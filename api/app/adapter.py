@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import math
 import statistics
 from datetime import datetime, timedelta
 from typing import Protocol
+
+from glowback_runtime import run_backtest as run_engine_backtest
 
 from .models import BacktestRequest, BacktestResult, RunState
 from .store import RunStore
@@ -368,42 +369,55 @@ def _build_sample_results(
     return equity_curve, benchmark_curve, metrics_summary, tearsheet, portfolio_diagnostics, constraint_hits, portfolio_summary
 
 
-class MockEngineAdapter:
+class RealEngineAdapter:
     def __init__(self, store: RunStore) -> None:
         self._store = store
 
     async def run(self, run_id: str, request: BacktestRequest) -> None:
         try:
             await self._store.update_state(run_id, RunState.running)
-            total_steps = 5
-            for step in range(1, total_steps + 1):
-                await asyncio.sleep(0.25)
-                progress = step / total_steps
-                await self._store.update_progress(run_id, progress, message=f"Step {step}/{total_steps}")
+            await self._store.update_progress(run_id, 0.1, message="Initializing real engine")
+            await self._store.update_progress(run_id, 0.3, message="Loading market data")
 
-            benchmark_symbol = request.benchmark_symbol or (request.symbols[0] if request.symbols else "SPY")
-            portfolio_config = request.portfolio_construction.model_dump() if request.portfolio_construction else None
-            equity_curve, benchmark_curve, metrics_summary, tearsheet, portfolio_diagnostics, constraint_hits, portfolio_summary = _build_sample_results(
-                request.initial_capital,
-                request.start_date,
-                request.end_date,
-                benchmark_symbol,
-                portfolio_config,
+            requested_portfolio = request.portfolio_construction.model_dump() if request.portfolio_construction else {}
+            result_payload = run_engine_backtest(
+                symbols=request.symbols,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                resolution=request.resolution,
+                strategy_name=request.strategy.name,
+                strategy_params=request.strategy.params,
+                initial_capital=request.initial_capital,
+                run_name=f"API Backtest {run_id}",
+                commission_bps=request.execution.commission_bps,
+                slippage_bps=request.execution.slippage_bps,
+                latency_ms=request.execution.latency_ms,
+                data_source=request.data_source,
+                csv_data_path=request.csv_data_path,
             )
+
+            await self._store.update_progress(run_id, 0.95, message="Collecting engine results")
+
+            benchmark_symbol = result_payload.get("benchmark_symbol") or request.benchmark_symbol
+            metrics_summary = dict(result_payload.get("metrics_summary") or {})
+            if benchmark_symbol and "benchmark_symbol" not in metrics_summary:
+                metrics_summary["benchmark_symbol"] = benchmark_symbol
 
             result = BacktestResult(
                 run_id=run_id,
                 metrics_summary=metrics_summary,
-                equity_curve=equity_curve,
-                benchmark_curve=benchmark_curve,
+                equity_curve=result_payload.get("equity_curve", []),
+                benchmark_curve=result_payload.get("benchmark_curve", []),
                 benchmark_symbol=benchmark_symbol,
-                trades=[],
-                exposures=[],
-                portfolio_construction=portfolio_summary,
-                portfolio_diagnostics=portfolio_diagnostics,
-                constraint_hits=constraint_hits,
-                tearsheet=tearsheet,
-                logs=[f"Mock run completed against benchmark {benchmark_symbol}"],
+                trades=result_payload.get("trades", []),
+                exposures=result_payload.get("exposures", []),
+                portfolio_construction=result_payload.get("portfolio_construction") or requested_portfolio,
+                portfolio_diagnostics=result_payload.get("portfolio_diagnostics", []),
+                constraint_hits=result_payload.get("constraint_hits", []),
+                tearsheet=result_payload.get("tearsheet", {}),
+                logs=result_payload.get("logs", []),
+                final_cash=result_payload.get("final_cash"),
+                final_positions=result_payload.get("final_positions", {}),
             )
             await self._store.set_result(run_id, result)
         except Exception as exc:  # pragma: no cover - safety net

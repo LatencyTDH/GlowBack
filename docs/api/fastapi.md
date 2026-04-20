@@ -1,6 +1,6 @@
 # FastAPI Gateway
 
-GlowBack exposes a minimal HTTP + WebSocket gateway for backtests. This service is the API surface between clients (SDK/UI) and the Rust engine. Phase 1 uses a mock adapter + in‑memory storage.
+GlowBack exposes an HTTP + WebSocket gateway for backtests. This service is the API surface between clients (SDK/UI) and the Rust engine. Backtests execute through the real engine via the `gb-python` bindings, while run metadata is persisted in a local SQLite experiment registry.
 
 ## Quickstart
 
@@ -9,6 +9,7 @@ cd api
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+maturin develop -m ../crates/gb-python/Cargo.toml
 
 uvicorn app.main:app --reload
 ```
@@ -67,7 +68,8 @@ POST /backtests
     "max_turnover_pct": 50.0,
     "cash_floor_pct": 5.0,
     "max_drawdown_pct": 20.0
-  }
+  },
+  "data_source": "sample"
 }
 ```
 
@@ -144,7 +146,9 @@ POST /backtests
     "portfolio": {"method": "target_weights", "rebalance_frequency": "weekly"},
     "costs": {"total_cost_drag": 0.0}
   },
-  "logs": []
+  "logs": [],
+  "final_cash": 50000.0,
+  "final_positions": {"AAPL": 6333.3333}
 }
 ```
 
@@ -179,8 +183,9 @@ Notes:
 
 ## Notes
 
-- Storage is in‑memory; restarting the service clears runs.
-- `/backtests` still uses the mock adapter today and emits a sample result.
-- Benchmark-relative metrics are computed from the returned strategy and benchmark curves, not placeholder percentages.
-- Portfolio construction requests are accepted directly in the API surface so the same target-weight spec can flow between UI, API payloads, and saved results.
-- `/optimizations` uses the real `gb-python` execution path for built-in strategies.
+- Backtest runs, event history, and completed results are persisted in a local SQLite experiment registry, so `/backtests` survives service restarts.
+- Backtests execute through the same Rust engine-backed path used by the embedded Python runtime.
+- Request `data_source: "sample"` for the built-in sample provider, or `data_source: "csv"` plus `csv_data_path` for local CSV bundles.
+- Benchmark-relative metrics are computed from the returned strategy and benchmark curves, and portfolio-construction fields remain part of the API contract and result payloads when available.
+- `/optimizations` uses the same real `gb-python` execution path for built-in strategies.
+
