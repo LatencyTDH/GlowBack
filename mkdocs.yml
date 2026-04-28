@@ -40,6 +40,7 @@ nav:
       - Strategy Templates: tutorials/strategy-templates.md
       - Notebook Workflow: tutorials/notebook.md
       - UI Workflow: tutorials/ui-workflow.md
+      - Reproducing a Run: tutorials/reproducing-a-run.md
   - Examples: examples/index.md
   - Deployment: deployment.md
   - Architecture: architecture.md

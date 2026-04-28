@@ -383,10 +383,7 @@ fn run_builtin_strategy(
     let strategy = build_builtin_strategy(&strategy_name, &strategy_config)?;
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "Failed to create async runtime: {}",
-            e
-        ))
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create async runtime: {}", e))
     })?;
 
     let mut engine = runtime
@@ -401,10 +398,7 @@ fn run_builtin_strategy(
     let result = runtime
         .block_on(async { engine.run_with_strategy(strategy).await })
         .map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "Backtest execution failed: {}",
-                e
-            ))
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Backtest execution failed: {}", e))
         })?;
 
     Ok(PyBacktestResult::from_backtest_result(result))
@@ -768,6 +762,7 @@ struct PyBacktestResult {
     logs: Vec<String>,
     final_cash: f64,
     final_positions: std::collections::HashMap<String, f64>,
+    manifest: Option<serde_json::Value>,
 }
 
 impl PyBacktestResult {
@@ -963,6 +958,11 @@ impl PyBacktestResult {
             })
             .collect::<Vec<_>>();
 
+        let manifest = result
+            .manifest
+            .as_ref()
+            .and_then(|manifest| serde_json::to_value(manifest).ok());
+
         let total_trades = metrics_summary
             .get("total_trades")
             .copied()
@@ -986,6 +986,7 @@ impl PyBacktestResult {
             logs,
             final_cash,
             final_positions,
+            manifest,
         }
     }
 }
@@ -1075,6 +1076,23 @@ impl PyBacktestResult {
     #[getter]
     fn final_positions(&self, py: Python) -> PyResult<PyObject> {
         Ok(self.final_positions.clone().into_pyobject(py)?.into())
+    }
+
+    #[getter]
+    fn manifest(&self, py: Python) -> PyResult<PyObject> {
+        match &self.manifest {
+            Some(manifest) => {
+                let json = py.import("json")?;
+                let payload = serde_json::to_string(manifest).map_err(|error| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "Failed to serialize run manifest: {}",
+                        error
+                    ))
+                })?;
+                Ok(json.call_method1("loads", (payload,))?.into())
+            }
+            None => Ok(py.None()),
+        }
     }
 
     /// Convert the equity curve to a pandas DataFrame (Jupyter-friendly)

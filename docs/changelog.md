@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Run manifests + replayability:** Engine-backed API backtests now emit a typed `manifest` contract with dataset lineage, execution settings, replay-ready request payloads, and headline metric snapshots; Python/runtime helpers can replay the manifest locally and compare results against the captured metrics.
 - **Experiment durability:** GlowBack now persists Streamlit strategy snapshots, completed UI backtest runs, and API backtest history in a shared SQLite-backed experiment registry so saved strategies, comparison runs, and historical `/backtests` listings survive restarts and remain exportable/deletable intentionally.
 - **Engine scaling:** `gb-engine` now keeps per-symbol `StrategyContext` market buffers incrementally, reuses the live context across hot-path callbacks, and ships a Criterion benchmark covering representative 10-symbol/6-month and 50-symbol/1-year workloads instead of rebuilding full-history buffers on every callback.
 - **Catalog durability:** `gb-data` now reloads persisted `symbol_metadata` rows when `DataCatalog` starts, so symbol listings, metadata lookups, and catalog stats survive process restarts instead of disappearing from the in-memory cache.
