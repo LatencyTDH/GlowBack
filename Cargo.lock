@@ -922,6 +922,7 @@ dependencies = [
  "gb-types",
  "rust_decimal",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

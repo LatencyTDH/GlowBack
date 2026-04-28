@@ -1,11 +1,11 @@
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::market::{Symbol, Resolution};
+use crate::market::{Resolution, Symbol};
 use crate::portfolio::Portfolio;
 use crate::strategy::{StrategyConfig, StrategyMetrics};
 
@@ -46,23 +46,23 @@ impl BacktestConfig {
             created_at: Utc::now(),
         }
     }
-    
+
     pub fn with_symbols(mut self, symbols: Vec<Symbol>) -> Self {
         self.symbols = symbols;
         self
     }
-    
+
     pub fn with_date_range(mut self, start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
         self.start_date = start;
         self.end_date = end;
         self
     }
-    
+
     pub fn with_capital(mut self, capital: Decimal) -> Self {
         self.initial_capital = capital;
         self
     }
-    
+
     pub fn with_resolution(mut self, resolution: Resolution) -> Self {
         self.resolution = resolution;
         self
@@ -85,10 +85,12 @@ impl Default for ExecutionSettings {
         Self {
             commission_per_share: Decimal::new(1, 3), // $0.001 per share
             commission_percentage: Decimal::new(5, 4), // 0.05%
-            minimum_commission: Decimal::new(1, 0), // $1.00 minimum
+            minimum_commission: Decimal::new(1, 0),   // $1.00 minimum
             slippage_model: SlippageModel::Linear { basis_points: 5 },
             latency_model: LatencyModel::Fixed { milliseconds: 100 },
-            market_impact_model: MarketImpactModel::SquareRoot { factor: Decimal::new(1, 4) },
+            market_impact_model: MarketImpactModel::SquareRoot {
+                factor: Decimal::new(1, 4),
+            },
         }
     }
 }
@@ -145,6 +147,83 @@ impl Default for DataSettings {
     }
 }
 
+/// Replayable run-manifest contract for deterministic backtest lineage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunManifest {
+    pub manifest_version: String,
+    pub generated_at: DateTime<Utc>,
+    pub engine: RunEngineManifest,
+    pub strategy: RunStrategyManifest,
+    pub dataset: RunDatasetManifest,
+    pub execution: RunExecutionManifest,
+    pub replay_request: ReplayRequestManifest,
+    pub metric_snapshot: RunMetricSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunEngineManifest {
+    pub crate_name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunStrategyManifest {
+    pub strategy_id: String,
+    pub name: String,
+    pub parameters: HashMap<String, serde_json::Value>,
+    pub code_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunDatasetManifest {
+    pub data_source: String,
+    pub resolution: String,
+    pub start_date: DateTime<Utc>,
+    pub end_date: DateTime<Utc>,
+    pub symbols: Vec<String>,
+    pub bar_counts: HashMap<String, usize>,
+    pub total_bars: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunExecutionManifest {
+    pub initial_capital: f64,
+    pub commission_bps: Option<f64>,
+    pub slippage_bps: Option<f64>,
+    pub latency_ms: Option<u64>,
+    pub commission_percentage: f64,
+    pub minimum_commission: f64,
+    pub slippage_model: SlippageModel,
+    pub latency_model: LatencyModel,
+    pub market_impact_model: MarketImpactModel,
+    pub data_settings: DataSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplayRequestManifest {
+    pub symbols: Vec<String>,
+    pub start_date: DateTime<Utc>,
+    pub end_date: DateTime<Utc>,
+    pub resolution: String,
+    pub strategy_name: String,
+    pub strategy_params: HashMap<String, serde_json::Value>,
+    pub initial_capital: f64,
+    pub data_source: String,
+    pub commission_bps: Option<f64>,
+    pub slippage_bps: Option<f64>,
+    pub latency_ms: Option<u64>,
+    pub run_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunMetricSnapshot {
+    pub final_value: f64,
+    pub total_return: f64,
+    pub max_drawdown: f64,
+    pub sharpe_ratio: f64,
+    pub total_trades: u64,
+}
+
 /// Backtest execution status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BacktestStatus {
@@ -171,6 +250,7 @@ pub struct BacktestResult {
     pub trade_log: Vec<TradeRecord>,
     pub error_message: Option<String>,
     pub metadata: HashMap<String, serde_json::Value>,
+    pub manifest: Option<RunManifest>,
 }
 
 impl BacktestResult {
@@ -189,26 +269,27 @@ impl BacktestResult {
             trade_log: Vec::new(),
             error_message: None,
             metadata: HashMap::new(),
+            manifest: None,
         }
     }
-    
+
     pub fn mark_started(&mut self) {
         self.status = BacktestStatus::Running;
         self.start_time = Utc::now();
     }
-    
+
     pub fn mark_completed(&mut self, portfolio: Portfolio, metrics: StrategyMetrics) {
         let end_time = Utc::now();
         self.status = BacktestStatus::Completed;
         self.end_time = Some(end_time);
         self.duration_seconds = Some((end_time - self.start_time).num_seconds() as u64);
-        
+
         // Calculate performance metrics
         self.performance_metrics = Some(PerformanceMetrics::calculate(&portfolio));
         self.final_portfolio = Some(portfolio);
         self.strategy_metrics = Some(metrics);
     }
-    
+
     pub fn mark_failed(&mut self, error: String) {
         self.status = BacktestStatus::Failed;
         self.end_time = Some(Utc::now());
@@ -247,7 +328,7 @@ pub struct PerformanceMetrics {
 impl PerformanceMetrics {
     pub fn calculate(portfolio: &Portfolio) -> Self {
         let daily_returns = &portfolio.daily_returns;
-        
+
         Self {
             total_return: portfolio.get_total_return(),
             annualized_return: Self::calculate_annualized_return(daily_returns),
@@ -259,8 +340,8 @@ impl PerformanceMetrics {
             max_drawdown_duration_days: Self::calculate_max_drawdown_duration(daily_returns),
             var_95: Self::calculate_var_95(daily_returns),
             cvar_95: Self::calculate_cvar_95(daily_returns),
-            beta: None,          // Requires benchmark data
-            alpha: None,         // Requires benchmark data
+            beta: None,              // Requires benchmark data
+            alpha: None,             // Requires benchmark data
             information_ratio: None, // Requires benchmark data
             skewness: Self::calculate_skewness(daily_returns),
             kurtosis: Self::calculate_kurtosis(daily_returns),
@@ -278,7 +359,7 @@ impl PerformanceMetrics {
     /// Calculate performance metrics with trade data
     pub fn calculate_with_trades(portfolio: &Portfolio, trades: &[TradeRecord]) -> Self {
         let mut metrics = Self::calculate(portfolio);
-        
+
         // Add trade-based metrics
         if !trades.is_empty() {
             metrics.total_trades = trades.len() as u64;
@@ -289,10 +370,10 @@ impl PerformanceMetrics {
             metrics.largest_win = Self::calculate_largest_win(trades);
             metrics.largest_loss = Self::calculate_largest_loss(trades);
         }
-        
+
         metrics
     }
-    
+
     fn calculate_annualized_return(daily_returns: &[crate::portfolio::DailyReturn]) -> Decimal {
         if daily_returns.is_empty() {
             return Decimal::ZERO;
@@ -314,25 +395,25 @@ impl PerformanceMetrics {
         let annualized = base.powf(1.0 / years) - 1.0;
         Decimal::from_f64_retain(annualized).unwrap_or_default()
     }
-    
+
     fn calculate_volatility(daily_returns: &[crate::portfolio::DailyReturn]) -> Decimal {
         if daily_returns.len() < 2 {
             return Decimal::ZERO;
         }
-        
-        let returns: Vec<Decimal> = daily_returns.iter()
-            .map(|r| r.daily_return)
-            .collect();
-            
+
+        let returns: Vec<Decimal> = daily_returns.iter().map(|r| r.daily_return).collect();
+
         let mean = returns.iter().sum::<Decimal>() / Decimal::from(returns.len());
-        let variance = returns.iter()
+        let variance = returns
+            .iter()
             .map(|r| {
                 let diff = *r - mean;
                 let diff_f64 = diff.to_f64().unwrap_or(0.0);
                 Decimal::from_f64_retain(diff_f64 * diff_f64).unwrap_or_default()
             })
-            .sum::<Decimal>() / Decimal::from(returns.len() - 1);
-            
+            .sum::<Decimal>()
+            / Decimal::from(returns.len() - 1);
+
         let variance_f64 = variance.to_f64().unwrap_or(0.0);
         let std_dev = Decimal::from_f64_retain(variance_f64.sqrt()).unwrap_or_default();
         let annualization_factor = Decimal::from_f64_retain((252.0_f64).sqrt()).unwrap_or_default();
@@ -340,16 +421,20 @@ impl PerformanceMetrics {
     }
 
     /// Calculate Sortino ratio (like Sharpe but only considers downside volatility)
-    fn calculate_sortino_ratio(daily_returns: &[crate::portfolio::DailyReturn], risk_free_rate: Decimal) -> Option<Decimal> {
+    fn calculate_sortino_ratio(
+        daily_returns: &[crate::portfolio::DailyReturn],
+        risk_free_rate: Decimal,
+    ) -> Option<Decimal> {
         if daily_returns.is_empty() {
             return None;
         }
 
         let annual_return = Self::calculate_annualized_return(daily_returns);
         let daily_risk_free = risk_free_rate / Decimal::from(252);
-        
+
         // Calculate downside deviation (only negative returns)
-        let downside_returns: Vec<Decimal> = daily_returns.iter()
+        let downside_returns: Vec<Decimal> = daily_returns
+            .iter()
             .map(|r| r.daily_return - daily_risk_free)
             .filter(|&r| r < Decimal::ZERO)
             .collect();
@@ -358,18 +443,21 @@ impl PerformanceMetrics {
             return Some(Decimal::from(9999)); // No downside volatility
         }
 
-        let downside_variance = downside_returns.iter()
+        let downside_variance = downside_returns
+            .iter()
             .map(|&r| {
                 let r_f64 = r.to_f64().unwrap_or(0.0);
                 Decimal::from_f64_retain(r_f64 * r_f64).unwrap_or_default()
             })
-            .sum::<Decimal>() / Decimal::from(downside_returns.len());
+            .sum::<Decimal>()
+            / Decimal::from(downside_returns.len());
 
-        let downside_std = Decimal::from_f64_retain(
-            downside_variance.to_f64().unwrap_or(0.0).sqrt()
-        ).unwrap_or_default();
-        
-        let annualized_downside_std = downside_std * Decimal::from_f64_retain((252.0_f64).sqrt()).unwrap_or_default();
+        let downside_std =
+            Decimal::from_f64_retain(downside_variance.to_f64().unwrap_or(0.0).sqrt())
+                .unwrap_or_default();
+
+        let annualized_downside_std =
+            downside_std * Decimal::from_f64_retain((252.0_f64).sqrt()).unwrap_or_default();
 
         if annualized_downside_std > Decimal::ZERO {
             Some((annual_return - risk_free_rate) / annualized_downside_std)
@@ -379,7 +467,10 @@ impl PerformanceMetrics {
     }
 
     /// Calculate Calmar ratio (annualized return / max drawdown)
-    fn calculate_calmar_ratio(daily_returns: &[crate::portfolio::DailyReturn], max_drawdown: Decimal) -> Option<Decimal> {
+    fn calculate_calmar_ratio(
+        daily_returns: &[crate::portfolio::DailyReturn],
+        max_drawdown: Decimal,
+    ) -> Option<Decimal> {
         if max_drawdown <= Decimal::ZERO {
             return None;
         }
@@ -389,7 +480,9 @@ impl PerformanceMetrics {
     }
 
     /// Calculate maximum drawdown duration in days
-    fn calculate_max_drawdown_duration(daily_returns: &[crate::portfolio::DailyReturn]) -> Option<u32> {
+    fn calculate_max_drawdown_duration(
+        daily_returns: &[crate::portfolio::DailyReturn],
+    ) -> Option<u32> {
         if daily_returns.is_empty() {
             return None;
         }
@@ -408,7 +501,11 @@ impl PerformanceMetrics {
             }
         }
 
-        if max_duration > 0 { Some(max_duration) } else { None }
+        if max_duration > 0 {
+            Some(max_duration)
+        } else {
+            None
+        }
     }
 
     /// Calculate Value at Risk (95% confidence)
@@ -417,15 +514,13 @@ impl PerformanceMetrics {
             return None; // Need sufficient data
         }
 
-        let mut returns: Vec<Decimal> = daily_returns.iter()
-            .map(|r| r.daily_return)
-            .collect();
-        
+        let mut returns: Vec<Decimal> = daily_returns.iter().map(|r| r.daily_return).collect();
+
         returns.sort();
-        
+
         let index = (returns.len() as f64 * 0.05) as usize; // 5th percentile
         let var = -returns[index]; // VaR is positive loss
-        
+
         Some(var)
     }
 
@@ -435,15 +530,13 @@ impl PerformanceMetrics {
             return None;
         }
 
-        let mut returns: Vec<Decimal> = daily_returns.iter()
-            .map(|r| r.daily_return)
-            .collect();
-        
+        let mut returns: Vec<Decimal> = daily_returns.iter().map(|r| r.daily_return).collect();
+
         returns.sort();
-        
+
         let index = (returns.len() as f64 * 0.05) as usize;
         let tail_returns = &returns[..=index];
-        
+
         if tail_returns.is_empty() {
             return None;
         }
@@ -458,32 +551,39 @@ impl PerformanceMetrics {
             return None;
         }
 
-        let mean = daily_returns.iter()
+        let mean = daily_returns
+            .iter()
             .map(|r| r.daily_return)
-            .sum::<Decimal>() / Decimal::from(daily_returns.len());
+            .sum::<Decimal>()
+            / Decimal::from(daily_returns.len());
 
-        let variance = daily_returns.iter()
+        let variance = daily_returns
+            .iter()
             .map(|r| {
                 let diff = r.daily_return - mean;
                 let diff_f64 = diff.to_f64().unwrap_or(0.0);
                 Decimal::from_f64_retain(diff_f64 * diff_f64).unwrap_or_default()
             })
-            .sum::<Decimal>() / Decimal::from(daily_returns.len());
+            .sum::<Decimal>()
+            / Decimal::from(daily_returns.len());
 
-        let std_dev = Decimal::from_f64_retain(variance.to_f64().unwrap_or(0.0).sqrt()).unwrap_or_default();
-        
+        let std_dev =
+            Decimal::from_f64_retain(variance.to_f64().unwrap_or(0.0).sqrt()).unwrap_or_default();
+
         if std_dev <= Decimal::ZERO {
             return None;
         }
 
-        let skewness = daily_returns.iter()
+        let skewness = daily_returns
+            .iter()
             .map(|r| {
                 let diff = r.daily_return - mean;
                 let standardized = diff / std_dev;
                 let standardized_f64 = standardized.to_f64().unwrap_or(0.0);
                 Decimal::from_f64_retain(standardized_f64.powi(3)).unwrap_or_default()
             })
-            .sum::<Decimal>() / Decimal::from(daily_returns.len());
+            .sum::<Decimal>()
+            / Decimal::from(daily_returns.len());
 
         Some(skewness)
     }
@@ -494,32 +594,39 @@ impl PerformanceMetrics {
             return None;
         }
 
-        let mean = daily_returns.iter()
+        let mean = daily_returns
+            .iter()
             .map(|r| r.daily_return)
-            .sum::<Decimal>() / Decimal::from(daily_returns.len());
+            .sum::<Decimal>()
+            / Decimal::from(daily_returns.len());
 
-        let variance = daily_returns.iter()
+        let variance = daily_returns
+            .iter()
             .map(|r| {
                 let diff = r.daily_return - mean;
                 let diff_f64 = diff.to_f64().unwrap_or(0.0);
                 Decimal::from_f64_retain(diff_f64 * diff_f64).unwrap_or_default()
             })
-            .sum::<Decimal>() / Decimal::from(daily_returns.len());
+            .sum::<Decimal>()
+            / Decimal::from(daily_returns.len());
 
-        let std_dev = Decimal::from_f64_retain(variance.to_f64().unwrap_or(0.0).sqrt()).unwrap_or_default();
-        
+        let std_dev =
+            Decimal::from_f64_retain(variance.to_f64().unwrap_or(0.0).sqrt()).unwrap_or_default();
+
         if std_dev <= Decimal::ZERO {
             return None;
         }
 
-        let kurtosis = daily_returns.iter()
+        let kurtosis = daily_returns
+            .iter()
             .map(|r| {
                 let diff = r.daily_return - mean;
                 let standardized = diff / std_dev;
                 let standardized_f64 = standardized.to_f64().unwrap_or(0.0);
                 Decimal::from_f64_retain(standardized_f64.powi(4)).unwrap_or_default()
             })
-            .sum::<Decimal>() / Decimal::from(daily_returns.len());
+            .sum::<Decimal>()
+            / Decimal::from(daily_returns.len());
 
         Some(kurtosis - Decimal::from(3)) // Excess kurtosis
     }
@@ -530,7 +637,8 @@ impl PerformanceMetrics {
             return Decimal::ZERO;
         }
 
-        let winning_trades = trades.iter()
+        let winning_trades = trades
+            .iter()
             .filter(|trade| trade.pnl.unwrap_or(Decimal::ZERO) > Decimal::ZERO)
             .count();
 
@@ -539,12 +647,14 @@ impl PerformanceMetrics {
 
     /// Calculate profit factor (gross profit / gross loss)
     fn calculate_profit_factor(trades: &[TradeRecord]) -> Option<Decimal> {
-        let gross_profit: Decimal = trades.iter()
+        let gross_profit: Decimal = trades
+            .iter()
             .filter_map(|trade| trade.pnl)
             .filter(|&pnl| pnl > Decimal::ZERO)
             .sum();
 
-        let gross_loss: Decimal = trades.iter()
+        let gross_loss: Decimal = trades
+            .iter()
             .filter_map(|trade| trade.pnl)
             .filter(|&pnl| pnl < Decimal::ZERO)
             .map(|pnl| pnl.abs())
@@ -561,7 +671,8 @@ impl PerformanceMetrics {
 
     /// Calculate average winning trade
     fn calculate_average_win(trades: &[TradeRecord]) -> Decimal {
-        let winning_trades: Vec<Decimal> = trades.iter()
+        let winning_trades: Vec<Decimal> = trades
+            .iter()
             .filter_map(|trade| trade.pnl)
             .filter(|&pnl| pnl > Decimal::ZERO)
             .collect();
@@ -575,7 +686,8 @@ impl PerformanceMetrics {
 
     /// Calculate average losing trade
     fn calculate_average_loss(trades: &[TradeRecord]) -> Decimal {
-        let losing_trades: Vec<Decimal> = trades.iter()
+        let losing_trades: Vec<Decimal> = trades
+            .iter()
             .filter_map(|trade| trade.pnl)
             .filter(|&pnl| pnl < Decimal::ZERO)
             .collect();
@@ -589,7 +701,8 @@ impl PerformanceMetrics {
 
     /// Calculate largest winning trade
     fn calculate_largest_win(trades: &[TradeRecord]) -> Decimal {
-        trades.iter()
+        trades
+            .iter()
             .filter_map(|trade| trade.pnl)
             .filter(|&pnl| pnl > Decimal::ZERO)
             .max()
@@ -598,7 +711,8 @@ impl PerformanceMetrics {
 
     /// Calculate largest losing trade
     fn calculate_largest_loss(trades: &[TradeRecord]) -> Decimal {
-        trades.iter()
+        trades
+            .iter()
             .filter_map(|trade| trade.pnl)
             .filter(|&pnl| pnl < Decimal::ZERO)
             .min()
@@ -640,12 +754,31 @@ pub struct TradeRecord {
 /// Backtest event for real-time monitoring
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BacktestEvent {
-    Started { backtest_id: BacktestId, config: BacktestConfig },
-    Progress { backtest_id: BacktestId, progress_pct: f64, current_date: DateTime<Utc> },
-    EquityUpdate { backtest_id: BacktestId, point: EquityCurvePoint },
-    TradeExecuted { backtest_id: BacktestId, trade: TradeRecord },
-    Completed { backtest_id: BacktestId, result: BacktestResult },
-    Failed { backtest_id: BacktestId, error: String },
+    Started {
+        backtest_id: BacktestId,
+        config: BacktestConfig,
+    },
+    Progress {
+        backtest_id: BacktestId,
+        progress_pct: f64,
+        current_date: DateTime<Utc>,
+    },
+    EquityUpdate {
+        backtest_id: BacktestId,
+        point: EquityCurvePoint,
+    },
+    TradeExecuted {
+        backtest_id: BacktestId,
+        trade: TradeRecord,
+    },
+    Completed {
+        backtest_id: BacktestId,
+        result: BacktestResult,
+    },
+    Failed {
+        backtest_id: BacktestId,
+        error: String,
+    },
 }
 
 #[cfg(test)]
@@ -655,8 +788,13 @@ mod tests {
     use chrono::{Duration, Utc};
     use rust_decimal::prelude::ToPrimitive;
     use rust_decimal::Decimal;
+    use serde_json::json;
 
-    fn make_daily_return_with_value(base: chrono::DateTime<Utc>, day_offset: i64, value: i64) -> DailyReturn {
+    fn make_daily_return_with_value(
+        base: chrono::DateTime<Utc>,
+        day_offset: i64,
+        value: i64,
+    ) -> DailyReturn {
         DailyReturn {
             date: base + Duration::days(day_offset),
             portfolio_value: Decimal::from(value),
@@ -665,7 +803,11 @@ mod tests {
         }
     }
 
-    fn make_daily_return(base: chrono::DateTime<Utc>, day_offset: i64, cumulative_return: f64) -> DailyReturn {
+    fn make_daily_return(
+        base: chrono::DateTime<Utc>,
+        day_offset: i64,
+        cumulative_return: f64,
+    ) -> DailyReturn {
         DailyReturn {
             date: base + Duration::days(day_offset),
             portfolio_value: Decimal::from(100_000),
@@ -739,5 +881,124 @@ mod tests {
     fn annualized_return_empty_is_zero() {
         let annualized = PerformanceMetrics::calculate_annualized_return(&[]);
         assert_eq!(annualized, Decimal::ZERO);
+    }
+
+    #[test]
+    fn run_manifest_round_trips_through_json() {
+        let manifest = RunManifest {
+            manifest_version: "1.0".to_string(),
+            generated_at: Utc::now(),
+            engine: RunEngineManifest {
+                crate_name: "gb-engine".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            strategy: RunStrategyManifest {
+                strategy_id: "buy_and_hold".to_string(),
+                name: "buy_and_hold".to_string(),
+                parameters: HashMap::from([("lookback".to_string(), json!(20))]),
+                code_hash: None,
+            },
+            dataset: RunDatasetManifest {
+                data_source: "sample".to_string(),
+                resolution: "day".to_string(),
+                start_date: Utc::now() - Duration::days(10),
+                end_date: Utc::now(),
+                symbols: vec!["AAPL".to_string()],
+                bar_counts: HashMap::from([("AAPL".to_string(), 10usize)]),
+                total_bars: 10,
+            },
+            execution: RunExecutionManifest {
+                initial_capital: 100000.0,
+                commission_bps: Some(5.0),
+                slippage_bps: Some(3.0),
+                latency_ms: Some(50),
+                commission_percentage: 0.0005,
+                minimum_commission: 0.0,
+                slippage_model: SlippageModel::Linear { basis_points: 3 },
+                latency_model: LatencyModel::Fixed { milliseconds: 50 },
+                market_impact_model: MarketImpactModel::None,
+                data_settings: DataSettings::default(),
+            },
+            replay_request: ReplayRequestManifest {
+                symbols: vec!["AAPL".to_string()],
+                start_date: Utc::now() - Duration::days(10),
+                end_date: Utc::now(),
+                resolution: "day".to_string(),
+                strategy_name: "buy_and_hold".to_string(),
+                strategy_params: HashMap::new(),
+                initial_capital: 100000.0,
+                data_source: "sample".to_string(),
+                commission_bps: Some(5.0),
+                slippage_bps: Some(3.0),
+                latency_ms: Some(50),
+                run_name: Some("Replay Run".to_string()),
+            },
+            metric_snapshot: RunMetricSnapshot {
+                final_value: 101000.0,
+                total_return: 1.0,
+                max_drawdown: 0.5,
+                sharpe_ratio: 1.2,
+                total_trades: 3,
+            },
+        };
+
+        let encoded = serde_json::to_value(&manifest).unwrap();
+        let decoded: RunManifest = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, manifest);
+    }
+
+    #[test]
+    fn run_manifest_requires_replay_request() {
+        let payload = json!({
+            "manifest_version": "1.0",
+            "generated_at": "2026-04-28T00:00:00Z",
+            "engine": {"crate_name": "gb-engine", "version": "0.1.0"},
+            "strategy": {
+                "strategy_id": "buy_and_hold",
+                "name": "buy_and_hold",
+                "parameters": {},
+                "code_hash": null
+            },
+            "dataset": {
+                "data_source": "sample",
+                "resolution": "day",
+                "start_date": "2026-01-01T00:00:00Z",
+                "end_date": "2026-01-05T00:00:00Z",
+                "symbols": ["AAPL"],
+                "bar_counts": {"AAPL": 5},
+                "total_bars": 5
+            },
+            "execution": {
+                "initial_capital": 100000.0,
+                "commission_bps": 5.0,
+                "slippage_bps": 3.0,
+                "latency_ms": 50,
+                "commission_percentage": 0.0005,
+                "minimum_commission": 0.0,
+                "slippage_model": {"Linear": {"basis_points": 3}},
+                "latency_model": {"Fixed": {"milliseconds": 50}},
+                "market_impact_model": "None",
+                "data_settings": {
+                    "data_source": "sample",
+                    "adjust_for_splits": true,
+                    "adjust_for_dividends": true,
+                    "fill_gaps": false,
+                    "survivor_bias_free": true,
+                    "max_bars_in_memory": 10000
+                }
+            },
+            "metric_snapshot": {
+                "final_value": 101000.0,
+                "total_return": 1.0,
+                "max_drawdown": 0.5,
+                "sharpe_ratio": 1.2,
+                "total_trades": 3
+            }
+        });
+
+        let error = serde_json::from_value::<RunManifest>(payload)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("replay_request"));
     }
 }

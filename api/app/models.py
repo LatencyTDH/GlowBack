@@ -126,3 +126,4 @@ class BacktestResult(BaseModel):
     logs: list[str] = Field(default_factory=list)
     final_cash: float | None = None
     final_positions: dict[str, float] = Field(default_factory=dict)
+    manifest: dict[str, Any] | None = None

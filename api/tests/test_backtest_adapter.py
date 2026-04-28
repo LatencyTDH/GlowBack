@@ -51,6 +51,66 @@ class RealEngineAdapterTests(unittest.IsolatedAsyncioTestCase):
                 "logs": ["Engine-backed backtest completed"],
                 "final_cash": 5000.0,
                 "final_positions": {"AAPL": 10.0},
+                "manifest": {
+                    "manifest_version": "1.0",
+                    "generated_at": "2026-04-28T00:00:00Z",
+                    "engine": {"crate_name": "gb-engine", "version": "0.1.0"},
+                    "strategy": {
+                        "strategy_id": "buy_and_hold",
+                        "name": "buy_and_hold",
+                        "parameters": {},
+                        "code_hash": None,
+                    },
+                    "dataset": {
+                        "data_source": "sample",
+                        "resolution": "day",
+                        "start_date": "2024-01-01T00:00:00Z",
+                        "end_date": "2024-12-31T00:00:00Z",
+                        "symbols": ["AAPL"],
+                        "bar_counts": {"AAPL": 252},
+                        "total_bars": 252,
+                    },
+                    "execution": {
+                        "initial_capital": 100000.0,
+                        "commission_bps": 1.5,
+                        "slippage_bps": 4.0,
+                        "latency_ms": 250,
+                        "commission_percentage": 0.00015,
+                        "minimum_commission": 1.0,
+                        "slippage_model": {"Linear": {"basis_points": 4}},
+                        "latency_model": {"Fixed": {"milliseconds": 250}},
+                        "market_impact_model": {"SquareRoot": {"factor": "0.0001"}},
+                        "data_settings": {
+                            "data_source": "sample",
+                            "adjust_for_splits": True,
+                            "adjust_for_dividends": True,
+                            "fill_gaps": False,
+                            "survivor_bias_free": True,
+                            "max_bars_in_memory": 10000,
+                        },
+                    },
+                    "replay_request": {
+                        "symbols": ["AAPL"],
+                        "start_date": "2024-01-01T00:00:00Z",
+                        "end_date": "2024-12-31T00:00:00Z",
+                        "resolution": "day",
+                        "strategy_name": "buy_and_hold",
+                        "strategy_params": {},
+                        "initial_capital": 100000.0,
+                        "data_source": "sample",
+                        "commission_bps": 1.5,
+                        "slippage_bps": 4.0,
+                        "latency_ms": 250,
+                        "run_name": "API Backtest replay",
+                    },
+                    "metric_snapshot": {
+                        "final_value": 101250.0,
+                        "total_return": 1.25,
+                        "max_drawdown": 0.0,
+                        "sharpe_ratio": 0.42,
+                        "total_trades": 1,
+                    },
+                },
             },
         ) as mocked_run:
             await adapter.run(status_obj.run_id, request)
@@ -79,6 +139,8 @@ class RealEngineAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.final_cash, 5000.0)
         self.assertEqual(result.final_positions, {"AAPL": 10.0})
         self.assertEqual(result.trades[0]["action"], "BUY")
+        self.assertIsNotNone(result.manifest)
+        self.assertEqual(result.manifest["replay_request"]["strategy_name"], "buy_and_hold")
 
 
 if __name__ == "__main__":

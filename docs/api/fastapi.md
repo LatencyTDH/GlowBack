@@ -148,7 +148,30 @@ POST /backtests
   },
   "logs": [],
   "final_cash": 50000.0,
-  "final_positions": {"AAPL": 6333.3333}
+  "final_positions": {"AAPL": 6333.3333},
+  "manifest": {
+    "manifest_version": "1.0",
+    "engine": {"crate_name": "gb-engine", "version": "0.1.0"},
+    "dataset": {
+      "data_source": "sample",
+      "resolution": "day",
+      "symbols": ["AAPL", "MSFT"],
+      "total_bars": 504
+    },
+    "replay_request": {
+      "symbols": ["AAPL", "MSFT"],
+      "strategy_name": "buy_and_hold",
+      "resolution": "day",
+      "data_source": "sample"
+    },
+    "metric_snapshot": {
+      "final_value": 1012345.67,
+      "total_return": 1.23,
+      "max_drawdown": 0.65,
+      "sharpe_ratio": 0.84,
+      "total_trades": 0
+    }
+  }
 }
 ```
 
@@ -169,6 +192,7 @@ Additional top-level result fields include:
 - `benchmark_symbol`, `benchmark_curve`
 - `portfolio_construction`, `portfolio_diagnostics`, `constraint_hits`
 - `tearsheet`
+- `manifest` (deterministic run lineage + replay request)
 
 Notes:
 - `returns`, `daily_return`, `max_drawdown`, and `volatility` are expressed as percentages.
@@ -188,4 +212,5 @@ Notes:
 - Request `data_source: "sample"` for the built-in sample provider, or `data_source: "csv"` plus `csv_data_path` for local CSV bundles.
 - Benchmark-relative metrics are computed from the returned strategy and benchmark curves, and portfolio-construction fields remain part of the API contract and result payloads when available.
 - `/optimizations` uses the same real `gb-python` execution path for built-in strategies.
+- The `manifest` payload is designed to be replayed locally with `glowback_runtime.replay_manifest(...)`; see the "Reproducing a Run" tutorial.
 

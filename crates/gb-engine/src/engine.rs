@@ -5,14 +5,47 @@ use chrono::{DateTime, Duration, Utc};
 use gb_data::DataManager;
 use gb_types::{
     BacktestConfig, BacktestError, BacktestResult, Bar, EquityCurvePoint, Fill, GbResult,
-    LatencyModel, MarketDataBuffer, MarketEvent, Order, Portfolio, Side, SlippageModel, Strategy,
-    StrategyContext, StrategyMetrics, Symbol, TradeRecord,
+    LatencyModel, MarketDataBuffer, MarketEvent, Order, Portfolio, ReplayRequestManifest,
+    RunDatasetManifest, RunEngineManifest, RunExecutionManifest, RunManifest, RunMetricSnapshot,
+    RunStrategyManifest, Side, SlippageModel, Strategy, StrategyContext, StrategyMetrics, Symbol,
+    TradeRecord,
 };
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 const STRATEGY_MARKET_DATA_WINDOW: usize = 100;
+
+fn decimal_to_f64(value: Decimal) -> f64 {
+    value.to_f64().unwrap_or(0.0)
+}
+
+fn execution_commission_bps(settings: &gb_types::ExecutionSettings) -> Option<f64> {
+    Some(decimal_to_f64(
+        settings.commission_percentage * Decimal::from(10_000),
+    ))
+}
+
+fn execution_slippage_bps(model: &SlippageModel) -> Option<f64> {
+    match model {
+        SlippageModel::None => Some(0.0),
+        SlippageModel::Fixed { basis_points } | SlippageModel::Linear { basis_points } => {
+            Some(*basis_points as f64)
+        }
+        SlippageModel::VolumeWeighted { min_bps, .. } => Some(*min_bps as f64),
+        SlippageModel::SquareRoot { .. } => None,
+    }
+}
+
+fn execution_latency_ms(model: &LatencyModel) -> Option<u64> {
+    match model {
+        LatencyModel::None => Some(0),
+        LatencyModel::Fixed { milliseconds } => Some(*milliseconds),
+        LatencyModel::Random { min_ms, .. } => Some(*min_ms),
+        LatencyModel::VenueSpecific { .. } => None,
+    }
+}
 
 /// Enhanced backtesting engine with event-driven simulation
 pub struct Engine {
@@ -537,6 +570,96 @@ impl Engine {
         Ok(())
     }
 
+    fn build_run_manifest(&self, result: &BacktestResult) -> RunManifest {
+        let strategy_config = self.strategy.get_config();
+        let symbols = self
+            .config
+            .symbols
+            .iter()
+            .map(|symbol| symbol.symbol.clone())
+            .collect::<Vec<_>>();
+        let bar_counts = self
+            .market_data
+            .iter()
+            .map(|(symbol, bars)| (symbol.symbol.clone(), bars.len()))
+            .collect::<HashMap<_, _>>();
+        let total_bars = bar_counts.values().sum();
+        let execution_settings = &self.config.execution_settings;
+        let performance_metrics = result.performance_metrics.as_ref();
+        let strategy_metrics = result.strategy_metrics.as_ref();
+
+        RunManifest {
+            manifest_version: "1.0".to_string(),
+            generated_at: Utc::now(),
+            engine: RunEngineManifest {
+                crate_name: "gb-engine".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            strategy: RunStrategyManifest {
+                strategy_id: strategy_config.strategy_id.clone(),
+                name: strategy_config.name.clone(),
+                parameters: strategy_config.parameters.clone(),
+                code_hash: None,
+            },
+            dataset: RunDatasetManifest {
+                data_source: self.config.data_settings.data_source.clone(),
+                resolution: format!("{:?}", self.config.resolution).to_ascii_lowercase(),
+                start_date: self.config.start_date,
+                end_date: self.config.end_date,
+                symbols: symbols.clone(),
+                bar_counts,
+                total_bars,
+            },
+            execution: RunExecutionManifest {
+                initial_capital: decimal_to_f64(self.config.initial_capital),
+                commission_bps: execution_commission_bps(execution_settings),
+                slippage_bps: execution_slippage_bps(&execution_settings.slippage_model),
+                latency_ms: execution_latency_ms(&execution_settings.latency_model),
+                commission_percentage: decimal_to_f64(execution_settings.commission_percentage),
+                minimum_commission: decimal_to_f64(execution_settings.minimum_commission),
+                slippage_model: execution_settings.slippage_model.clone(),
+                latency_model: execution_settings.latency_model.clone(),
+                market_impact_model: execution_settings.market_impact_model.clone(),
+                data_settings: self.config.data_settings.clone(),
+            },
+            replay_request: ReplayRequestManifest {
+                symbols,
+                start_date: self.config.start_date,
+                end_date: self.config.end_date,
+                resolution: format!("{:?}", self.config.resolution).to_ascii_lowercase(),
+                strategy_name: strategy_config.strategy_id.clone(),
+                strategy_params: strategy_config.parameters.clone(),
+                initial_capital: decimal_to_f64(self.config.initial_capital),
+                data_source: self.config.data_settings.data_source.clone(),
+                commission_bps: execution_commission_bps(execution_settings),
+                slippage_bps: execution_slippage_bps(&execution_settings.slippage_model),
+                latency_ms: execution_latency_ms(&execution_settings.latency_model),
+                run_name: Some(self.config.name.clone()),
+            },
+            metric_snapshot: RunMetricSnapshot {
+                final_value: decimal_to_f64(self.portfolio.total_equity),
+                total_return: performance_metrics
+                    .map(|metrics| decimal_to_f64(metrics.total_return) * 100.0)
+                    .unwrap_or_else(|| decimal_to_f64(self.portfolio.get_total_return()) * 100.0),
+                max_drawdown: performance_metrics
+                    .map(|metrics| decimal_to_f64(metrics.max_drawdown) * 100.0)
+                    .unwrap_or_else(|| decimal_to_f64(self.strategy_metrics.max_drawdown) * 100.0),
+                sharpe_ratio: performance_metrics
+                    .and_then(|metrics| metrics.sharpe_ratio)
+                    .map(decimal_to_f64)
+                    .or_else(|| {
+                        strategy_metrics
+                            .and_then(|metrics| metrics.sharpe_ratio)
+                            .map(decimal_to_f64)
+                    })
+                    .unwrap_or(0.0),
+                total_trades: strategy_metrics
+                    .map(|metrics| metrics.total_trades)
+                    .unwrap_or(self.trade_log.len() as u64),
+            },
+        }
+    }
+
     /// Finalize backtest results
     async fn finalize_results(&mut self, result: &mut BacktestResult) -> GbResult<()> {
         // Get strategy metrics and merge with engine metrics
@@ -624,6 +747,7 @@ impl Engine {
             &self.portfolio,
             &self.trade_log,
         ));
+        result.manifest = Some(self.build_run_manifest(result));
 
         info!("Final portfolio value: {}", self.portfolio.total_equity);
         info!("Total return: {:.2}%", total_return * Decimal::from(100));

@@ -418,6 +418,7 @@ class RealEngineAdapter:
                 logs=result_payload.get("logs", []),
                 final_cash=result_payload.get("final_cash"),
                 final_positions=result_payload.get("final_positions", {}),
+                manifest=result_payload.get("manifest"),
             )
             await self._store.set_result(run_id, result)
         except Exception as exc:  # pragma: no cover - safety net

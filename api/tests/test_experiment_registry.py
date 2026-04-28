@@ -40,6 +40,66 @@ class ExperimentRegistryTests(unittest.IsolatedAsyncioTestCase):
                 trades=[],
                 exposures=[],
                 logs=["completed"],
+                manifest={
+                    "manifest_version": "1.0",
+                    "generated_at": "2026-01-05T00:00:00Z",
+                    "engine": {"crate_name": "gb-engine", "version": "0.1.0"},
+                    "strategy": {
+                        "strategy_id": "buy_and_hold",
+                        "name": "buy_and_hold",
+                        "parameters": {},
+                        "code_hash": None,
+                    },
+                    "dataset": {
+                        "data_source": "sample",
+                        "resolution": "day",
+                        "start_date": "2026-01-01T00:00:00Z",
+                        "end_date": "2026-01-05T00:00:00Z",
+                        "symbols": ["AAPL"],
+                        "bar_counts": {"AAPL": 5},
+                        "total_bars": 5,
+                    },
+                    "execution": {
+                        "initial_capital": 100000.0,
+                        "commission_bps": 0.0,
+                        "slippage_bps": 5.0,
+                        "latency_ms": 100,
+                        "commission_percentage": 0.0,
+                        "minimum_commission": 1.0,
+                        "slippage_model": {"Linear": {"basis_points": 5}},
+                        "latency_model": {"Fixed": {"milliseconds": 100}},
+                        "market_impact_model": {"SquareRoot": {"factor": "0.0001"}},
+                        "data_settings": {
+                            "data_source": "sample",
+                            "adjust_for_splits": True,
+                            "adjust_for_dividends": True,
+                            "fill_gaps": False,
+                            "survivor_bias_free": True,
+                            "max_bars_in_memory": 10000,
+                        },
+                    },
+                    "replay_request": {
+                        "symbols": ["AAPL"],
+                        "start_date": "2026-01-01T00:00:00Z",
+                        "end_date": "2026-01-05T00:00:00Z",
+                        "resolution": "day",
+                        "strategy_name": "buy_and_hold",
+                        "strategy_params": {},
+                        "initial_capital": 100000.0,
+                        "data_source": "sample",
+                        "commission_bps": 0.0,
+                        "slippage_bps": 5.0,
+                        "latency_ms": 100,
+                        "run_name": "Registry Replay",
+                    },
+                    "metric_snapshot": {
+                        "final_value": 101234.5,
+                        "total_return": 1.2345,
+                        "max_drawdown": 0.0,
+                        "sharpe_ratio": 0.0,
+                        "total_trades": 0,
+                    },
+                },
             ),
         )
 
@@ -52,6 +112,7 @@ class ExperimentRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(persisted_result)
         self.assertEqual(persisted_status.state, RunState.completed)
         self.assertEqual(persisted_result.metrics_summary["final_value"], 101234.5)
+        self.assertEqual(persisted_result.manifest["dataset"]["total_bars"], 5)
         self.assertGreaterEqual(len(events), 3)
 
     async def test_registry_persists_strategy_snapshots_with_hashes(self) -> None:
