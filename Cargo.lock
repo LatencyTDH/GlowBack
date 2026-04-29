@@ -1008,6 +1008,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "gb-data",
+ "rand 0.9.4",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",

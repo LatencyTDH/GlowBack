@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 rust_decimal_macros = "1.37"
 gb-data = { path = "../gb-data" }
 tokio = { workspace = true }
+rand = { workspace = true }
 
 [[example]]
 name = "basic_usage" 
