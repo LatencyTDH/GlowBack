@@ -100,7 +100,7 @@ impl Position {
     }
 
     pub fn update_market_price(&mut self, market_price: Decimal) {
-        self.market_value = self.quantity.abs() * market_price;
+        self.market_value = self.quantity * market_price;
         self.unrealized_pnl = match self.quantity {
             q if q > Decimal::ZERO => (market_price - self.average_price) * self.quantity,
             q if q < Decimal::ZERO => (self.average_price - market_price) * self.quantity.abs(),
@@ -157,7 +157,12 @@ impl Portfolio {
             .positions
             .entry(fill.symbol.clone())
             .or_insert_with(|| Position::new(fill.symbol.clone()));
+        let realized_before_fill = position.realized_pnl;
         position.apply_fill(fill);
+        let realized_after_fill = position.realized_pnl;
+        self.total_realized_pnl += realized_after_fill - realized_before_fill;
+        position.update_market_price(fill.price);
+        position.last_updated = fill.executed_at;
 
         // Remove flat positions
         if position.is_flat() {
@@ -178,8 +183,6 @@ impl Portfolio {
     }
 
     fn update_totals(&mut self) {
-        self.total_realized_pnl = self.positions.values().map(|p| p.realized_pnl).sum();
-
         self.total_unrealized_pnl = self.positions.values().map(|p| p.unrealized_pnl).sum();
 
         self.total_pnl = self.total_realized_pnl + self.total_unrealized_pnl;
@@ -399,5 +402,6 @@ mod tests {
         assert_eq!(position.average_price, dec!(110));
         assert_eq!(portfolio.total_realized_pnl, dec!(100));
         assert_eq!(portfolio.cash, dec!(1650));
+        assert_eq!(portfolio.total_equity, dec!(1100));
     }
 }

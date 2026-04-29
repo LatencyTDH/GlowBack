@@ -50,6 +50,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 
 - Realistic market simulation with configurable market hours and resolution
 - Multi‑asset backtesting: equities and crypto (spot) with asset-class-aware fees, market hours, and fractional quantities
+- Portfolio accounting now marks positions with signed market value so short liabilities reduce equity correctly; `gb-types` ships deterministic accounting invariants coverage for long, short, fractional, and multi-asset books
 - Multi‑symbol backtesting with chronological event ordering
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
