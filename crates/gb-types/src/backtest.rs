@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::market::{Resolution, Symbol};
+use crate::orders::OrderEvent;
 use crate::portfolio::Portfolio;
 use crate::strategy::{StrategyConfig, StrategyMetrics};
 
@@ -78,6 +79,12 @@ pub struct ExecutionSettings {
     pub slippage_model: SlippageModel,
     pub latency_model: LatencyModel,
     pub market_impact_model: MarketImpactModel,
+    #[serde(default = "default_max_volume_participation")]
+    pub max_volume_participation: Decimal,
+}
+
+fn default_max_volume_participation() -> Decimal {
+    Decimal::new(25, 2)
 }
 
 impl Default for ExecutionSettings {
@@ -91,6 +98,7 @@ impl Default for ExecutionSettings {
             market_impact_model: MarketImpactModel::SquareRoot {
                 factor: Decimal::new(1, 4),
             },
+            max_volume_participation: default_max_volume_participation(),
         }
     }
 }
@@ -196,7 +204,13 @@ pub struct RunExecutionManifest {
     pub slippage_model: SlippageModel,
     pub latency_model: LatencyModel,
     pub market_impact_model: MarketImpactModel,
+    #[serde(default = "default_max_volume_participation_f64")]
+    pub max_volume_participation: f64,
     pub data_settings: DataSettings,
+}
+
+fn default_max_volume_participation_f64() -> f64 {
+    0.25
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -248,6 +262,8 @@ pub struct BacktestResult {
     pub performance_metrics: Option<PerformanceMetrics>,
     pub equity_curve: Vec<EquityCurvePoint>,
     pub trade_log: Vec<TradeRecord>,
+    #[serde(default)]
+    pub order_events: Vec<OrderEvent>,
     pub error_message: Option<String>,
     pub metadata: HashMap<String, serde_json::Value>,
     pub manifest: Option<RunManifest>,
@@ -267,6 +283,7 @@ impl BacktestResult {
             performance_metrics: None,
             equity_curve: Vec::new(),
             trade_log: Vec::new(),
+            order_events: Vec::new(),
             error_message: None,
             metadata: HashMap::new(),
             manifest: None,
@@ -917,6 +934,7 @@ mod tests {
                 slippage_model: SlippageModel::Linear { basis_points: 3 },
                 latency_model: LatencyModel::Fixed { milliseconds: 50 },
                 market_impact_model: MarketImpactModel::None,
+                max_volume_participation: 0.25,
                 data_settings: DataSettings::default(),
             },
             replay_request: ReplayRequestManifest {

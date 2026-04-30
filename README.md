@@ -17,7 +17,7 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 
 GlowBack provides a fast, realistic backtesting engine with data management, storage, and analytics. It includes:
 
-- Event‑driven simulation engine with slippage/latency/commission models
+- Event‑driven simulation engine with slippage/latency/commission models, order lifecycle events, and participation-capped partial fills
 - Data ingestion (CSV, Alpha Vantage, explicit sample/demo data)
 - Arrow/Parquet columnar storage and SQLite metadata catalog
 - Strategy library (4 built‑in strategies)
@@ -51,7 +51,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 - Realistic market simulation with configurable market hours and resolution
 - Multi‑asset backtesting: equities and crypto (spot) with asset-class-aware fees, market hours, and fractional quantities
 - Portfolio accounting now marks positions with signed market value so short liabilities reduce equity correctly; `gb-types` ships deterministic accounting invariants coverage for long, short, fractional, and multi-asset books
-- Multi‑symbol backtesting with chronological event ordering
+- Multi‑symbol backtesting with chronological event ordering and auditable order submission/fill/cancel/expire traces
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
 - Strategy library: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, RSI

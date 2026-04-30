@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Execution realism:** `gb-engine` now records order lifecycle events, respects time-in-force semantics for day/IOC/FOK orders, and caps fills by a configurable `max_volume_participation` setting so oversized orders can partially fill instead of always executing in one shot.
 - **Run manifests + replayability:** Engine-backed API backtests now emit a typed `manifest` contract with dataset lineage, execution settings, replay-ready request payloads, and headline metric snapshots; Python/runtime helpers can replay the manifest locally and compare results against the captured metrics.
 - **Experiment durability:** GlowBack now persists Streamlit strategy snapshots, completed UI backtest runs, and API backtest history in a shared SQLite-backed experiment registry so saved strategies, comparison runs, and historical `/backtests` listings survive restarts and remain exportable/deletable intentionally.
 - **Engine scaling:** `gb-engine` now keeps per-symbol `StrategyContext` market buffers incrementally, reuses the live context across hot-path callbacks, and ships a Criterion benchmark covering representative 10-symbol/6-month and 50-symbol/1-year workloads instead of rebuilding full-history buffers on every callback.

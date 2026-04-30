@@ -411,6 +411,7 @@ class RealEngineAdapter:
                 benchmark_symbol=benchmark_symbol,
                 trades=result_payload.get("trades", []),
                 exposures=result_payload.get("exposures", []),
+                order_events=result_payload.get("order_events", []),
                 portfolio_construction=result_payload.get("portfolio_construction") or requested_portfolio,
                 portfolio_diagnostics=result_payload.get("portfolio_diagnostics", []),
                 constraint_hits=result_payload.get("constraint_hits", []),
