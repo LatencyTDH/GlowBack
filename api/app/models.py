@@ -77,6 +77,7 @@ class BacktestRequest(BaseModel):
     portfolio_construction: PortfolioConstructionConfig | None = None
     data_source: str = Field(default="default", pattern=r"^(default|sample|csv)$")
     csv_data_path: str | None = Field(default=None, description="Directory containing {symbol}_{resolution}.csv files")
+    data_quality_mode: str = Field(default="warn", pattern=r"^(warn|fail)$")
 
 
 class RunState(str, Enum):

@@ -6,9 +6,9 @@ use rust_decimal::Decimal;
 
 use gb_engine::BacktestEngine as RustBacktestEngine;
 use gb_types::{
-    BacktestConfig, BacktestResult as RustBacktestResult, BuyAndHoldStrategy, LatencyModel,
-    MeanReversionStrategy, MomentumStrategy, MovingAverageCrossoverStrategy, Resolution,
-    RsiStrategy, SlippageModel, Strategy, StrategyConfig, Symbol,
+    BacktestConfig, BacktestResult as RustBacktestResult, BuyAndHoldStrategy, DataQualityMode,
+    LatencyModel, MeanReversionStrategy, MomentumStrategy, MovingAverageCrossoverStrategy,
+    Resolution, RsiStrategy, SlippageModel, Strategy, StrategyConfig, Symbol,
 };
 
 /// GlowBack Python module
@@ -46,6 +46,17 @@ fn parse_resolution(resolution: &str) -> PyResult<Resolution> {
         _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "Invalid resolution: {}",
             resolution
+        ))),
+    }
+}
+
+fn parse_data_quality_mode(mode: &str) -> PyResult<DataQualityMode> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "warn" => Ok(DataQualityMode::Warn),
+        "fail" | "strict" => Ok(DataQualityMode::Fail),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Invalid data_quality_mode: {}",
+            other
         ))),
     }
 }
@@ -141,6 +152,7 @@ fn run_buy_and_hold(
         None,
         Some("sample"),
         None,
+        None,
     )?;
     engine.run_buy_and_hold()
 }
@@ -153,6 +165,7 @@ fn build_backtest_config(
     initial_capital: Option<f64>,
     name: Option<&str>,
     data_source: Option<&str>,
+    data_quality_mode: Option<&str>,
     commission_bps: Option<f64>,
     slippage_bps: Option<f64>,
     latency_ms: Option<u64>,
@@ -204,6 +217,10 @@ fn build_backtest_config(
         if !source.trim().is_empty() {
             config.data_settings.data_source = source.trim().to_string();
         }
+    }
+
+    if let Some(mode) = data_quality_mode {
+        config.data_settings.data_quality_mode = parse_data_quality_mode(mode)?;
     }
 
     if let Some(commission_bps) = commission_bps {
@@ -347,7 +364,7 @@ fn build_builtin_strategy(
 }
 
 #[pyfunction]
-#[pyo3(signature = (symbols, start_date, end_date, strategy_name, strategy_params=None, resolution=None, initial_capital=None, name=None, data_source=None, commission_bps=None, slippage_bps=None, latency_ms=None))]
+#[pyo3(signature = (symbols, start_date, end_date, strategy_name, strategy_params=None, resolution=None, initial_capital=None, name=None, data_source=None, data_quality_mode=None, commission_bps=None, slippage_bps=None, latency_ms=None))]
 fn run_builtin_strategy(
     symbols: Vec<String>,
     start_date: &str,
@@ -358,6 +375,7 @@ fn run_builtin_strategy(
     initial_capital: Option<f64>,
     name: Option<&str>,
     data_source: Option<&str>,
+    data_quality_mode: Option<&str>,
     commission_bps: Option<f64>,
     slippage_bps: Option<f64>,
     latency_ms: Option<u64>,
@@ -374,6 +392,7 @@ fn run_builtin_strategy(
         initial_capital,
         name,
         data_source,
+        data_quality_mode,
         commission_bps,
         slippage_bps,
         latency_ms,
@@ -963,6 +982,66 @@ impl PyBacktestResult {
             .as_ref()
             .and_then(|manifest| serde_json::to_value(manifest).ok());
 
+        let mut data_quality_warning_count = 0u64;
+        let mut data_quality_critical_count = 0u64;
+        let mut saw_sample_data = false;
+        let mut data_quality_logs = Vec::new();
+        if let Some(validation_payload) = result
+            .metadata
+            .get("data_validation_summaries")
+            .and_then(|value| value.as_object())
+        {
+            for (symbol, summary) in validation_payload {
+                let Some(summary_object) = summary.as_object() else {
+                    continue;
+                };
+                data_quality_warning_count += summary_object
+                    .get("warning_issue_count")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
+                data_quality_critical_count += summary_object
+                    .get("critical_issue_count")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
+                saw_sample_data |= summary_object
+                    .get("sample_data")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+
+                if let Some(warnings) = summary_object
+                    .get("warnings")
+                    .and_then(|value| value.as_array())
+                {
+                    for warning in warnings.iter().filter_map(|value| value.as_str()) {
+                        data_quality_logs
+                            .push(format!("Data quality warning [{}]: {}", symbol, warning));
+                    }
+                }
+                if let Some(critical_issues) = summary_object
+                    .get("critical_issues")
+                    .and_then(|value| value.as_array())
+                {
+                    for issue in critical_issues.iter().filter_map(|value| value.as_str()) {
+                        data_quality_logs
+                            .push(format!("Data quality critical [{}]: {}", symbol, issue));
+                    }
+                }
+            }
+        }
+
+        metrics_summary.insert(
+            "data_quality_warning_count".to_string(),
+            data_quality_warning_count as f64,
+        );
+        metrics_summary.insert(
+            "data_quality_critical_count".to_string(),
+            data_quality_critical_count as f64,
+        );
+        metrics_summary.insert(
+            "sample_data".to_string(),
+            if saw_sample_data { 1.0 } else { 0.0 },
+        );
+
         let total_trades = metrics_summary
             .get("total_trades")
             .copied()
@@ -971,12 +1050,13 @@ impl PyBacktestResult {
             .get("final_value")
             .copied()
             .unwrap_or(final_cash);
-        let logs = vec![
+        let mut logs = vec![
             "Engine-backed backtest completed".to_string(),
             format!("Processed {} equity points", equity_curve.len()),
             format!("Executed {} trades", total_trades as usize),
             format!("Final portfolio value ${:.2}", final_value),
         ];
+        logs.extend(data_quality_logs);
 
         Self {
             metrics_summary,
@@ -1217,6 +1297,7 @@ impl PyBacktestEngine {
         latency_ms=None,
         data_source=None,
         csv_data_path=None,
+        data_quality_mode=None,
     ))]
     fn new(
         symbols: Vec<String>,
@@ -1230,6 +1311,7 @@ impl PyBacktestEngine {
         latency_ms: Option<u64>,
         data_source: Option<&str>,
         csv_data_path: Option<&str>,
+        data_quality_mode: Option<&str>,
     ) -> PyResult<Self> {
         if symbols.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1294,6 +1376,9 @@ impl PyBacktestEngine {
 
         let normalized_data_source = data_source.unwrap_or("default").trim().to_ascii_lowercase();
         config.data_settings.data_source = normalized_data_source.clone();
+        if let Some(mode) = data_quality_mode {
+            config.data_settings.data_quality_mode = parse_data_quality_mode(mode)?;
+        }
 
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
