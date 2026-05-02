@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use csv::ReaderBuilder;
-use gb_types::{Bar, DataError, GbResult, Resolution, Symbol};
+use gb_types::{Bar, DataError, DatasetKind, GbResult, PriceAdjustmentMode, Resolution, Symbol};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::path::Path;
@@ -26,6 +26,16 @@ pub trait DataProvider: Send + Sync + std::fmt::Debug {
 
     /// Get provider configuration
     fn config(&self) -> serde_json::Value;
+
+    /// Describe the provenance of records fetched from this provider.
+    fn dataset_kind(&self) -> DatasetKind {
+        DatasetKind::External
+    }
+
+    /// Describe how prices from this provider should be interpreted.
+    fn price_adjustment_mode(&self) -> PriceAdjustmentMode {
+        PriceAdjustmentMode::Raw
+    }
 }
 
 /// CSV data provider for loading local CSV files
@@ -150,6 +160,14 @@ impl DataProvider for CsvDataProvider {
             "directory": self.data_directory,
             "pattern": self.file_pattern
         })
+    }
+
+    fn dataset_kind(&self) -> DatasetKind {
+        DatasetKind::UserProvided
+    }
+
+    fn price_adjustment_mode(&self) -> PriceAdjustmentMode {
+        PriceAdjustmentMode::Raw
     }
 }
 
@@ -297,6 +315,14 @@ impl DataProvider for SampleDataProvider {
                 "BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "ADAUSDT"
             ]
         })
+    }
+
+    fn dataset_kind(&self) -> DatasetKind {
+        DatasetKind::Sample
+    }
+
+    fn price_adjustment_mode(&self) -> PriceAdjustmentMode {
+        PriceAdjustmentMode::Synthetic
     }
 }
 
@@ -542,5 +568,13 @@ impl DataProvider for AlphaVantageProvider {
             "type": "alpha_vantage",
             "api_key_set": !self.api_key.is_empty()
         })
+    }
+
+    fn dataset_kind(&self) -> DatasetKind {
+        DatasetKind::External
+    }
+
+    fn price_adjustment_mode(&self) -> PriceAdjustmentMode {
+        PriceAdjustmentMode::Raw
     }
 }

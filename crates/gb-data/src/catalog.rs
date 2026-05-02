@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use gb_types::{AssetClass, DataError, GbResult, Resolution, Symbol};
+use gb_types::{
+    AssetClass, DataError, DataValidationSummary, DatasetKind, GbResult, PriceAdjustmentMode,
+    Resolution, Symbol,
+};
 use rusqlite::Connection;
 
 /// Data catalog for managing metadata with SQLite backend
@@ -18,7 +21,6 @@ impl DataCatalog {
             message: e.to_string(),
         })?;
 
-        // Create tables if they don't exist
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS symbol_metadata (
@@ -30,14 +32,17 @@ impl DataCatalog {
                 start_date TEXT NOT NULL,
                 end_date TEXT NOT NULL,
                 record_count INTEGER DEFAULT 0,
+                dataset_kind TEXT NOT NULL DEFAULT 'external',
+                price_adjustment TEXT NOT NULL DEFAULT 'raw',
+                validation_summary TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
-            
+
             CREATE INDEX IF NOT EXISTS idx_symbol_metadata_symbol ON symbol_metadata(symbol);
             CREATE INDEX IF NOT EXISTS idx_symbol_metadata_exchange ON symbol_metadata(exchange);
             CREATE INDEX IF NOT EXISTS idx_symbol_metadata_asset_class ON symbol_metadata(asset_class);
-            
+
             CREATE TABLE IF NOT EXISTS data_sources (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -47,7 +52,22 @@ impl DataCatalog {
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );",
             )
-            .map_err(|e| DataError::DatabaseConnection { message: e.to_string() })?;
+            .map_err(|e| DataError::DatabaseConnection {
+                message: e.to_string(),
+            })?;
+
+        ensure_symbol_metadata_column(&connection, "record_count", "INTEGER DEFAULT 0")?;
+        ensure_symbol_metadata_column(
+            &connection,
+            "dataset_kind",
+            "TEXT NOT NULL DEFAULT 'external'",
+        )?;
+        ensure_symbol_metadata_column(
+            &connection,
+            "price_adjustment",
+            "TEXT NOT NULL DEFAULT 'raw'",
+        )?;
+        ensure_symbol_metadata_column(&connection, "validation_summary", "TEXT")?;
 
         let symbols = Self::load_symbols(&connection)?;
 
@@ -57,32 +77,47 @@ impl DataCatalog {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn register_symbol_data(
         &mut self,
         symbol: &Symbol,
         start_date: DateTime<Utc>,
         end_date: DateTime<Utc>,
         resolution: Resolution,
+        record_count: u64,
+        dataset_kind: DatasetKind,
+        price_adjustment: PriceAdjustmentMode,
+        validation_summary: Option<&DataValidationSummary>,
     ) -> GbResult<()> {
         let key = symbol_cache_key(symbol, resolution);
+        let validation_summary_owned = validation_summary.cloned();
         let info = SymbolInfo {
             symbol: symbol.clone(),
             first_date: start_date,
             last_date: end_date,
             resolution,
-            record_count: 0,
+            record_count,
+            dataset_kind,
+            price_adjustment,
+            validation_summary: validation_summary_owned.clone(),
             last_updated: Utc::now(),
         };
 
-        // Update in-memory cache
         self.symbols.insert(key.clone(), info);
 
-        // Update SQLite
+        let validation_summary_json = validation_summary_owned
+            .map(|summary| {
+                serde_json::to_string(&summary).map_err(|error| DataError::ParseError {
+                    message: format!("failed to serialize validation summary: {error}"),
+                })
+            })
+            .transpose()?;
+
         self.connection
             .execute(
-                "INSERT OR REPLACE INTO symbol_metadata 
-             (id, symbol, exchange, asset_class, resolution, start_date, end_date, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)",
+                "INSERT OR REPLACE INTO symbol_metadata
+             (id, symbol, exchange, asset_class, resolution, start_date, end_date, record_count, dataset_kind, price_adjustment, validation_summary, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)",
                 rusqlite::params![
                     key,
                     symbol.symbol,
@@ -91,6 +126,10 @@ impl DataCatalog {
                     format!("{:?}", resolution),
                     start_date.to_rfc3339(),
                     end_date.to_rfc3339(),
+                    record_count as i64,
+                    dataset_kind_as_str(dataset_kind),
+                    price_adjustment_as_str(price_adjustment),
+                    validation_summary_json,
                 ],
             )
             .map_err(|e| DataError::DatabaseConnection {
@@ -106,8 +145,18 @@ impl DataCatalog {
         Ok(())
     }
 
+    pub async fn get_symbol_info_for_resolution(
+        &self,
+        symbol: &Symbol,
+        resolution: Resolution,
+    ) -> GbResult<Option<SymbolInfo>> {
+        Ok(self
+            .symbols
+            .get(&symbol_cache_key(symbol, resolution))
+            .cloned())
+    }
+
     pub async fn get_symbol_info(&self, symbol: &Symbol) -> GbResult<Option<SymbolInfo>> {
-        // For simplified implementation, just look for any resolution
         for info in self.symbols.values() {
             if info.symbol.symbol == symbol.symbol
                 && info.symbol.exchange == symbol.exchange
@@ -170,10 +219,12 @@ impl DataCatalog {
     fn load_symbols(connection: &Connection) -> GbResult<HashMap<String, SymbolInfo>> {
         let mut stmt = connection
             .prepare(
-                "SELECT id, symbol, exchange, asset_class, resolution, start_date, end_date, record_count, updated_at
+                "SELECT id, symbol, exchange, asset_class, resolution, start_date, end_date, record_count, dataset_kind, price_adjustment, validation_summary, updated_at
                  FROM symbol_metadata",
             )
-            .map_err(|e| DataError::DatabaseConnection { message: e.to_string() })?;
+            .map_err(|e| DataError::DatabaseConnection {
+                message: e.to_string(),
+            })?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -187,6 +238,9 @@ impl DataCatalog {
                     row.get::<_, String>(6)?,
                     row.get::<_, i64>(7)?,
                     row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, String>(11)?,
                 ))
             })
             .map_err(|e| DataError::QueryFailed {
@@ -205,6 +259,9 @@ impl DataCatalog {
                 start_date,
                 end_date,
                 record_count,
+                dataset_kind,
+                price_adjustment,
+                validation_summary,
                 updated_at,
             ) = row.map_err(|e| DataError::QueryFailed {
                 query: "SELECT symbol_metadata".to_string(),
@@ -216,6 +273,21 @@ impl DataCatalog {
             let first_date = parse_catalog_datetime(&start_date)?;
             let last_date = parse_catalog_datetime(&end_date)?;
             let last_updated = parse_catalog_datetime(&updated_at)?;
+            let dataset_kind = parse_dataset_kind(&dataset_kind)?;
+            let price_adjustment = parse_price_adjustment(&price_adjustment)?;
+            let validation_summary = validation_summary
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| {
+                    serde_json::from_str::<DataValidationSummary>(&value).map_err(|error| {
+                        DataError::ParseError {
+                            message: format!(
+                                "failed to parse validation summary for {}: {}",
+                                symbol, error
+                            ),
+                        }
+                    })
+                })
+                .transpose()?;
 
             symbols.insert(
                 id,
@@ -225,6 +297,9 @@ impl DataCatalog {
                     last_date,
                     resolution,
                     record_count: record_count as u64,
+                    dataset_kind,
+                    price_adjustment,
+                    validation_summary,
                     last_updated,
                 },
             );
@@ -232,6 +307,49 @@ impl DataCatalog {
 
         Ok(symbols)
     }
+}
+
+fn ensure_symbol_metadata_column(
+    connection: &Connection,
+    column_name: &str,
+    definition: &str,
+) -> GbResult<()> {
+    let mut stmt = connection
+        .prepare("PRAGMA table_info(symbol_metadata)")
+        .map_err(|e| DataError::DatabaseConnection {
+            message: e.to_string(),
+        })?;
+
+    let column_names = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| DataError::QueryFailed {
+            query: "PRAGMA table_info(symbol_metadata)".to_string(),
+            error: e.to_string(),
+        })?;
+
+    for existing_name in column_names {
+        let existing_name = existing_name.map_err(|e| DataError::QueryFailed {
+            query: "PRAGMA table_info(symbol_metadata)".to_string(),
+            error: e.to_string(),
+        })?;
+        if existing_name == column_name {
+            return Ok(());
+        }
+    }
+
+    connection
+        .execute(
+            &format!(
+                "ALTER TABLE symbol_metadata ADD COLUMN {} {}",
+                column_name, definition
+            ),
+            [],
+        )
+        .map_err(|e| DataError::DatabaseConnection {
+            message: e.to_string(),
+        })?;
+
+    Ok(())
 }
 
 fn symbol_cache_key(symbol: &Symbol, resolution: Resolution) -> String {
@@ -274,6 +392,50 @@ fn parse_resolution(value: &str) -> GbResult<Resolution> {
     }
 }
 
+fn parse_dataset_kind(value: &str) -> GbResult<DatasetKind> {
+    match value {
+        "external" => Ok(DatasetKind::External),
+        "user_provided" => Ok(DatasetKind::UserProvided),
+        "sample" => Ok(DatasetKind::Sample),
+        _ => Err(DataError::ParseError {
+            message: format!("unknown dataset kind in catalog metadata: {value}"),
+        }
+        .into()),
+    }
+}
+
+fn parse_price_adjustment(value: &str) -> GbResult<PriceAdjustmentMode> {
+    match value {
+        "raw" => Ok(PriceAdjustmentMode::Raw),
+        "split_adjusted" => Ok(PriceAdjustmentMode::SplitAdjusted),
+        "total_return_adjusted" => Ok(PriceAdjustmentMode::TotalReturnAdjusted),
+        "synthetic" => Ok(PriceAdjustmentMode::Synthetic),
+        "unknown" => Ok(PriceAdjustmentMode::Unknown),
+        _ => Err(DataError::ParseError {
+            message: format!("unknown price adjustment in catalog metadata: {value}"),
+        }
+        .into()),
+    }
+}
+
+fn dataset_kind_as_str(value: DatasetKind) -> &'static str {
+    match value {
+        DatasetKind::External => "external",
+        DatasetKind::UserProvided => "user_provided",
+        DatasetKind::Sample => "sample",
+    }
+}
+
+fn price_adjustment_as_str(value: PriceAdjustmentMode) -> &'static str {
+    match value {
+        PriceAdjustmentMode::Raw => "raw",
+        PriceAdjustmentMode::SplitAdjusted => "split_adjusted",
+        PriceAdjustmentMode::TotalReturnAdjusted => "total_return_adjusted",
+        PriceAdjustmentMode::Synthetic => "synthetic",
+        PriceAdjustmentMode::Unknown => "unknown",
+    }
+}
+
 fn parse_catalog_datetime(value: &str) -> GbResult<DateTime<Utc>> {
     if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
         return Ok(parsed.with_timezone(&Utc));
@@ -296,6 +458,9 @@ pub struct SymbolInfo {
     pub last_date: DateTime<Utc>,
     pub resolution: Resolution,
     pub record_count: u64,
+    pub dataset_kind: DatasetKind,
+    pub price_adjustment: PriceAdjustmentMode,
+    pub validation_summary: Option<DataValidationSummary>,
     pub last_updated: DateTime<Utc>,
 }
 
@@ -322,22 +487,60 @@ mod tests {
         let symbol = Symbol::new("AAPL", "NASDAQ", AssetClass::Equity);
         let start = Utc.with_ymd_and_hms(2024, 1, 2, 0, 0, 0).unwrap();
         let end = Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap();
+        let validation_summary = DataValidationSummary {
+            total_rows_seen: 252,
+            total_bars: 252,
+            duplicate_timestamps: 0,
+            missing_intervals: 1,
+            invalid_ohlcv_rows: 0,
+            negative_price_rows: 0,
+            negative_volume_rows: 0,
+            has_critical_issues: false,
+            critical_issue_count: 0,
+            warning_issue_count: 1,
+            timezone: "UTC".to_string(),
+            resolution: "1d".to_string(),
+            dataset_kind: DatasetKind::UserProvided,
+            price_adjustment: PriceAdjustmentMode::Raw,
+            sample_data: false,
+            critical_issues: Vec::new(),
+            warnings: vec![
+                "Detected 1 missing expected daily intervals for NASDAQ:AAPL.".to_string(),
+            ],
+        };
 
         {
             let mut catalog = DataCatalog::new(&db_path).await.unwrap();
             catalog
-                .register_symbol_data(&symbol, start, end, Resolution::Day)
+                .register_symbol_data(
+                    &symbol,
+                    start,
+                    end,
+                    Resolution::Day,
+                    252,
+                    DatasetKind::UserProvided,
+                    PriceAdjustmentMode::Raw,
+                    Some(&validation_summary),
+                )
                 .await
                 .unwrap();
         }
 
         let reopened = DataCatalog::new(&db_path).await.unwrap();
 
-        let info = reopened.get_symbol_info(&symbol).await.unwrap().unwrap();
+        let info = reopened
+            .get_symbol_info_for_resolution(&symbol, Resolution::Day)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info.symbol, symbol);
         assert_eq!(info.first_date, start);
         assert_eq!(info.last_date, end);
         assert_eq!(info.resolution, Resolution::Day);
+        assert_eq!(info.record_count, 252);
+        assert_eq!(info.dataset_kind, DatasetKind::UserProvided);
+        assert_eq!(info.price_adjustment, PriceAdjustmentMode::Raw);
+        assert_eq!(info.validation_summary, Some(validation_summary.clone()));
 
         let symbols = reopened.list_available_symbols().await.unwrap();
         assert_eq!(symbols, vec![symbol.clone()]);
@@ -346,7 +549,7 @@ mod tests {
         assert_eq!(stats.total_symbols, 1);
         assert_eq!(stats.asset_classes, 1);
         assert_eq!(stats.exchanges, 1);
-        assert_eq!(stats.total_records, 0);
+        assert_eq!(stats.total_records, 252);
         assert_eq!(stats.earliest_date, Some(start));
         assert_eq!(stats.latest_date, Some(end));
     }

@@ -123,6 +123,74 @@ pub enum MarketImpactModel {
     Logarithmic { factor: Decimal },
 }
 
+/// Data quality handling for backtests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataQualityMode {
+    Warn,
+    Fail,
+}
+
+impl Default for DataQualityMode {
+    fn default() -> Self {
+        Self::Warn
+    }
+}
+
+/// High-level dataset provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DatasetKind {
+    External,
+    UserProvided,
+    Sample,
+}
+
+impl Default for DatasetKind {
+    fn default() -> Self {
+        Self::External
+    }
+}
+
+/// How prices in a dataset should be interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceAdjustmentMode {
+    Raw,
+    SplitAdjusted,
+    TotalReturnAdjusted,
+    Synthetic,
+    Unknown,
+}
+
+impl Default for PriceAdjustmentMode {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+/// Persisted summary of data-quality checks for a symbol/resolution slice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DataValidationSummary {
+    pub total_rows_seen: u64,
+    pub total_bars: u64,
+    pub duplicate_timestamps: u64,
+    pub missing_intervals: u64,
+    pub invalid_ohlcv_rows: u64,
+    pub negative_price_rows: u64,
+    pub negative_volume_rows: u64,
+    pub has_critical_issues: bool,
+    pub critical_issue_count: u64,
+    pub warning_issue_count: u64,
+    pub timezone: String,
+    pub resolution: String,
+    pub dataset_kind: DatasetKind,
+    pub price_adjustment: PriceAdjustmentMode,
+    pub sample_data: bool,
+    pub critical_issues: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 /// Data settings for backtest
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DataSettings {
@@ -132,6 +200,8 @@ pub struct DataSettings {
     pub fill_gaps: bool,
     pub survivor_bias_free: bool,
     pub max_bars_in_memory: usize,
+    #[serde(default)]
+    pub data_quality_mode: DataQualityMode,
 }
 
 impl Default for DataSettings {
@@ -143,6 +213,7 @@ impl Default for DataSettings {
             fill_gaps: false,
             survivor_bias_free: true,
             max_bars_in_memory: 10000,
+            data_quality_mode: DataQualityMode::Warn,
         }
     }
 }
@@ -183,6 +254,8 @@ pub struct RunDatasetManifest {
     pub symbols: Vec<String>,
     pub bar_counts: HashMap<String, usize>,
     pub total_bars: usize,
+    #[serde(default)]
+    pub validation_summaries: HashMap<String, DataValidationSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -906,6 +979,7 @@ mod tests {
                 symbols: vec!["AAPL".to_string()],
                 bar_counts: HashMap::from([("AAPL".to_string(), 10usize)]),
                 total_bars: 10,
+                validation_summaries: HashMap::new(),
             },
             execution: RunExecutionManifest {
                 initial_capital: 100000.0,

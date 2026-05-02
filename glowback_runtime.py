@@ -162,6 +162,7 @@ def run_backtest(
     latency_ms: int | None = None,
     data_source: str = "default",
     csv_data_path: str | None = None,
+    data_quality_mode: str = "warn",
 ) -> dict[str, Any]:
     glowback = _load_glowback()
     strategy_id = normalize_strategy_name(strategy_name)
@@ -170,6 +171,9 @@ def run_backtest(
         raise ValueError("data_source must be one of: default, sample, csv")
     if source == "csv" and not csv_data_path:
         raise ValueError("csv_data_path is required when data_source='csv'")
+    normalized_data_quality_mode = (data_quality_mode or "warn").strip().lower()
+    if normalized_data_quality_mode not in {"warn", "fail"}:
+        raise ValueError("data_quality_mode must be one of: warn, fail")
 
     engine = glowback.BacktestEngine(
         symbols,
@@ -183,6 +187,7 @@ def run_backtest(
         latency_ms,
         source,
         csv_data_path,
+        normalized_data_quality_mode,
     )
 
     result = engine.run_strategy(strategy_id, strategy_params or {})
