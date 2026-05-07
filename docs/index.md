@@ -16,8 +16,7 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 ```bash
 git clone https://github.com/LatencyTDH/GlowBack.git
 cd GlowBack
-cargo test --workspace
-cargo run --example basic_usage -p gb-types
+./scripts/quickstart.sh
 ```
 
 ```bash
@@ -26,9 +25,12 @@ python setup.py
 # Opens http://localhost:8501
 ```
 
+The quickstart script is exercised in CI and validates the expected success markers from the basic usage example.
+
 ## Where to go next
 
-- **Getting Started** for setup and first run
+- **Getting Started** for the 5-minute first run and exact success markers
+- **Assumptions & Limitations** for the current product boundaries
 - **Concepts** for data model and execution details
 - **Tutorials** for common workflows
 - **API Reference** for bindings and crate docs

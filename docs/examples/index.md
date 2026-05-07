@@ -1,10 +1,36 @@
 # Examples
 
-This section will host runnable examples with expected outputs.
+## Quickstart smoke example
 
-Planned examples:
+This repo now includes an executable quickstart script that proves a clean checkout can run a complete smoke path.
 
-- Buy & Hold on AAPL
+```bash
+./scripts/quickstart.sh
+```
+
+Under the hood it runs:
+
+```bash
+cargo run --locked --example basic_usage -p gb-types
+```
+
+Expected success markers:
+
+```text
+✅ All basic functionality working!
+🎊 Strategy library complete with 4 different strategies!
+```
+
+The quickstart example exercises:
+
+- symbol, bar, cache, and portfolio primitives
+- sample data provider wiring
+- built-in strategy construction
+- basic error handling
+
+## Next examples to add
+
+- Buy & Hold on AAPL with expected metrics snapshot
 - Moving Average Crossover on SPY
 - Momentum strategy with parameter sweep
 

@@ -27,6 +27,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Assumptions & Limitations: assumptions-and-limitations.md
   - Concepts:
       - Core Concepts: concepts/core-concepts.md
       - Data Model: concepts/data-model.md

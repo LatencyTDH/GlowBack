@@ -1,0 +1,45 @@
+name: Docs Smoke
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "README.md"
+      - "docs/**"
+      - "mkdocs.yml"
+      - "scripts/quickstart.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - ".github/workflows/docs-smoke.yml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "README.md"
+      - "docs/**"
+      - "mkdocs.yml"
+      - "scripts/quickstart.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - ".github/workflows/docs-smoke.yml"
+  workflow_dispatch:
+
+jobs:
+  quickstart-and-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Run quickstart smoke test
+        run: ./scripts/quickstart.sh
+      - name: Build docs strictly
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install mkdocs-material pymdown-extensions
+          mkdocs build --strict
