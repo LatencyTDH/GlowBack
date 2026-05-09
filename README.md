@@ -133,6 +133,16 @@ cargo test --workspace
 # 25 passed; 0 failed
 ```
 
+## Benchmarks
+
+```bash
+./scripts/run-engine-benchmarks.sh artifacts/benchmarks/local
+```
+
+This runs the maintained `gb-engine` hot-path benchmark, generates a compact `summary.md` / `summary.json`, and preserves the raw Criterion output for drill-down.
+
+Scheduled and manual CI benchmark runs upload the same artifact structure from `.github/workflows/benchmarks.yml`, so benchmark history is visible without blocking normal pull requests.
+
 ## Roadmap
 
 **In progress**
