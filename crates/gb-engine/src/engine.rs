@@ -4,11 +4,12 @@
 use chrono::{DateTime, Duration, Utc};
 use gb_data::DataManager;
 use gb_types::{
-    BacktestConfig, BacktestError, BacktestResult, Bar, EquityCurvePoint, Fill, GbResult,
-    LatencyModel, MarketDataBuffer, MarketEvent, Order, OrderEvent, OrderStatus, OrderType,
-    Portfolio, ReplayRequestManifest, RunDatasetManifest, RunEngineManifest, RunExecutionManifest,
-    RunManifest, RunMetricSnapshot, RunStrategyManifest, Side, SlippageModel, Strategy,
-    StrategyContext, StrategyMetrics, Symbol, TimeInForce, TradeRecord,
+    BacktestConfig, BacktestError, BacktestResult, Bar, DataQualityMode, DataValidationSummary,
+    EquityCurvePoint, Fill, GbResult, LatencyModel, MarketDataBuffer, MarketEvent, Order,
+    OrderEvent, OrderStatus, OrderType, Portfolio, ReplayRequestManifest, RunDatasetManifest,
+    RunEngineManifest, RunExecutionManifest, RunManifest, RunMetricSnapshot, RunStrategyManifest,
+    Side, SlippageModel, Strategy, StrategyContext, StrategyMetrics, Symbol, TimeInForce,
+    TradeRecord,
 };
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
@@ -74,6 +75,7 @@ pub struct Engine {
     trade_log: Vec<TradeRecord>,
     order_events: Vec<OrderEvent>,
     equity_peak: Decimal,
+    data_validation_summaries: HashMap<String, DataValidationSummary>,
 }
 
 impl Engine {
@@ -91,7 +93,9 @@ impl Engine {
 
         // Load market data for all symbols
         let mut market_data = HashMap::new();
+        let mut data_validation_summaries = HashMap::new();
         let mut load_failures = Vec::new();
+        let mut data_quality_failures = Vec::new();
         for symbol in &config.symbols {
             match data_manager
                 .load_data(
@@ -104,6 +108,32 @@ impl Engine {
             {
                 Ok(bars) if !bars.is_empty() => {
                     info!("Loaded {} bars for {}", bars.len(), symbol);
+
+                    if let Some(summary) = data_manager
+                        .get_validation_summary(symbol, config.resolution)
+                        .await?
+                    {
+                        for warning_message in &summary.warnings {
+                            warn!("Data quality warning for {}: {}", symbol, warning_message);
+                        }
+                        if summary.has_critical_issues {
+                            for critical_issue in &summary.critical_issues {
+                                warn!(
+                                    "Data quality critical issue for {}: {}",
+                                    symbol, critical_issue
+                                );
+                            }
+                            if config.data_settings.data_quality_mode == DataQualityMode::Fail {
+                                data_quality_failures.push(format!(
+                                    "{}: {}",
+                                    symbol,
+                                    summary.critical_issues.join("; ")
+                                ));
+                            }
+                        }
+                        data_validation_summaries.insert(symbol.symbol.clone(), summary);
+                    }
+
                     market_data.insert(symbol.clone(), bars);
                 }
                 Ok(_) => {
@@ -124,12 +154,27 @@ impl Engine {
             }
         }
 
-        if !load_failures.is_empty() {
-            return Err(BacktestError::EngineInitFailed {
-                message: format!(
+        if !load_failures.is_empty() || !data_quality_failures.is_empty() {
+            let mut problems = Vec::new();
+            if !load_failures.is_empty() {
+                problems.push(format!(
                     "failed to load required market data: {}",
                     load_failures.join("; ")
-                ),
+                ));
+            }
+            if !data_quality_failures.is_empty() {
+                problems.push(format!(
+                    "data quality mode '{}' rejected the dataset: {}",
+                    match config.data_settings.data_quality_mode {
+                        DataQualityMode::Warn => "warn",
+                        DataQualityMode::Fail => "fail",
+                    },
+                    data_quality_failures.join("; ")
+                ));
+            }
+
+            return Err(BacktestError::EngineInitFailed {
+                message: problems.join(" | "),
             }
             .into());
         }
@@ -166,6 +211,7 @@ impl Engine {
             equity_curve: Vec::new(),
             trade_log: Vec::new(),
             order_events: Vec::new(),
+            data_validation_summaries,
         })
     }
 
@@ -832,6 +878,7 @@ impl Engine {
                 symbols: symbols.clone(),
                 bar_counts,
                 total_bars,
+                validation_summaries: self.data_validation_summaries.clone(),
             },
             execution: RunExecutionManifest {
                 initial_capital: decimal_to_f64(self.config.initial_capital),
@@ -974,6 +1021,21 @@ impl Engine {
             &self.portfolio,
             &self.trade_log,
         ));
+        result.metadata.insert(
+            "data_validation_summaries".to_string(),
+            serde_json::to_value(&self.data_validation_summaries)?,
+        );
+        result.metadata.insert(
+            "data_quality_mode".to_string(),
+            serde_json::to_value(&self.config.data_settings.data_quality_mode)?,
+        );
+        result.metadata.insert(
+            "sample_data".to_string(),
+            serde_json::json!(self
+                .data_validation_summaries
+                .values()
+                .any(|summary| summary.sample_data)),
+        );
         result.manifest = Some(self.build_run_manifest(result));
 
         info!("Final portfolio value: {}", self.portfolio.total_equity);
@@ -1043,7 +1105,8 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use gb_types::{
-        LatencyModel, OrderEvent, OrderStatus, Resolution, Side, StrategyAction, StrategyConfig,
+        DataQualityMode, DataValidationSummary, DatasetKind, LatencyModel, OrderEvent,
+        OrderStatus, PriceAdjustmentMode, Resolution, Side, StrategyAction, StrategyConfig,
         TimeInForce,
     };
 
@@ -1159,6 +1222,7 @@ mod tests {
             trade_log: Vec::new(),
             order_events: Vec::new(),
             equity_peak: Decimal::from(100_000),
+            data_validation_summaries: HashMap::new(),
         }
     }
 
@@ -1365,5 +1429,70 @@ mod tests {
             engine.order_events.last(),
             Some(OrderEvent::OrderExpired { order_id: expired_id, reason }) if *expired_id == order_id && reason.contains("conditions were not met")
         ));
+    }
+
+    #[tokio::test]
+    async fn engine_rejects_critical_data_quality_failures_in_fail_mode() {
+        let symbol = Symbol::equity("AAPL");
+        let mut config = BacktestConfig::new(
+            "strict-data-quality".to_string(),
+            StrategyConfig::new("noop".to_string(), "Noop Strategy".to_string()),
+        );
+        config.start_date = ts(1);
+        config.end_date = ts(2);
+        config.symbols = vec![symbol.clone()];
+        config.resolution = Resolution::Day;
+        config.data_settings.data_quality_mode = DataQualityMode::Fail;
+
+        let mut data_manager = DataManager::new_ephemeral("gb-engine-strict-data-quality")
+            .await
+            .unwrap();
+        data_manager
+            .storage
+            .save_bars(&symbol, &[test_bar(&symbol, 1, 101)], Resolution::Day)
+            .await
+            .unwrap();
+
+        let summary = DataValidationSummary {
+            total_rows_seen: 2,
+            total_bars: 1,
+            duplicate_timestamps: 1,
+            missing_intervals: 0,
+            invalid_ohlcv_rows: 0,
+            negative_price_rows: 0,
+            negative_volume_rows: 0,
+            has_critical_issues: true,
+            critical_issue_count: 1,
+            warning_issue_count: 0,
+            timezone: "UTC".to_string(),
+            resolution: "1d".to_string(),
+            dataset_kind: DatasetKind::UserProvided,
+            price_adjustment: PriceAdjustmentMode::Raw,
+            sample_data: false,
+            critical_issues: vec![
+                "Detected 1 duplicate timestamp rows for NASDAQ:AAPL.".to_string()
+            ],
+            warnings: Vec::new(),
+        };
+        data_manager
+            .catalog
+            .register_symbol_data(
+                &symbol,
+                ts(1),
+                ts(1),
+                Resolution::Day,
+                1,
+                DatasetKind::UserProvided,
+                PriceAdjustmentMode::Raw,
+                Some(&summary),
+            )
+            .await
+            .unwrap();
+
+        let result = Engine::new(config, &mut data_manager, Box::new(NoopStrategy::new())).await;
+        assert!(result.is_err());
+        let error = result.err().unwrap().to_string();
+        assert!(error.contains("data quality mode 'fail' rejected the dataset"));
+        assert!(error.contains("duplicate timestamp"));
     }
 }

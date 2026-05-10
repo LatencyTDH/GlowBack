@@ -4,6 +4,7 @@ pub mod loaders;
 pub mod providers;
 pub mod sources;
 pub mod storage;
+pub mod validation;
 
 pub use cache::*;
 pub use catalog::*;
@@ -11,8 +12,9 @@ pub use loaders::*;
 pub use providers::*;
 pub use sources::*;
 pub use storage::*;
+pub use validation::*;
 
-use gb_types::GbResult;
+use gb_types::{DataValidationSummary, DatasetKind, GbResult, PriceAdjustmentMode};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -58,6 +60,18 @@ impl DataManager {
         self.providers.push(provider);
     }
 
+    pub async fn get_validation_summary(
+        &self,
+        symbol: &gb_types::Symbol,
+        resolution: gb_types::Resolution,
+    ) -> GbResult<Option<DataValidationSummary>> {
+        Ok(self
+            .catalog
+            .get_symbol_info_for_resolution(symbol, resolution)
+            .await?
+            .and_then(|info| info.validation_summary))
+    }
+
     pub async fn load_data(
         &mut self,
         symbol: &gb_types::Symbol,
@@ -81,6 +95,39 @@ impl DataManager {
             .await
         {
             if !data.is_empty() {
+                let existing_info = self
+                    .catalog
+                    .get_symbol_info_for_resolution(symbol, resolution)
+                    .await?;
+                let dataset_kind = existing_info
+                    .as_ref()
+                    .map(|info| info.dataset_kind)
+                    .unwrap_or(DatasetKind::External);
+                let price_adjustment = existing_info
+                    .as_ref()
+                    .map(|info| info.price_adjustment)
+                    .unwrap_or(PriceAdjustmentMode::Raw);
+                let validation_summary = existing_info
+                    .and_then(|info| info.validation_summary)
+                    .unwrap_or_else(|| {
+                        summarize_bars(&data, symbol, resolution, dataset_kind, price_adjustment)
+                    });
+                let actual_start = data.first().map(|bar| bar.timestamp).unwrap_or(start_date);
+                let actual_end = data.last().map(|bar| bar.timestamp).unwrap_or(end_date);
+
+                self.catalog
+                    .register_symbol_data(
+                        symbol,
+                        actual_start,
+                        actual_end,
+                        resolution,
+                        data.len() as u64,
+                        dataset_kind,
+                        price_adjustment,
+                        Some(&validation_summary),
+                    )
+                    .await?;
+
                 // Cache for future use
                 self.cache.store_bars(symbol, &data, resolution).await?;
                 return Ok(data);
@@ -94,16 +141,44 @@ impl DataManager {
                     .fetch_bars(symbol, start_date, end_date, resolution)
                     .await
                 {
-                    // Store and cache
-                    self.storage.save_bars(symbol, &data, resolution).await?;
-                    self.cache.store_bars(symbol, &data, resolution).await?;
+                    let dataset_kind = provider.dataset_kind();
+                    let price_adjustment = provider.price_adjustment_mode();
+                    let validation_summary =
+                        summarize_bars(&data, symbol, resolution, dataset_kind, price_adjustment);
 
-                    // Update catalog
-                    self.catalog
-                        .register_symbol_data(symbol, start_date, end_date, resolution)
+                    // Store and then reload the merged/deduped view for downstream consumers.
+                    self.storage.save_bars(symbol, &data, resolution).await?;
+                    let stored_data = self
+                        .storage
+                        .load_bars(symbol, start_date, end_date, resolution)
+                        .await?;
+                    self.cache
+                        .store_bars(symbol, &stored_data, resolution)
                         .await?;
 
-                    return Ok(data);
+                    let actual_start = stored_data
+                        .first()
+                        .map(|bar| bar.timestamp)
+                        .unwrap_or(start_date);
+                    let actual_end = stored_data
+                        .last()
+                        .map(|bar| bar.timestamp)
+                        .unwrap_or(end_date);
+
+                    self.catalog
+                        .register_symbol_data(
+                            symbol,
+                            actual_start,
+                            actual_end,
+                            resolution,
+                            stored_data.len() as u64,
+                            dataset_kind,
+                            price_adjustment,
+                            Some(&validation_summary),
+                        )
+                        .await?;
+
+                    return Ok(stored_data);
                 }
             }
         }

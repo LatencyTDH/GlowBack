@@ -394,6 +394,7 @@ class RealEngineAdapter:
                 latency_ms=request.execution.latency_ms,
                 data_source=request.data_source,
                 csv_data_path=request.csv_data_path,
+                data_quality_mode=request.data_quality_mode,
             )
 
             await self._store.update_progress(run_id, 0.95, message="Collecting engine results")
