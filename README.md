@@ -55,6 +55,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
 - Strategy library: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, RSI
+- Strategy authoring templates for both the Rust engine lifecycle and the UI's local Python runner lifecycle
 - Storage: Arrow/Parquet with batch loading and round‑trip I/O
 - Catalog: SQLite metadata with indexed queries
 
@@ -82,12 +83,18 @@ cargo test --workspace
 # Basic usage
 cargo run --example basic_usage -p gb-types
 
+# Runnable Rust strategy lifecycle template
+cargo run --example strategy_lifecycle_template -p gb-engine --locked
+
 # Market simulator tests
 cargo test -p gb-engine simulator
 
 # Parquet loader tests
 cargo test -p gb-data parquet
 ```
+
+For the UI-side local strategy lifecycle example, see `ui/examples/lifecycle_strategy.py`
+and the matching validation in `ui/tests/test_backtest_core.py`.
 
 ### Launch the UI
 
@@ -132,6 +139,16 @@ bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z",
 cargo test --workspace
 # 25 passed; 0 failed
 ```
+
+## Benchmarks
+
+```bash
+./scripts/run-engine-benchmarks.sh artifacts/benchmarks/local
+```
+
+This runs the maintained `gb-engine` hot-path benchmark, generates a compact `summary.md` / `summary.json`, and preserves the raw Criterion output for drill-down.
+
+Scheduled and manual CI benchmark runs upload the same artifact structure from `.github/workflows/benchmarks.yml`, so benchmark history is visible without blocking normal pull requests.
 
 ## Roadmap
 

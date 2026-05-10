@@ -1,0 +1,32 @@
+name: Benchmark Reports
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Run gb-engine benchmark suite
+        run: ./scripts/run-engine-benchmarks.sh artifacts/benchmarks/strategy-context
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: gb-engine-strategy-context-benchmarks
+          path: artifacts/benchmarks/strategy-context
+          if-no-files-found: error
+          retention-days: 30
+      - name: Summarize benchmark report
+        run: cat artifacts/benchmarks/strategy-context/summary.md >> "$GITHUB_STEP_SUMMARY"

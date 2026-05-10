@@ -133,6 +133,9 @@ jobs:
         run: cargo build -p ${{ matrix.crate }} --locked --verbose
       - name: Run tests (crate)
         run: cargo test -p ${{ matrix.crate }} --locked --verbose
+      - name: Run strategy lifecycle template example
+        if: matrix.crate == 'gb-engine'
+        run: cargo run -p gb-engine --example strategy_lifecycle_template --locked --quiet
 
   full-workspace:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_workspace == 'true')
