@@ -55,6 +55,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
 - Strategy library: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, RSI
+- Strategy authoring templates for both the Rust engine lifecycle and the UI's local Python runner lifecycle
 - Storage: Arrow/Parquet with batch loading and round‑trip I/O
 - Catalog: SQLite metadata with indexed queries
 
@@ -82,12 +83,18 @@ cargo test --workspace
 # Basic usage
 cargo run --example basic_usage -p gb-types
 
+# Runnable Rust strategy lifecycle template
+cargo run --example strategy_lifecycle_template -p gb-engine --locked
+
 # Market simulator tests
 cargo test -p gb-engine simulator
 
 # Parquet loader tests
 cargo test -p gb-data parquet
 ```
+
+For the UI-side local strategy lifecycle example, see `ui/examples/lifecycle_strategy.py`
+and the matching validation in `ui/tests/test_backtest_core.py`.
 
 ### Launch the UI
 

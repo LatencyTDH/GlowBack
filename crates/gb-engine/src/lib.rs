@@ -826,6 +826,154 @@ mod tests {
         assert_eq!(captured_config.initial_capital, Decimal::from(250000));
     }
 
+    #[tokio::test]
+    async fn test_strategy_lifecycle_contract_calls_expected_hooks() {
+        use gb_types::{
+            MarketEvent, Order, OrderEvent, Side, Strategy, StrategyAction, StrategyConfig,
+            StrategyContext, StrategyMetrics,
+        };
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Debug, Default)]
+        struct LifecycleStats {
+            initialize_calls: usize,
+            market_event_calls: usize,
+            order_event_calls: usize,
+            day_end_calls: usize,
+            stop_calls: usize,
+            sequence: Vec<String>,
+        }
+
+        #[derive(Clone)]
+        struct LifecycleProbeStrategy {
+            config: StrategyConfig,
+            stats: Arc<Mutex<LifecycleStats>>,
+            submitted_order: bool,
+        }
+
+        impl LifecycleProbeStrategy {
+            fn new(stats: Arc<Mutex<LifecycleStats>>) -> Self {
+                Self {
+                    config: StrategyConfig::new(
+                        "lifecycle_probe".to_string(),
+                        "Lifecycle Probe".to_string(),
+                    ),
+                    stats,
+                    submitted_order: false,
+                }
+            }
+
+            fn record(&self, label: &str) {
+                let mut stats = self.stats.lock().unwrap();
+                stats.sequence.push(label.to_string());
+                match label {
+                    "initialize" => stats.initialize_calls += 1,
+                    "on_market_event" => stats.market_event_calls += 1,
+                    "on_order_event" => stats.order_event_calls += 1,
+                    "on_day_end" => stats.day_end_calls += 1,
+                    "on_stop" => stats.stop_calls += 1,
+                    _ => {}
+                }
+            }
+        }
+
+        impl Strategy for LifecycleProbeStrategy {
+            fn initialize(&mut self, config: &StrategyConfig) -> Result<(), String> {
+                self.config = config.clone();
+                self.record("initialize");
+                Ok(())
+            }
+
+            fn on_market_event(
+                &mut self,
+                event: &MarketEvent,
+                context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                self.record("on_market_event");
+                if self.submitted_order {
+                    return Ok(vec![]);
+                }
+
+                let symbol = event.symbol().clone();
+                let Some(price) = context.get_current_price(&symbol) else {
+                    return Ok(vec![]);
+                };
+                let quantity = (context.get_available_cash() * Decimal::new(50, 2)) / price;
+                if quantity <= Decimal::ZERO {
+                    return Ok(vec![]);
+                }
+
+                self.submitted_order = true;
+                Ok(vec![StrategyAction::PlaceOrder(Order::market_order(
+                    symbol,
+                    Side::Buy,
+                    quantity,
+                    self.config.strategy_id.clone(),
+                ))])
+            }
+
+            fn on_order_event(
+                &mut self,
+                _event: &OrderEvent,
+                _context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                self.record("on_order_event");
+                Ok(vec![])
+            }
+
+            fn on_day_end(
+                &mut self,
+                _context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                self.record("on_day_end");
+                Ok(vec![])
+            }
+
+            fn on_stop(
+                &mut self,
+                _context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                self.record("on_stop");
+                Ok(vec![])
+            }
+
+            fn get_config(&self) -> &StrategyConfig {
+                &self.config
+            }
+
+            fn get_metrics(&self) -> StrategyMetrics {
+                StrategyMetrics::new(self.config.strategy_id.clone())
+            }
+        }
+
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(5);
+        config.end_date = Utc::now();
+
+        let stats = Arc::new(Mutex::new(LifecycleStats::default()));
+        let strategy = Box::new(LifecycleProbeStrategy::new(Arc::clone(&stats)));
+
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        let result = engine.run_with_strategy(strategy).await.unwrap();
+        assert!(
+            !result.trade_log.is_empty(),
+            "probe strategy should place at least one trade"
+        );
+
+        let stats = stats.lock().unwrap();
+        assert_eq!(stats.initialize_calls, 1);
+        assert!(stats.market_event_calls > 0);
+        assert!(stats.order_event_calls > 0);
+        assert!(stats.day_end_calls > 0);
+        assert_eq!(stats.stop_calls, 1);
+        assert_eq!(
+            stats.sequence.first().map(String::as_str),
+            Some("initialize")
+        );
+        assert_eq!(stats.sequence.last().map(String::as_str), Some("on_stop"));
+    }
+
     // --- Crypto-specific tests ------------------------------------------------
 
     /// Create a backtest config for crypto symbols

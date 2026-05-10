@@ -16,6 +16,7 @@ ENGINE_STRATEGY_TYPES = {
     "Mean Reversion": "mean_reversion",
     "Momentum": "momentum",
     "RSI": "rsi",
+    "Lifecycle Template": "custom",
     "Custom Strategy": "custom",
 }
 
@@ -193,6 +194,45 @@ class MomentumStrategy:
             return [f"SELL: {current_position} shares at ${bar.close} (momentum: {momentum*100:.1f}%)"]
         
         return []
+    ''',
+
+    "Lifecycle Template": '''
+# Lifecycle Template
+# Demonstrates the optional local-runner hooks: on_start, on_day_end, and on_finish.
+
+class LifecycleTemplateStrategy:
+    def __init__(self):
+        self.name = "Lifecycle Template"
+        self.primary_symbol = None
+        self.entered = False
+
+    def on_start(self, portfolio, metadata):
+        self.primary_symbol = metadata["symbols"][0]
+        return [
+            f"Prepared {self.primary_symbol} strategy for {metadata['bars']} bars "
+            f"from {metadata['start'].date().isoformat()} to {metadata['end'].date().isoformat()}"
+        ]
+
+    def on_bar(self, bar, portfolio):
+        if bar.symbol != self.primary_symbol:
+            return []
+
+        if not self.entered and portfolio.get_position(bar.symbol) == 0:
+            shares = int(portfolio.cash * 0.50 / bar.close)
+            if shares > 0:
+                portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
+                self.entered = True
+                return [f"Entered {shares} shares of {bar.symbol} at ${bar.close:.2f}"]
+        return []
+
+    def on_day_end(self, trading_day, portfolio):
+        return [f"Marked day end for {trading_day.date().isoformat()} with value ${portfolio.value:.2f}"]
+
+    def on_finish(self, portfolio, summary):
+        return [
+            f"Finished with {summary['total_trades']} trades, cash ${summary['final_cash']:.2f}, "
+            f"value ${summary['final_value']:.2f}"
+        ]
     '''
 }
 
@@ -541,12 +581,27 @@ def show_strategy_documentation():
             def __init__(self):
                 self.name = "My Strategy"
                 # Initialize your strategy variables here
+
+            def on_start(self, portfolio, metadata):
+                # Optional: called once before the first bar
+                return []
             
             def on_bar(self, bar, portfolio):
-                # Your strategy logic here
+                # Required: called on each new bar
                 # Return list of log messages (optional)
                 return []
+
+            def on_day_end(self, trading_day, portfolio):
+                # Optional: called once after the final bar of each trading day
+                return []
+
+            def on_finish(self, portfolio, summary):
+                # Optional: called after the backtest completes
+                return []
         ```
+
+        `metadata` includes `symbols`, `start`, `end`, `resolution`, and `bars`.
+        `summary` includes `final_cash`, `final_positions`, `final_value`, and `total_trades`.
         
         ### Available Data
         
@@ -603,6 +658,34 @@ def show_strategy_documentation():
         st.markdown("""
         ### Example Strategies
         
+        **Lifecycle Template:**
+        ```python
+        class LifecycleTemplateStrategy:
+            def __init__(self):
+                self.name = "Lifecycle Template"
+                self.primary_symbol = None
+                self.entered = False
+
+            def on_start(self, portfolio, metadata):
+                self.primary_symbol = metadata["symbols"][0]
+                return [f"Prepared {self.primary_symbol} strategy for {metadata['bars']} bars"]
+
+            def on_bar(self, bar, portfolio):
+                if bar.symbol == self.primary_symbol and not self.entered:
+                    shares = int(portfolio.cash * 0.50 / bar.close)
+                    if shares > 0:
+                        portfolio.buy(bar.symbol, shares, bar.close, bar.timestamp)
+                        self.entered = True
+                        return [f"Entered {shares} shares of {bar.symbol}"]
+                return []
+
+            def on_day_end(self, trading_day, portfolio):
+                return [f"Day end {trading_day.date().isoformat()} value=${portfolio.value:.2f}"]
+
+            def on_finish(self, portfolio, summary):
+                return [f"Final value ${summary['final_value']:.2f}"]
+        ```
+
         **Simple Moving Average:**
         ```python
         class SimpleMA:
