@@ -7,9 +7,9 @@
 High‑performance quantitative backtesting platform built in Rust with Python bindings and a Streamlit UI.
 
 [![CI](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml)
-[![Tests](https://img.shields.io/badge/tests-56%20passing-brightgreen)](#testing)
+[![Docs Smoke](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs-smoke.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs-smoke.yml)
 [![Docs](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs.yml/badge.svg?branch=main)](https://latencytdh.github.io/GlowBack/)
-[![Rust Version](https://img.shields.io/badge/rust-stable-blue)](#development-setup)
+[![Rust Version](https://img.shields.io/badge/rust-stable-blue)](#getting-started)
 [![Python Support](https://img.shields.io/badge/python-3.8%2B-blue)](#python-bindings)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
@@ -61,27 +61,26 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 
 ## Getting Started
 
-### Development Setup
+### 5-Minute Quickstart
 
 Prerequisites:
 
 - Rust (latest stable)
-- Python 3.8+ (for Python bindings)
+- Python 3.8+ (for docs/UI workflows)
 
 ```bash
-# Clone
-git clone <repository-url>
-cd glowback
-
-# Run tests
-cargo test --workspace
+git clone https://github.com/LatencyTDH/GlowBack.git
+cd GlowBack
+./scripts/quickstart.sh
 ```
 
-### Run Examples
+The quickstart is intentionally executable from a clean checkout: it builds and runs the `gb-types` basic usage example, then verifies the success markers in the output.
+
+### Next Runs
 
 ```bash
-# Basic usage
-cargo run --example basic_usage -p gb-types
+# Re-run the example directly
+cargo run --locked --example basic_usage -p gb-types
 
 # Runnable Rust strategy lifecycle template
 cargo run --example strategy_lifecycle_template -p gb-engine --locked
@@ -91,6 +90,9 @@ cargo test -p gb-engine simulator
 
 # Parquet loader tests
 cargo test -p gb-data parquet
+
+# Full workspace tests
+cargo test --workspace --locked
 ```
 
 For the UI-side local strategy lifecycle example, see `ui/examples/lifecycle_strategy.py`
@@ -136,9 +138,16 @@ bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z",
 ## Testing
 
 ```bash
-cargo test --workspace
-# 25 passed; 0 failed
+cargo test --workspace --locked
+./scripts/quickstart.sh
+mkdocs build --strict
 ```
+
+The badges at the top of this README are sourced from GitHub Actions so they stay aligned with current CI status instead of drifting into stale manual counts.
+
+## Assumptions and Limitations
+
+GlowBack is usable today, but some surfaces are intentionally still alpha. Start with the explicit boundaries in [docs/assumptions-and-limitations.md](docs/assumptions-and-limitations.md) before planning a production workflow.
 
 ## Benchmarks
 

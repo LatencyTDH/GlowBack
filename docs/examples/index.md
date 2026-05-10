@@ -1,6 +1,34 @@
 # Examples
 
-These examples are checked-in, runnable, and tied to real validation paths.
+These examples are checked in, runnable, and tied to real validation paths.
+
+## Quickstart smoke example
+
+This repo includes an executable quickstart script that proves a clean checkout can run a complete smoke path.
+
+```bash
+./scripts/quickstart.sh
+```
+
+Under the hood it runs:
+
+```bash
+cargo run --locked --example basic_usage -p gb-types
+```
+
+Expected success markers:
+
+```text
+✅ All basic functionality working!
+🎊 Strategy library complete with 4 different strategies!
+```
+
+The quickstart example exercises:
+
+- symbol, bar, cache, and portfolio primitives
+- sample data provider wiring
+- built-in strategy construction
+- basic error handling
 
 ## Rust engine lifecycle template
 
@@ -31,6 +59,12 @@ What it proves:
 - the UI local runner supports `on_start`, `on_bar`, `on_day_end`, and `on_finish`
 - the example strategy can place trades and emit lifecycle logs
 - the saved example stays executable instead of drifting into pseudo-code
+
+## Next examples to add
+
+- Buy & Hold on AAPL with expected metrics snapshot
+- Moving Average Crossover on SPY
+- Momentum strategy with parameter sweep
 
 ## Related docs
 

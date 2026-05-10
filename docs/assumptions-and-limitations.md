@@ -1,0 +1,42 @@
+# Assumptions and Limitations
+
+GlowBack already covers a meaningful research workflow, but it is still an alpha system. This page makes the current boundaries explicit so the quickstart and tutorials stay honest.
+
+## Execution and fills
+
+- Backtests use deterministic bar-based execution with configurable commissions, slippage, latency, and participation caps.
+- The engine models realistic order lifecycle events, but it is not a tick-by-tick exchange simulator.
+- Paper/live parity work is still in progress; do not treat paper execution as broker-grade behavior yet.
+
+## Data quality and sourcing
+
+- Sample/demo data is available for smoke tests and tutorials, but production research still depends on the quality of the input data you load.
+- CSV and provider ingestion validate structure, yet corporate actions, survivorship-bias controls, and deeper dataset provenance are still evolving.
+- Alpha Vantage examples are intentionally conservative because free-tier rate limits can dominate the experience.
+
+## Portfolio accounting
+
+- Core long/short/fractional accounting invariants are covered by tests, including signed market value for short liabilities.
+- More advanced cash management edge cases should still be validated with your own scenarios before relying on them for trading decisions.
+- Multi-asset support is strongest for equities and spot crypto; other asset classes remain narrower.
+
+## Optimization workflow
+
+- GlowBack supports real engine-backed optimization flows, but richer overfit diagnostics, cancellation/resume semantics, and scale-out orchestration remain active roadmap work.
+- Treat optimization results as research aids, not proof of live robustness.
+
+## Live and paper trading
+
+- The `gb-live` crate exists, but real broker adapters are intentionally not positioned as production-ready.
+- Safety controls, parity checks, and auditability remain prerequisites before any real-money workflow should be trusted.
+
+## Options workflow
+
+- The `gb-options` crate provides pricing and contract primitives, but end-to-end options backtesting is still incomplete.
+- Use options support as an experimental surface until the documented engine/accounting path is complete.
+
+## How to use this page
+
+- Start with the [Getting Started](getting-started.md) quickstart to verify your checkout.
+- Use the [Examples](examples/index.md) and tutorials as the source of truth for currently exercised workflows.
+- Check the [Roadmap](roadmap.md) before planning around a feature that sits near one of the boundaries above.
