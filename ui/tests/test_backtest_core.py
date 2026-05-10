@@ -261,6 +261,57 @@ class BuyThenSell:
         self.assertTrue(results['attribution'])
         self.assertIn('overview', results['tearsheet'])
 
+    def test_run_backtest_executes_optional_local_strategy_lifecycle_hooks(self):
+        strategy_code = (
+            Path(__file__).resolve().parents[1] / 'examples' / 'lifecycle_strategy.py'
+        ).read_text()
+        market_data = pd.DataFrame(
+            [
+                {
+                    'timestamp': pd.Timestamp('2026-01-01T00:00:00Z'),
+                    'symbol': 'AAPL',
+                    'open': 100.0,
+                    'high': 101.0,
+                    'low': 99.0,
+                    'close': 100.0,
+                    'volume': 1000,
+                    'resolution': 'day',
+                },
+                {
+                    'timestamp': pd.Timestamp('2026-01-02T00:00:00Z'),
+                    'symbol': 'AAPL',
+                    'open': 104.0,
+                    'high': 105.0,
+                    'low': 103.0,
+                    'close': 104.0,
+                    'volume': 1000,
+                    'resolution': 'day',
+                },
+            ]
+        )
+
+        log_queue = queue.Queue()
+        results = run_backtest(
+            strategy_code,
+            market_data,
+            {
+                'initial_capital': 1000.0,
+                'strategy_template': 'Lifecycle Template',
+            },
+            queue.Queue(),
+            log_queue,
+        )
+
+        self.assertIsNotNone(results)
+        self.assertGreater(results['final_positions'].get('AAPL', 0), 0)
+        self.assertTrue(any(line.startswith('START: Prepared AAPL strategy') for line in results['logs']))
+        self.assertTrue(any('DAY END 2026-01-01' in line for line in results['logs']))
+        self.assertTrue(any(line.startswith('FINISH: Finished with 1 trades') for line in results['logs']))
+
+        streamed_logs = list(log_queue.queue)
+        self.assertIn('Backtest completed!', streamed_logs)
+        self.assertTrue(any(line.startswith('START:') for line in streamed_logs))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1232,6 +1232,23 @@ def _run_real_engine_backtest(strategy_name, strategy_code, market_data, config,
     return _enrich_real_engine_results(result, filtered, config.get("benchmark_symbol"), log_queue=log_queue)
 
 
+def _normalize_local_strategy_logs(logs) -> list[str]:
+    if logs is None:
+        return []
+    if isinstance(logs, str):
+        return [logs]
+    if isinstance(logs, (list, tuple)):
+        return [str(log) for log in logs if log is not None and str(log).strip()]
+    return [str(logs)]
+
+
+def _emit_local_strategy_logs(all_logs: list[str], log_queue, prefix: str, logs) -> None:
+    for log in _normalize_local_strategy_logs(logs):
+        log_line = f"{prefix}: {log}" if prefix else log
+        _queue_put(log_queue, log_line)
+        all_logs.append(log_line)
+
+
 def _run_local_strategy_backtest(strategy_code, market_data, config, progress_queue, log_queue):
     namespace = {}
     exec(strategy_code, namespace)
@@ -1255,15 +1272,43 @@ def _run_local_strategy_backtest(strategy_code, market_data, config, progress_qu
     _queue_put(log_queue, f"Initial capital: ${portfolio.initial_cash:,.2f}")
     _queue_put(log_queue, f"Execution costs: commission={commission_rate:.4f}, slippage={slippage_bps:.2f} bps")
 
+    market_data = market_data.reset_index(drop=True)
     total_bars = len(market_data)
+    if total_bars == 0:
+        _queue_put(log_queue, "ERROR: No market data available")
+        return None
+
     equity_curve = []
     all_logs = []
     latest_prices: dict[str, float] = {}
     previous_value = float(portfolio.initial_cash)
+    metadata = {
+        "symbols": list(dict.fromkeys(str(symbol) for symbol in market_data["symbol"].tolist())),
+        "start": pd.Timestamp(market_data["timestamp"].min()),
+        "end": pd.Timestamp(market_data["timestamp"].max()),
+        "resolution": str(market_data["resolution"].iloc[0]),
+        "bars": total_bars,
+    }
+
+    on_start = getattr(strategy, "on_start", None)
+    if callable(on_start):
+        try:
+            _emit_local_strategy_logs(all_logs, log_queue, "START", on_start(portfolio, metadata))
+        except Exception as exc:
+            _queue_put(log_queue, f"ERROR in on_start: {str(exc)}")
+
+    current_day = None
+    on_day_end = getattr(strategy, "on_day_end", None)
+    on_finish = getattr(strategy, "on_finish", None)
 
     for i, row in market_data.iterrows():
+        timestamp = pd.Timestamp(row["timestamp"])
+        trading_day = timestamp.normalize()
+        if current_day is None:
+            current_day = trading_day
+
         bar = SimpleBar(
-            timestamp=row["timestamp"],
+            timestamp=timestamp,
             symbol=row["symbol"],
             open_price=row["open"],
             high=row["high"],
@@ -1274,12 +1319,7 @@ def _run_local_strategy_backtest(strategy_code, market_data, config, progress_qu
         )
 
         try:
-            logs = strategy.on_bar(bar, portfolio)
-            if logs:
-                for log in logs:
-                    log_line = f"{bar.timestamp.strftime('%Y-%m-%d')}: {log}"
-                    _queue_put(log_queue, log_line)
-                    all_logs.append(log_line)
+            _emit_local_strategy_logs(all_logs, log_queue, timestamp.strftime("%Y-%m-%d"), strategy.on_bar(bar, portfolio))
         except Exception as exc:
             _queue_put(log_queue, f"ERROR on {bar.timestamp}: {str(exc)}")
 
@@ -1301,7 +1341,7 @@ def _run_local_strategy_backtest(strategy_code, market_data, config, progress_qu
 
         equity_curve.append(
             {
-                "timestamp": row["timestamp"],
+                "timestamp": timestamp,
                 "value": portfolio_value,
                 "cash": portfolio.cash,
                 "positions": sum(portfolio.positions.values()),
@@ -1313,11 +1353,40 @@ def _run_local_strategy_backtest(strategy_code, market_data, config, progress_qu
         )
         previous_value = portfolio_value
 
+        next_day = None
+        if i + 1 < total_bars:
+            next_day = pd.Timestamp(market_data.iloc[i + 1]["timestamp"]).normalize()
+        if callable(on_day_end) and current_day is not None and current_day != next_day:
+            try:
+                _emit_local_strategy_logs(
+                    all_logs,
+                    log_queue,
+                    f"DAY END {current_day.date().isoformat()}",
+                    on_day_end(current_day, portfolio),
+                )
+            except Exception as exc:
+                _queue_put(log_queue, f"ERROR in on_day_end ({current_day.date().isoformat()}): {str(exc)}")
+        current_day = next_day
+
         progress = (i + 1) / total_bars
         _queue_put(progress_queue, progress)
         time.sleep(0.01)
 
     _queue_put(log_queue, "Backtest completed!")
+
+    if callable(on_finish):
+        summary = {
+            "bars": total_bars,
+            "symbols": metadata["symbols"],
+            "final_cash": portfolio.cash,
+            "final_positions": portfolio.get_positions(),
+            "final_value": portfolio.calculate_value(latest_prices),
+            "total_trades": len(portfolio.trades),
+        }
+        try:
+            _emit_local_strategy_logs(all_logs, log_queue, "FINISH", on_finish(portfolio, summary))
+        except Exception as exc:
+            _queue_put(log_queue, f"ERROR in on_finish: {str(exc)}")
 
     return _finalize_backtest_results(
         market_data,
