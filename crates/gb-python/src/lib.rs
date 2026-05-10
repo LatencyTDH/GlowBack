@@ -778,6 +778,7 @@ struct PyBacktestResult {
     equity_curve: Vec<EquityPoint>,
     trades: Vec<TradePoint>,
     exposures: Vec<ExposurePoint>,
+    order_events: Vec<serde_json::Value>,
     logs: Vec<String>,
     final_cash: f64,
     final_positions: std::collections::HashMap<String, f64>,
@@ -977,6 +978,12 @@ impl PyBacktestResult {
             })
             .collect::<Vec<_>>();
 
+        let order_events = result
+            .order_events
+            .iter()
+            .filter_map(|event| serde_json::to_value(event).ok())
+            .collect::<Vec<_>>();
+
         let manifest = result
             .manifest
             .as_ref()
@@ -1054,6 +1061,7 @@ impl PyBacktestResult {
             "Engine-backed backtest completed".to_string(),
             format!("Processed {} equity points", equity_curve.len()),
             format!("Executed {} trades", total_trades as usize),
+            format!("Recorded {} order lifecycle events", order_events.len()),
             format!("Final portfolio value ${:.2}", final_value),
         ];
         logs.extend(data_quality_logs);
@@ -1063,6 +1071,7 @@ impl PyBacktestResult {
             equity_curve,
             trades,
             exposures,
+            order_events,
             logs,
             final_cash,
             final_positions,
@@ -1141,6 +1150,18 @@ impl PyBacktestResult {
             let _ = list.append(dict);
         }
         Ok(list.unbind().into())
+    }
+
+    #[getter]
+    fn order_events(&self, py: Python) -> PyResult<PyObject> {
+        let json = py.import("json")?;
+        let payload = serde_json::to_string(&self.order_events).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to serialize order events: {}",
+                error
+            ))
+        })?;
+        Ok(json.call_method1("loads", (payload,))?.into())
     }
 
     #[getter]
