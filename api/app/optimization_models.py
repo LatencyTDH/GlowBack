@@ -39,6 +39,11 @@ class SearchStrategyName(str, Enum):
     bayesian = "bayesian"
 
 
+class ValidationMode(str, Enum):
+    holdout = "holdout"
+    walk_forward = "walk_forward"
+
+
 class RayClusterConfig(BaseModel):
     address: str = Field(default="ray://localhost:10001")
     namespace: str = Field(default="glowback")
@@ -60,6 +65,10 @@ class OptimizationRequest(BaseModel):
     base_backtest: dict[str, Any] = Field(
         description="Base backtest config that trials will override with sampled parameters"
     )
+    validation_mode: ValidationMode = ValidationMode.walk_forward
+    validation_fraction: float = Field(default=0.25, gt=0.05, lt=0.9)
+    walk_forward_windows: int = Field(default=3, ge=1, le=10)
+    random_seed: int = Field(default=42, ge=0, le=2_147_483_647)
     exploration_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     grid_steps: int = Field(default=5, ge=2, le=100)
     ray_cluster: RayClusterConfig | None = Field(
@@ -119,3 +128,5 @@ class OptimizationResult(BaseModel):
     all_trials: list[TrialSummary] = Field(default_factory=list)
     total_duration_seconds: int | None = None
     search_space: SearchSpaceConfig | None = None
+    validation_mode: str | None = None
+    replay_backtest: dict[str, Any] | None = None

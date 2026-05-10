@@ -9,10 +9,17 @@ import time
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
+from fastapi.exception_handlers import (
+    http_exception_handler as default_http_exception_handler,
+    request_validation_exception_handler as default_request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .adapter import MockEngineAdapter
+from .adapter import RealEngineAdapter
 from .auth import require_api_key, validate_api_key
+from .errors import VERSIONED_ERROR_RESPONSES, build_error_response, is_versioned_path
 from .models import BacktestRequest, BacktestResult, BacktestStatus, RunState
 from .optimization_models import OptimizationRequest, OptimizationResult, OptimizationState, OptimizationStatus
 from .optimization_store import OptimizationStore
@@ -64,7 +71,7 @@ logger = logging.getLogger("glowback.api")
 _MAX_BODY_BYTES = int(os.getenv("GLOWBACK_MAX_BODY_BYTES", str(1024 * 1024)))  # 1 MiB default
 
 store = RunStore()
-adapter = MockEngineAdapter(store)
+adapter = RealEngineAdapter(store)
 opt_store = OptimizationStore()
 
 app = FastAPI(
@@ -133,6 +140,13 @@ async def audit_middleware(request: Request, call_next):
             content_length,
             _MAX_BODY_BYTES,
         )
+        if is_versioned_path(request.url.path):
+            return build_error_response(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                message="Request body too large",
+                request_id=request_id,
+                code="request_too_large",
+            )
         return Response(
             content='{"detail":"Request body too large"}',
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -175,11 +189,60 @@ async def audit_middleware(request: Request, call_next):
     return response
 
 
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if not is_versioned_path(request.url.path):
+        return await default_http_exception_handler(request, exc)
+
+    detail = exc.detail
+    message = detail if isinstance(detail, str) else "Request failed"
+    details = None if isinstance(detail, str) else detail
+    return build_error_response(
+        status_code=exc.status_code,
+        message=message,
+        request_id=getattr(request.state, "request_id", None),
+        details=details,
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    if not is_versioned_path(request.url.path):
+        return await default_request_validation_exception_handler(request, exc)
+
+    return build_error_response(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        message="Request validation failed",
+        request_id=getattr(request.state, "request_id", None),
+        details=exc.errors(),
+        code="validation_error",
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    if not is_versioned_path(request.url.path):
+        return Response(
+            content='{"detail":"Internal Server Error"}',
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            media_type="application/json",
+        )
+
+    return build_error_response(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        message="Internal server error",
+        request_id=getattr(request.state, "request_id", None),
+        code="internal_error",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Health check (unauthenticated, excluded from rate limiting via path guard)
 # ---------------------------------------------------------------------------
 
 
+@app.get("/v1/healthz", include_in_schema=True, dependencies=[])
 @app.get("/healthz", include_in_schema=True, dependencies=[])
 async def health_check() -> dict:
     """Liveness probe — no auth required."""
@@ -191,6 +254,12 @@ async def health_check() -> dict:
 # ---------------------------------------------------------------------------
 
 
+@app.post(
+    "/v1/backtests",
+    response_model=BacktestStatus,
+    status_code=status.HTTP_201_CREATED,
+    responses=VERSIONED_ERROR_RESPONSES,
+)
 @app.post("/backtests", response_model=BacktestStatus, status_code=status.HTTP_201_CREATED)
 async def create_backtest(request: BacktestRequest) -> BacktestStatus:
     status_obj = await store.create_run(request)
@@ -198,6 +267,7 @@ async def create_backtest(request: BacktestRequest) -> BacktestStatus:
     return status_obj
 
 
+@app.get("/v1/backtests", response_model=list[BacktestStatus], responses=VERSIONED_ERROR_RESPONSES)
 @app.get("/backtests", response_model=list[BacktestStatus])
 async def list_backtests(
     state: RunState | None = Query(default=None),
@@ -206,6 +276,7 @@ async def list_backtests(
     return await store.list_runs(state=state, limit=limit)
 
 
+@app.get("/v1/backtests/{run_id}", response_model=BacktestStatus, responses=VERSIONED_ERROR_RESPONSES)
 @app.get("/backtests/{run_id}", response_model=BacktestStatus)
 async def get_backtest(run_id: str) -> BacktestStatus:
     status_obj = await store.get_status(run_id)
@@ -214,6 +285,11 @@ async def get_backtest(run_id: str) -> BacktestStatus:
     return status_obj
 
 
+@app.get(
+    "/v1/backtests/{run_id}/results",
+    response_model=BacktestResult,
+    responses=VERSIONED_ERROR_RESPONSES,
+)
 @app.get("/backtests/{run_id}/results", response_model=BacktestResult)
 async def get_backtest_results(run_id: str) -> BacktestResult:
     result = await store.get_result(run_id)
@@ -225,6 +301,7 @@ async def get_backtest_results(run_id: str) -> BacktestResult:
     return result
 
 
+@app.websocket("/v1/backtests/{run_id}/stream")
 @app.websocket("/backtests/{run_id}/stream")
 async def stream_backtest(
     websocket: WebSocket,
@@ -314,17 +391,24 @@ async def stream_backtest(
 
 
 @app.post(
+    "/v1/optimizations",
+    response_model=OptimizationStatus,
+    status_code=status.HTTP_201_CREATED,
+    responses=VERSIONED_ERROR_RESPONSES,
+)
+@app.post(
     "/optimizations",
     response_model=OptimizationStatus,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_optimization(request: OptimizationRequest) -> OptimizationStatus:
-    """Create and start a new parameter-search optimization run."""
+    """Create an optimization run and execute it in the background."""
     status_obj = await opt_store.create(request)
     asyncio.create_task(opt_store.run_optimization(status_obj.optimization_id))
     return status_obj
 
 
+@app.get("/v1/optimizations", response_model=list[OptimizationStatus], responses=VERSIONED_ERROR_RESPONSES)
 @app.get("/optimizations", response_model=list[OptimizationStatus])
 async def list_optimizations(
     limit: int = Query(default=50, ge=1, le=200),
@@ -333,6 +417,11 @@ async def list_optimizations(
     return await opt_store.list_optimizations(limit=limit)
 
 
+@app.get(
+    "/v1/optimizations/{opt_id}",
+    response_model=OptimizationStatus,
+    responses=VERSIONED_ERROR_RESPONSES,
+)
 @app.get("/optimizations/{opt_id}", response_model=OptimizationStatus)
 async def get_optimization(opt_id: str) -> OptimizationStatus:
     """Get current status of an optimization run."""
@@ -344,6 +433,11 @@ async def get_optimization(opt_id: str) -> OptimizationStatus:
     return status_obj
 
 
+@app.get(
+    "/v1/optimizations/{opt_id}/results",
+    response_model=OptimizationResult,
+    responses=VERSIONED_ERROR_RESPONSES,
+)
 @app.get("/optimizations/{opt_id}/results", response_model=OptimizationResult)
 async def get_optimization_results(opt_id: str) -> OptimizationResult:
     """Get full results of a completed optimization run."""
@@ -353,7 +447,11 @@ async def get_optimization_results(opt_id: str) -> OptimizationResult:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Optimization not found",
         )
-    if result.state not in {OptimizationState.completed, OptimizationState.cancelled}:
+    if result.state not in {
+        OptimizationState.completed,
+        OptimizationState.failed,
+        OptimizationState.cancelled,
+    }:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Optimization not yet completed",
@@ -361,6 +459,7 @@ async def get_optimization_results(opt_id: str) -> OptimizationResult:
     return result
 
 
+@app.post("/v1/optimizations/{opt_id}/cancel", responses=VERSIONED_ERROR_RESPONSES)
 @app.post("/optimizations/{opt_id}/cancel")
 async def cancel_optimization(opt_id: str) -> dict:
     """Cancel a running optimization."""
