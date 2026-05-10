@@ -17,12 +17,13 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 
 GlowBack provides a fast, realistic backtesting engine with data management, storage, and analytics. It includes:
 
-- Event‑driven simulation engine with slippage/latency/commission models
+- Event‑driven simulation engine with slippage/latency/commission models, order lifecycle events, and participation-capped partial fills
 - Data ingestion (CSV, Alpha Vantage, explicit sample/demo data)
 - Arrow/Parquet columnar storage and SQLite metadata catalog
 - Strategy library (4 built‑in strategies)
 - Python bindings (async support)
 - Streamlit UI for strategy development and analysis
+- Durable experiment registry for saved strategies, historical runs, and cross-session comparisons
 - Sandbox paper broker rejects sell orders that exceed held inventory (no implicit naked shorts)
 
 ## Project Status
@@ -43,15 +44,18 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 ### UI
 
 - Streamlit interface for data loading, strategy editing, running backtests, and result analysis
+- Persisted experiment history so runs and saved strategies survive restarts
 
 ## Features
 
 - Realistic market simulation with configurable market hours and resolution
 - Multi‑asset backtesting: equities and crypto (spot) with asset-class-aware fees, market hours, and fractional quantities
-- Multi‑symbol backtesting with chronological event ordering
+- Portfolio accounting now marks positions with signed market value so short liabilities reduce equity correctly; `gb-types` ships deterministic accounting invariants coverage for long, short, fractional, and multi-asset books
+- Multi‑symbol backtesting with chronological event ordering and auditable order submission/fill/cancel/expire traces
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
 - Strategy library: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, RSI
+- Strategy authoring templates for both the Rust engine lifecycle and the UI's local Python runner lifecycle
 - Storage: Arrow/Parquet with batch loading and round‑trip I/O
 - Catalog: SQLite metadata with indexed queries
 
@@ -79,12 +83,18 @@ cargo test --workspace
 # Basic usage
 cargo run --example basic_usage -p gb-types
 
+# Runnable Rust strategy lifecycle template
+cargo run --example strategy_lifecycle_template -p gb-engine --locked
+
 # Market simulator tests
 cargo test -p gb-engine simulator
 
 # Parquet loader tests
 cargo test -p gb-data parquet
 ```
+
+For the UI-side local strategy lifecycle example, see `ui/examples/lifecycle_strategy.py`
+and the matching validation in `ui/tests/test_backtest_core.py`.
 
 ### Launch the UI
 
@@ -129,6 +139,16 @@ bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z",
 cargo test --workspace
 # 25 passed; 0 failed
 ```
+
+## Benchmarks
+
+```bash
+./scripts/run-engine-benchmarks.sh artifacts/benchmarks/local
+```
+
+This runs the maintained `gb-engine` hot-path benchmark, generates a compact `summary.md` / `summary.json`, and preserves the raw Criterion output for drill-down.
+
+Scheduled and manual CI benchmark runs upload the same artifact structure from `.github/workflows/benchmarks.yml`, so benchmark history is visible without blocking normal pull requests.
 
 ## Roadmap
 

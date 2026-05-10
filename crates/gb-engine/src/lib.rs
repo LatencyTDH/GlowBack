@@ -5,7 +5,7 @@ pub mod engine;
 pub mod execution;
 pub mod simulator;
 
-use gb_data::{DataManager, SampleDataProvider};
+use gb_data::{CsvDataProvider, DataManager, SampleDataProvider};
 use gb_types::{BacktestConfig, BacktestResult, DataError, GbResult, Strategy, Symbol};
 use tracing::info;
 
@@ -57,6 +57,18 @@ impl BacktestEngine {
             config,
             data_manager,
         })
+    }
+
+    /// Add the built-in sample/demo data provider explicitly.
+    pub fn add_sample_provider(&mut self) {
+        self.data_manager
+            .add_provider(Box::new(SampleDataProvider::new()));
+    }
+
+    /// Add a CSV data provider rooted at the supplied directory.
+    pub fn add_csv_provider(&mut self, base_path: &str) {
+        self.data_manager
+            .add_provider(Box::new(CsvDataProvider::new(base_path)));
     }
 
     /// Load market data for backtesting
@@ -189,7 +201,8 @@ impl BacktestEngine {
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
-    use gb_types::{Resolution, StrategyConfig, Symbol};
+    use gb_types::{BuyAndHoldStrategy, Resolution, RunManifest, StrategyConfig, Symbol};
+    use rust_decimal::prelude::FromPrimitive;
     use rust_decimal::Decimal;
 
     /// Create a test configuration
@@ -206,6 +219,146 @@ mod tests {
         config.data_settings.data_source = "sample".to_string();
 
         config
+    }
+
+    fn replay_config_from_manifest(manifest: &RunManifest) -> BacktestConfig {
+        let replay = &manifest.replay_request;
+        let mut strategy_config =
+            StrategyConfig::new(replay.strategy_name.clone(), replay.strategy_name.clone());
+        strategy_config.parameters = replay.strategy_params.clone();
+        strategy_config.symbols = replay
+            .symbols
+            .iter()
+            .map(|symbol| Symbol::equity(symbol))
+            .collect();
+        strategy_config.initial_capital =
+            Decimal::from_f64(replay.initial_capital).unwrap_or_else(|| Decimal::from(100000));
+
+        let mut config = BacktestConfig::new(
+            replay
+                .run_name
+                .clone()
+                .unwrap_or_else(|| "Manifest Replay".to_string()),
+            strategy_config.clone(),
+        );
+        config.start_date = replay.start_date;
+        config.end_date = replay.end_date;
+        config.initial_capital =
+            Decimal::from_f64(replay.initial_capital).unwrap_or_else(|| Decimal::from(100000));
+        config.resolution = match replay.resolution.as_str() {
+            "minute" => Resolution::Minute,
+            "hour" => Resolution::Hour,
+            _ => Resolution::Day,
+        };
+        config.symbols = replay
+            .symbols
+            .iter()
+            .map(|symbol| Symbol::equity(symbol))
+            .collect();
+        config.strategy_config = strategy_config;
+        config.data_settings.data_source = replay.data_source.clone();
+
+        if let Some(commission_bps) = replay.commission_bps {
+            if let Some(decimal) = Decimal::from_f64(commission_bps / 10_000.0) {
+                config.execution_settings.commission_percentage = decimal;
+            }
+        }
+        if let Some(slippage_bps) = replay.slippage_bps {
+            config.execution_settings.slippage_model = gb_types::SlippageModel::Linear {
+                basis_points: slippage_bps.round() as u32,
+            };
+        }
+        if let Some(latency_ms) = replay.latency_ms {
+            config.execution_settings.latency_model = gb_types::LatencyModel::Fixed {
+                milliseconds: latency_ms,
+            };
+        }
+
+        config
+    }
+
+    fn strategy_from_manifest(manifest: &RunManifest) -> Box<dyn gb_types::Strategy> {
+        let replay = &manifest.replay_request;
+        match replay.strategy_name.as_str() {
+            "buy_and_hold" => Box::new(BuyAndHoldStrategy::new()),
+            "ma_crossover" | "moving_average_crossover" => {
+                let short_period = replay
+                    .strategy_params
+                    .get("short_period")
+                    .and_then(|value| serde_json::from_value::<usize>(value.clone()).ok())
+                    .unwrap_or(10);
+                let long_period = replay
+                    .strategy_params
+                    .get("long_period")
+                    .and_then(|value| serde_json::from_value::<usize>(value.clone()).ok())
+                    .unwrap_or(20);
+                Box::new(gb_types::MovingAverageCrossoverStrategy::new(
+                    short_period,
+                    long_period,
+                ))
+            }
+            "momentum" => {
+                let lookback_period = replay
+                    .strategy_params
+                    .get("lookback_period")
+                    .and_then(|value| serde_json::from_value::<usize>(value.clone()).ok())
+                    .unwrap_or(10);
+                let momentum_threshold = replay
+                    .strategy_params
+                    .get("momentum_threshold")
+                    .and_then(|value| serde_json::from_value::<f64>(value.clone()).ok())
+                    .unwrap_or(0.05);
+                Box::new(gb_types::MomentumStrategy::new(
+                    lookback_period,
+                    momentum_threshold,
+                ))
+            }
+            "mean_reversion" => {
+                let lookback_period = replay
+                    .strategy_params
+                    .get("lookback_period")
+                    .and_then(|value| serde_json::from_value::<usize>(value.clone()).ok())
+                    .unwrap_or(20);
+                let entry_threshold = replay
+                    .strategy_params
+                    .get("entry_threshold")
+                    .and_then(|value| serde_json::from_value::<f64>(value.clone()).ok())
+                    .unwrap_or(2.0);
+                let exit_threshold = replay
+                    .strategy_params
+                    .get("exit_threshold")
+                    .and_then(|value| serde_json::from_value::<f64>(value.clone()).ok())
+                    .unwrap_or(1.0);
+                Box::new(gb_types::MeanReversionStrategy::new(
+                    lookback_period,
+                    entry_threshold,
+                    exit_threshold,
+                ))
+            }
+            "rsi" => {
+                let lookback_period = replay
+                    .strategy_params
+                    .get("lookback_period")
+                    .and_then(|value| serde_json::from_value::<usize>(value.clone()).ok())
+                    .unwrap_or(14);
+                let oversold_threshold = replay
+                    .strategy_params
+                    .get("oversold_threshold")
+                    .and_then(|value| serde_json::from_value::<f64>(value.clone()).ok())
+                    .unwrap_or(30.0);
+                let overbought_threshold = replay
+                    .strategy_params
+                    .get("overbought_threshold")
+                    .and_then(|value| serde_json::from_value::<f64>(value.clone()).ok())
+                    .unwrap_or(70.0);
+                Box::new(gb_types::RsiStrategy::new(
+                    lookback_period,
+                    oversold_threshold,
+                    overbought_threshold,
+                ))
+            }
+            other => panic!("unsupported manifest replay strategy: {other}"),
+        }
     }
 
     #[tokio::test]
@@ -359,6 +512,46 @@ mod tests {
         let portfolio = backtest_result.final_portfolio.as_ref().unwrap();
         // Portfolio should have been updated (either positions or cash changed)
         assert!(portfolio.total_equity > Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_run_manifest_replays_buy_and_hold_with_matching_metrics() {
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(10);
+        config.end_date = Utc::now();
+
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        let result = engine
+            .run_with_strategy(Box::new(BuyAndHoldStrategy::new()))
+            .await
+            .unwrap();
+        let manifest = result
+            .manifest
+            .clone()
+            .expect("completed runs should include a manifest");
+
+        assert_eq!(manifest.replay_request.strategy_name, "buy_and_hold");
+        assert!(manifest.dataset.total_bars > 0);
+
+        let replay_config = replay_config_from_manifest(&manifest);
+        let replay_strategy = strategy_from_manifest(&manifest);
+        let mut replay_engine = BacktestEngine::new(replay_config).await.unwrap();
+        let replay_result = replay_engine
+            .run_with_strategy(replay_strategy)
+            .await
+            .unwrap();
+        let replay_manifest = replay_result
+            .manifest
+            .expect("replay run should include a manifest");
+
+        let original = manifest.metric_snapshot;
+        let replay = replay_manifest.metric_snapshot;
+        assert!((original.final_value - replay.final_value).abs() < 1e-6);
+        assert!((original.total_return - replay.total_return).abs() < 1e-6);
+        assert!((original.max_drawdown - replay.max_drawdown).abs() < 1e-6);
+        assert!((original.sharpe_ratio - replay.sharpe_ratio).abs() < 1e-6);
+        assert_eq!(original.total_trades, replay.total_trades);
     }
 
     #[tokio::test]
@@ -631,6 +824,154 @@ mod tests {
             .expect("strategy config should be captured");
         assert_eq!(captured_config.symbols, vec![Symbol::equity("AAPL")]);
         assert_eq!(captured_config.initial_capital, Decimal::from(250000));
+    }
+
+    #[tokio::test]
+    async fn test_strategy_lifecycle_contract_calls_expected_hooks() {
+        use gb_types::{
+            MarketEvent, Order, OrderEvent, Side, Strategy, StrategyAction, StrategyConfig,
+            StrategyContext, StrategyMetrics,
+        };
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Debug, Default)]
+        struct LifecycleStats {
+            initialize_calls: usize,
+            market_event_calls: usize,
+            order_event_calls: usize,
+            day_end_calls: usize,
+            stop_calls: usize,
+            sequence: Vec<String>,
+        }
+
+        #[derive(Clone)]
+        struct LifecycleProbeStrategy {
+            config: StrategyConfig,
+            stats: Arc<Mutex<LifecycleStats>>,
+            submitted_order: bool,
+        }
+
+        impl LifecycleProbeStrategy {
+            fn new(stats: Arc<Mutex<LifecycleStats>>) -> Self {
+                Self {
+                    config: StrategyConfig::new(
+                        "lifecycle_probe".to_string(),
+                        "Lifecycle Probe".to_string(),
+                    ),
+                    stats,
+                    submitted_order: false,
+                }
+            }
+
+            fn record(&self, label: &str) {
+                let mut stats = self.stats.lock().unwrap();
+                stats.sequence.push(label.to_string());
+                match label {
+                    "initialize" => stats.initialize_calls += 1,
+                    "on_market_event" => stats.market_event_calls += 1,
+                    "on_order_event" => stats.order_event_calls += 1,
+                    "on_day_end" => stats.day_end_calls += 1,
+                    "on_stop" => stats.stop_calls += 1,
+                    _ => {}
+                }
+            }
+        }
+
+        impl Strategy for LifecycleProbeStrategy {
+            fn initialize(&mut self, config: &StrategyConfig) -> Result<(), String> {
+                self.config = config.clone();
+                self.record("initialize");
+                Ok(())
+            }
+
+            fn on_market_event(
+                &mut self,
+                event: &MarketEvent,
+                context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                self.record("on_market_event");
+                if self.submitted_order {
+                    return Ok(vec![]);
+                }
+
+                let symbol = event.symbol().clone();
+                let Some(price) = context.get_current_price(&symbol) else {
+                    return Ok(vec![]);
+                };
+                let quantity = (context.get_available_cash() * Decimal::new(50, 2)) / price;
+                if quantity <= Decimal::ZERO {
+                    return Ok(vec![]);
+                }
+
+                self.submitted_order = true;
+                Ok(vec![StrategyAction::PlaceOrder(Order::market_order(
+                    symbol,
+                    Side::Buy,
+                    quantity,
+                    self.config.strategy_id.clone(),
+                ))])
+            }
+
+            fn on_order_event(
+                &mut self,
+                _event: &OrderEvent,
+                _context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                self.record("on_order_event");
+                Ok(vec![])
+            }
+
+            fn on_day_end(
+                &mut self,
+                _context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                self.record("on_day_end");
+                Ok(vec![])
+            }
+
+            fn on_stop(
+                &mut self,
+                _context: &StrategyContext,
+            ) -> Result<Vec<StrategyAction>, String> {
+                self.record("on_stop");
+                Ok(vec![])
+            }
+
+            fn get_config(&self) -> &StrategyConfig {
+                &self.config
+            }
+
+            fn get_metrics(&self) -> StrategyMetrics {
+                StrategyMetrics::new(self.config.strategy_id.clone())
+            }
+        }
+
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.start_date = Utc::now() - Duration::days(5);
+        config.end_date = Utc::now();
+
+        let stats = Arc::new(Mutex::new(LifecycleStats::default()));
+        let strategy = Box::new(LifecycleProbeStrategy::new(Arc::clone(&stats)));
+
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        let result = engine.run_with_strategy(strategy).await.unwrap();
+        assert!(
+            !result.trade_log.is_empty(),
+            "probe strategy should place at least one trade"
+        );
+
+        let stats = stats.lock().unwrap();
+        assert_eq!(stats.initialize_calls, 1);
+        assert!(stats.market_event_calls > 0);
+        assert!(stats.order_event_calls > 0);
+        assert!(stats.day_end_calls > 0);
+        assert_eq!(stats.stop_calls, 1);
+        assert_eq!(
+            stats.sequence.first().map(String::as_str),
+            Some("initialize")
+        );
+        assert_eq!(stats.sequence.last().map(String::as_str), Some("on_stop"));
     }
 
     // --- Crypto-specific tests ------------------------------------------------

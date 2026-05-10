@@ -6,8 +6,9 @@ use rust_decimal::Decimal;
 
 use gb_engine::BacktestEngine as RustBacktestEngine;
 use gb_types::{
-    BacktestConfig, BacktestResult as RustBacktestResult, BuyAndHoldStrategy, Resolution,
-    StrategyConfig, Symbol,
+    BacktestConfig, BacktestResult as RustBacktestResult, BuyAndHoldStrategy, LatencyModel,
+    MeanReversionStrategy, MomentumStrategy, MovingAverageCrossoverStrategy, Resolution,
+    RsiStrategy, SlippageModel, Strategy, StrategyConfig, Symbol,
 };
 
 /// GlowBack Python module
@@ -21,6 +22,7 @@ fn glowback(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyBacktestEngine>()?;
     m.add_class::<PyBacktestResult>()?;
     m.add_function(wrap_pyfunction!(run_buy_and_hold, m)?)?;
+    m.add_function(wrap_pyfunction!(run_builtin_strategy, m)?)?;
 
     // Backwards-compatible aliases (Py* names)
     m.add("PySymbol", m.getattr("Symbol")?)?;
@@ -48,6 +50,75 @@ fn parse_resolution(resolution: &str) -> PyResult<Resolution> {
     }
 }
 
+fn dict_get_usize(params: Option<&Bound<PyDict>>, key: &str, default: usize) -> PyResult<usize> {
+    let Some(params) = params else {
+        return Ok(default);
+    };
+    let Some(value) = params.get_item(key)? else {
+        return Ok(default);
+    };
+    if let Ok(extracted) = value.extract::<usize>() {
+        return Ok(extracted);
+    }
+    Ok(value.extract::<f64>()?.round() as usize)
+}
+
+fn dict_get_f64(params: Option<&Bound<PyDict>>, key: &str, default: f64) -> PyResult<f64> {
+    let Some(params) = params else {
+        return Ok(default);
+    };
+    let Some(value) = params.get_item(key)? else {
+        return Ok(default);
+    };
+    value.extract::<f64>()
+}
+
+fn build_strategy(name: &str, params: Option<&Bound<PyDict>>) -> PyResult<Box<dyn Strategy>> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "buy_and_hold" => Ok(Box::new(BuyAndHoldStrategy::new())),
+        "ma_crossover" | "moving_average_crossover" => {
+            let short_period = dict_get_usize(params, "short_period", 10)?;
+            let long_period = dict_get_usize(params, "long_period", 20)?;
+            Ok(Box::new(MovingAverageCrossoverStrategy::new(
+                short_period,
+                long_period,
+            )))
+        }
+        "momentum" => {
+            let lookback_period = dict_get_usize(params, "lookback_period", 10)?;
+            let momentum_threshold = dict_get_f64(params, "momentum_threshold", 0.05)?;
+            Ok(Box::new(MomentumStrategy::new(
+                lookback_period,
+                momentum_threshold,
+            )))
+        }
+        "mean_reversion" => {
+            let lookback_period = dict_get_usize(params, "lookback_period", 20)?;
+            let entry_threshold = dict_get_f64(params, "entry_threshold", 2.0)?;
+            let exit_threshold = dict_get_f64(params, "exit_threshold", 1.0)?;
+            Ok(Box::new(MeanReversionStrategy::new(
+                lookback_period,
+                entry_threshold,
+                exit_threshold,
+            )))
+        }
+        "rsi" => {
+            let lookback_period = dict_get_usize(params, "lookback_period", 14)?;
+            let oversold_threshold = dict_get_f64(params, "oversold_threshold", 30.0)?;
+            let overbought_threshold = dict_get_f64(params, "overbought_threshold", 70.0)?;
+            Ok(Box::new(RsiStrategy::new(
+                lookback_period,
+                oversold_threshold,
+                overbought_threshold,
+            )))
+        }
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Unsupported strategy: {}",
+            other
+        ))),
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (symbols, start_date, end_date, resolution=None, initial_capital=None, name=None))]
 fn run_buy_and_hold(
@@ -65,8 +136,272 @@ fn run_buy_and_hold(
         resolution,
         initial_capital,
         name,
+        None,
+        None,
+        None,
+        Some("sample"),
+        None,
     )?;
     engine.run_buy_and_hold()
+}
+
+fn build_backtest_config(
+    symbols: Vec<String>,
+    start_date: &str,
+    end_date: &str,
+    resolution: Option<&str>,
+    initial_capital: Option<f64>,
+    name: Option<&str>,
+    data_source: Option<&str>,
+    commission_bps: Option<f64>,
+    slippage_bps: Option<f64>,
+    latency_ms: Option<u64>,
+    strategy_config: StrategyConfig,
+) -> PyResult<BacktestConfig> {
+    if symbols.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "symbols list cannot be empty",
+        ));
+    }
+
+    let start_date = chrono::DateTime::parse_from_rfc3339(start_date)
+        .map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Invalid start_date format: {}", e))
+        })?
+        .with_timezone(&chrono::Utc);
+
+    let end_date = chrono::DateTime::parse_from_rfc3339(end_date)
+        .map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Invalid end_date format: {}", e))
+        })?
+        .with_timezone(&chrono::Utc);
+
+    let resolution = parse_resolution(resolution.unwrap_or("day"))?;
+    let initial_capital = Decimal::from_f64(initial_capital.unwrap_or(100_000.0))
+        .unwrap_or_else(|| Decimal::from(100_000));
+
+    let rust_symbols: Vec<Symbol> = symbols
+        .iter()
+        .map(|symbol| Symbol::equity(symbol))
+        .collect();
+
+    let mut strategy_config = strategy_config;
+    strategy_config.symbols = rust_symbols.clone();
+    strategy_config.initial_capital = initial_capital;
+
+    let mut config = BacktestConfig::new(
+        name.unwrap_or("Python Backtest").to_string(),
+        strategy_config.clone(),
+    );
+    config.start_date = start_date;
+    config.end_date = end_date;
+    config.initial_capital = initial_capital;
+    config.resolution = resolution;
+    config.symbols = rust_symbols;
+    config.strategy_config = strategy_config;
+
+    if let Some(source) = data_source {
+        if !source.trim().is_empty() {
+            config.data_settings.data_source = source.trim().to_string();
+        }
+    }
+
+    if let Some(commission_bps) = commission_bps {
+        let commission_fraction = (commission_bps.max(0.0)) / 10_000.0;
+        if let Some(decimal) = Decimal::from_f64(commission_fraction) {
+            config.execution_settings.commission_percentage = decimal;
+        }
+    }
+
+    if let Some(slippage_bps) = slippage_bps {
+        config.execution_settings.slippage_model = SlippageModel::Linear {
+            basis_points: slippage_bps.max(0.0).round() as u32,
+        };
+    }
+
+    if let Some(latency_ms) = latency_ms {
+        config.execution_settings.latency_model = LatencyModel::Fixed {
+            milliseconds: latency_ms,
+        };
+    }
+
+    Ok(config)
+}
+
+fn apply_strategy_params(
+    strategy_config: &mut StrategyConfig,
+    strategy_params: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let Some(strategy_params) = strategy_params else {
+        return Ok(());
+    };
+
+    for (key, value) in strategy_params.iter() {
+        let key: String = key.extract()?;
+
+        if let Ok(extracted) = value.extract::<bool>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<i64>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<f64>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<String>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<Vec<i64>>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<Vec<f64>>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<Vec<String>>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+        if let Ok(extracted) = value.extract::<Vec<bool>>() {
+            strategy_config.set_parameter(&key, extracted);
+            continue;
+        }
+
+        return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "Unsupported parameter type for strategy parameter '{}'",
+            key
+        )));
+    }
+
+    Ok(())
+}
+
+fn build_builtin_strategy(
+    strategy_name: &str,
+    strategy_config: &StrategyConfig,
+) -> PyResult<Box<dyn Strategy>> {
+    match strategy_name.trim().to_lowercase().as_str() {
+        "buy_and_hold" => Ok(Box::new(BuyAndHoldStrategy::new())),
+        "ma_crossover" | "moving_average_crossover" => {
+            let short_period = strategy_config.get_parameter("short_period").unwrap_or(10);
+            let long_period = strategy_config.get_parameter("long_period").unwrap_or(20);
+            Ok(Box::new(MovingAverageCrossoverStrategy::new(
+                short_period,
+                long_period,
+            )))
+        }
+        "momentum" => {
+            let lookback_period = strategy_config
+                .get_parameter("lookback_period")
+                .unwrap_or(10);
+            let momentum_threshold = strategy_config
+                .get_parameter("momentum_threshold")
+                .unwrap_or(5.0f64);
+            Ok(Box::new(MomentumStrategy::new(
+                lookback_period,
+                momentum_threshold,
+            )))
+        }
+        "mean_reversion" => {
+            let lookback_period = strategy_config
+                .get_parameter("lookback_period")
+                .unwrap_or(20);
+            let entry_threshold = strategy_config
+                .get_parameter("entry_threshold")
+                .unwrap_or(2.0f64);
+            let exit_threshold = strategy_config
+                .get_parameter("exit_threshold")
+                .unwrap_or(1.0f64);
+            Ok(Box::new(MeanReversionStrategy::new(
+                lookback_period,
+                entry_threshold,
+                exit_threshold,
+            )))
+        }
+        "rsi" => {
+            let lookback_period = strategy_config
+                .get_parameter("lookback_period")
+                .unwrap_or(14);
+            let oversold_threshold = strategy_config
+                .get_parameter("oversold_threshold")
+                .unwrap_or(30.0f64);
+            let overbought_threshold = strategy_config
+                .get_parameter("overbought_threshold")
+                .unwrap_or(70.0f64);
+            Ok(Box::new(RsiStrategy::new(
+                lookback_period,
+                oversold_threshold,
+                overbought_threshold,
+            )))
+        }
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Unsupported built-in strategy: {}",
+            other
+        ))),
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (symbols, start_date, end_date, strategy_name, strategy_params=None, resolution=None, initial_capital=None, name=None, data_source=None, commission_bps=None, slippage_bps=None, latency_ms=None))]
+fn run_builtin_strategy(
+    symbols: Vec<String>,
+    start_date: &str,
+    end_date: &str,
+    strategy_name: &str,
+    strategy_params: Option<&Bound<'_, PyDict>>,
+    resolution: Option<&str>,
+    initial_capital: Option<f64>,
+    name: Option<&str>,
+    data_source: Option<&str>,
+    commission_bps: Option<f64>,
+    slippage_bps: Option<f64>,
+    latency_ms: Option<u64>,
+) -> PyResult<PyBacktestResult> {
+    let strategy_name = strategy_name.trim().to_lowercase();
+    let mut strategy_config = StrategyConfig::new(strategy_name.clone(), strategy_name.clone());
+    apply_strategy_params(&mut strategy_config, strategy_params)?;
+
+    let config = build_backtest_config(
+        symbols,
+        start_date,
+        end_date,
+        resolution,
+        initial_capital,
+        name,
+        data_source,
+        commission_bps,
+        slippage_bps,
+        latency_ms,
+        strategy_config.clone(),
+    )?;
+
+    let strategy = build_builtin_strategy(&strategy_name, &strategy_config)?;
+
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create async runtime: {}", e))
+    })?;
+
+    let mut engine = runtime
+        .block_on(async { RustBacktestEngine::new(config).await })
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to create backtest engine: {}",
+                e
+            ))
+        })?;
+
+    let result = runtime
+        .block_on(async { engine.run_with_strategy(strategy).await })
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Backtest execution failed: {}", e))
+        })?;
+
+    Ok(PyBacktestResult::from_backtest_result(result))
 }
 
 /// Python wrapper for Symbol
@@ -399,10 +734,36 @@ struct EquityPoint {
     drawdown: f64,
 }
 
+struct TradePoint {
+    timestamp: String,
+    symbol: String,
+    action: String,
+    shares: f64,
+    price: f64,
+    commission: f64,
+    pnl: Option<f64>,
+    strategy_id: String,
+}
+
+struct ExposurePoint {
+    timestamp: String,
+    cash_pct: f64,
+    positions_pct: f64,
+    gross_exposure_pct: f64,
+    net_exposure_pct: f64,
+}
+
 #[pyclass(name = "BacktestResult")]
 struct PyBacktestResult {
     metrics_summary: std::collections::HashMap<String, f64>,
     equity_curve: Vec<EquityPoint>,
+    trades: Vec<TradePoint>,
+    exposures: Vec<ExposurePoint>,
+    order_events: Vec<serde_json::Value>,
+    logs: Vec<String>,
+    final_cash: f64,
+    final_positions: std::collections::HashMap<String, f64>,
+    manifest: Option<serde_json::Value>,
 }
 
 impl PyBacktestResult {
@@ -413,12 +774,25 @@ impl PyBacktestResult {
             decimal_to_f64(result.config.initial_capital),
         );
 
-        if let Some(portfolio) = result.final_portfolio.as_ref() {
+        let (final_cash, final_positions) = if let Some(portfolio) = result.final_portfolio.as_ref()
+        {
             metrics_summary.insert(
                 "final_value".to_string(),
                 decimal_to_f64(portfolio.total_equity),
             );
-        }
+            (
+                decimal_to_f64(portfolio.cash),
+                portfolio
+                    .positions
+                    .iter()
+                    .map(|(symbol, position)| {
+                        (symbol.symbol.clone(), decimal_to_f64(position.quantity))
+                    })
+                    .collect::<std::collections::HashMap<_, _>>(),
+            )
+        } else {
+            (0.0, std::collections::HashMap::new())
+        };
 
         if let Some(performance) = result.performance_metrics.as_ref() {
             metrics_summary.insert(
@@ -532,7 +906,7 @@ impl PyBacktestResult {
 
         let equity_curve = result
             .equity_curve
-            .into_iter()
+            .iter()
             .map(|point| EquityPoint {
                 timestamp: point.timestamp.to_rfc3339(),
                 value: decimal_to_f64(point.portfolio_value),
@@ -543,11 +917,85 @@ impl PyBacktestResult {
                 returns: decimal_to_f64(point.cumulative_return) * 100.0,
                 drawdown: decimal_to_f64(point.drawdown) * 100.0,
             })
-            .collect();
+            .collect::<Vec<_>>();
+
+        let exposures = result
+            .equity_curve
+            .iter()
+            .map(|point| {
+                let portfolio_value = decimal_to_f64(point.portfolio_value);
+                let cash = decimal_to_f64(point.cash);
+                let positions = decimal_to_f64(point.positions_value);
+                let denominator = if portfolio_value.abs() > f64::EPSILON {
+                    portfolio_value
+                } else {
+                    1.0
+                };
+                ExposurePoint {
+                    timestamp: point.timestamp.to_rfc3339(),
+                    cash_pct: cash / denominator * 100.0,
+                    positions_pct: positions / denominator * 100.0,
+                    gross_exposure_pct: positions.abs() / denominator * 100.0,
+                    net_exposure_pct: positions / denominator * 100.0,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let trades = result
+            .trade_log
+            .into_iter()
+            .map(|trade| TradePoint {
+                timestamp: trade.exit_time.unwrap_or(trade.entry_time).to_rfc3339(),
+                symbol: trade.symbol.symbol,
+                action: match trade.side {
+                    gb_types::Side::Buy => "BUY".to_string(),
+                    gb_types::Side::Sell => "SELL".to_string(),
+                },
+                shares: decimal_to_f64(trade.quantity),
+                price: decimal_to_f64(trade.exit_price.unwrap_or(trade.entry_price)),
+                commission: decimal_to_f64(trade.commission),
+                pnl: trade.pnl.map(decimal_to_f64),
+                strategy_id: trade.strategy_id,
+            })
+            .collect::<Vec<_>>();
+
+        let order_events = result
+            .order_events
+            .iter()
+            .filter_map(|event| serde_json::to_value(event).ok())
+            .collect::<Vec<_>>();
+
+        let manifest = result
+            .manifest
+            .as_ref()
+            .and_then(|manifest| serde_json::to_value(manifest).ok());
+
+        let total_trades = metrics_summary
+            .get("total_trades")
+            .copied()
+            .unwrap_or(trades.len() as f64);
+        let final_value = metrics_summary
+            .get("final_value")
+            .copied()
+            .unwrap_or(final_cash);
+        let logs = vec![
+            "Engine-backed backtest completed".to_string(),
+            format!("Processed {} equity points", equity_curve.len()),
+            format!("Executed {} trades", total_trades as usize),
+            format!("Recorded {} order lifecycle events", order_events.len()),
+            format!("Final portfolio value ${:.2}", final_value),
+        ];
 
         Self {
             metrics_summary,
             equity_curve,
+            trades,
+            exposures,
+            order_events,
+            logs,
+            final_cash,
+            final_positions,
+            manifest,
         }
     }
 }
@@ -582,6 +1030,90 @@ impl PyBacktestResult {
             let _ = list.append(dict);
         }
         Ok(list.unbind().into())
+    }
+
+    #[getter]
+    fn trades(&self, py: Python) -> PyResult<PyObject> {
+        let list = PyList::empty(py);
+        for trade in &self.trades {
+            let dict = PyDict::new(py);
+            let _ = dict.set_item("timestamp", &trade.timestamp);
+            let _ = dict.set_item("symbol", &trade.symbol);
+            let _ = dict.set_item("action", &trade.action);
+            let _ = dict.set_item("shares", trade.shares);
+            let _ = dict.set_item("price", trade.price);
+            let _ = dict.set_item("commission", trade.commission);
+            match trade.pnl {
+                Some(value) => {
+                    let _ = dict.set_item("pnl", value);
+                }
+                None => {
+                    let _ = dict.set_item("pnl", py.None());
+                }
+            }
+            let _ = dict.set_item("strategy_id", &trade.strategy_id);
+            let _ = list.append(dict);
+        }
+        Ok(list.unbind().into())
+    }
+
+    #[getter]
+    fn exposures(&self, py: Python) -> PyResult<PyObject> {
+        let list = PyList::empty(py);
+        for exposure in &self.exposures {
+            let dict = PyDict::new(py);
+            let _ = dict.set_item("timestamp", &exposure.timestamp);
+            let _ = dict.set_item("cash_pct", exposure.cash_pct);
+            let _ = dict.set_item("positions_pct", exposure.positions_pct);
+            let _ = dict.set_item("gross_exposure_pct", exposure.gross_exposure_pct);
+            let _ = dict.set_item("net_exposure_pct", exposure.net_exposure_pct);
+            let _ = list.append(dict);
+        }
+        Ok(list.unbind().into())
+    }
+
+    #[getter]
+    fn order_events(&self, py: Python) -> PyResult<PyObject> {
+        let json = py.import("json")?;
+        let payload = serde_json::to_string(&self.order_events).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to serialize order events: {}",
+                error
+            ))
+        })?;
+        Ok(json.call_method1("loads", (payload,))?.into())
+    }
+
+    #[getter]
+    fn logs(&self) -> Vec<String> {
+        self.logs.clone()
+    }
+
+    #[getter]
+    fn final_cash(&self) -> f64 {
+        self.final_cash
+    }
+
+    #[getter]
+    fn final_positions(&self, py: Python) -> PyResult<PyObject> {
+        Ok(self.final_positions.clone().into_pyobject(py)?.into())
+    }
+
+    #[getter]
+    fn manifest(&self, py: Python) -> PyResult<PyObject> {
+        match &self.manifest {
+            Some(manifest) => {
+                let json = py.import("json")?;
+                let payload = serde_json::to_string(manifest).map_err(|error| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "Failed to serialize run manifest: {}",
+                        error
+                    ))
+                })?;
+                Ok(json.call_method1("loads", (payload,))?.into())
+            }
+            None => Ok(py.None()),
+        }
     }
 
     /// Convert the equity curve to a pandas DataFrame (Jupyter-friendly)
@@ -676,9 +1208,10 @@ impl PyBacktestResult {
 
     fn __repr__(&self) -> String {
         format!(
-            "PyBacktestResult(metrics_summary_keys={:?}, equity_points={})",
+            "PyBacktestResult(metrics_summary_keys={:?}, equity_points={}, trades={})",
             self.metrics_summary.keys().collect::<Vec<_>>(),
-            self.equity_curve.len()
+            self.equity_curve.len(),
+            self.trades.len()
         )
     }
 }
@@ -693,6 +1226,19 @@ struct PyBacktestEngine {
 #[pymethods]
 impl PyBacktestEngine {
     #[new]
+    #[pyo3(signature = (
+        symbols,
+        start_date,
+        end_date,
+        resolution=None,
+        initial_capital=None,
+        name=None,
+        commission_bps=None,
+        slippage_bps=None,
+        latency_ms=None,
+        data_source=None,
+        csv_data_path=None,
+    ))]
     fn new(
         symbols: Vec<String>,
         start_date: &str,
@@ -700,6 +1246,11 @@ impl PyBacktestEngine {
         resolution: Option<&str>,
         initial_capital: Option<f64>,
         name: Option<&str>,
+        commission_bps: Option<f64>,
+        slippage_bps: Option<f64>,
+        latency_ms: Option<u64>,
+        data_source: Option<&str>,
+        csv_data_path: Option<&str>,
     ) -> PyResult<Self> {
         if symbols.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -744,6 +1295,27 @@ impl PyBacktestEngine {
         config.symbols = rust_symbols;
         config.strategy_config = strategy_config;
 
+        if let Some(bps) = commission_bps {
+            let pct = Decimal::from_f64(bps / 10_000.0).unwrap_or_default();
+            config.execution_settings.commission_per_share = Decimal::ZERO;
+            config.execution_settings.commission_percentage = pct;
+            config.execution_settings.minimum_commission = Decimal::ZERO;
+        }
+        if let Some(bps) = slippage_bps {
+            let basis_points = if bps.is_sign_negative() {
+                0
+            } else {
+                bps.round() as u32
+            };
+            config.execution_settings.slippage_model = SlippageModel::Linear { basis_points };
+        }
+        if let Some(milliseconds) = latency_ms {
+            config.execution_settings.latency_model = LatencyModel::Fixed { milliseconds };
+        }
+
+        let normalized_data_source = data_source.unwrap_or("default").trim().to_ascii_lowercase();
+        config.data_settings.data_source = normalized_data_source.clone();
+
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "Failed to create async runtime: {}",
@@ -751,7 +1323,7 @@ impl PyBacktestEngine {
             ))
         })?;
 
-        let inner = runtime
+        let mut inner = runtime
             .block_on(async { RustBacktestEngine::new(config).await })
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -760,30 +1332,61 @@ impl PyBacktestEngine {
                 ))
             })?;
 
+        if normalized_data_source == "csv" {
+            let base_path = csv_data_path.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "csv_data_path is required when data_source='csv'",
+                )
+            })?;
+            inner.add_csv_provider(base_path);
+        }
+
         Ok(Self {
             inner: std::sync::Mutex::new(inner),
             runtime,
         })
     }
 
+    fn add_sample_provider(&mut self) -> PyResult<()> {
+        let mut inner = self.inner.lock().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+        })?;
+        inner.add_sample_provider();
+        Ok(())
+    }
+
+    fn add_csv_provider(&mut self, base_path: &str) -> PyResult<()> {
+        let mut inner = self.inner.lock().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+        })?;
+        inner.add_csv_provider(base_path);
+        Ok(())
+    }
+
     /// Run a backtest using the built-in buy-and-hold strategy
     fn run_buy_and_hold(&mut self) -> PyResult<PyBacktestResult> {
-        let result: Result<RustBacktestResult, PyErr> = self.runtime.block_on(async {
-            let mut inner = self.inner.lock().map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
-            })?;
-            inner
-                .run_with_strategy(Box::new(BuyAndHoldStrategy::new()))
-                .await
-                .map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!(
-                        "Backtest execution failed: {}",
-                        e
-                    ))
-                })
-        });
+        self.run_strategy("buy_and_hold", None)
+    }
 
-        let result = result?;
+    fn run_strategy(
+        &mut self,
+        strategy_name: &str,
+        params: Option<&Bound<PyDict>>,
+    ) -> PyResult<PyBacktestResult> {
+        let strategy = build_strategy(strategy_name, params)?;
+        let mut inner = self.inner.lock().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
+        })?;
+        let result = self
+            .runtime
+            .block_on(inner.run_with_strategy(strategy))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Backtest execution failed: {}",
+                    e
+                ))
+            })?;
+
         Ok(PyBacktestResult::from_backtest_result(result))
     }
 }

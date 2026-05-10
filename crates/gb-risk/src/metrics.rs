@@ -4,7 +4,6 @@
 //! produce a [`PortfolioRiskSnapshot`] that captures the current risk posture.
 
 use chrono::{DateTime, Utc};
-use rust_decimal::prelude::Signed;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -87,7 +86,7 @@ impl RiskMetricsCalculator {
 
         for (symbol, pos) in &portfolio.positions {
             let weight = if safe_equity > Decimal::ZERO {
-                pos.market_value * pos.quantity.signum() / safe_equity
+                pos.market_value / safe_equity
             } else {
                 Decimal::ZERO
             };
@@ -332,6 +331,17 @@ mod tests {
         for pr in &snap.position_risks {
             assert!(pr.weight > dec!(0));
         }
+    }
+
+    #[test]
+    fn short_positions_contribute_negative_net_exposure() {
+        let portfolio = make_portfolio(vec![(sym("TSLA"), dec!(-25), dec!(100), dec!(90))]);
+        let snap = RiskMetricsCalculator::compute(&portfolio, &[], dec!(100_000));
+
+        assert_eq!(snap.position_risks.len(), 1);
+        assert!(snap.position_risks[0].weight < dec!(0));
+        assert!(snap.net_exposure < dec!(0));
+        assert_eq!(snap.gross_exposure, snap.position_risks[0].weight_abs);
     }
 
     #[test]

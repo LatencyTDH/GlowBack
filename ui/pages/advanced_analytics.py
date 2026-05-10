@@ -3,16 +3,24 @@ Advanced Analytics Page - Heatmaps, rolling statistics & interactive features
 Implements enhancements from issue #47.
 """
 
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import numpy as np
-from typing import Optional, Dict, List
 import io
 import json
-from datetime import datetime
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+from research_registry import (
+    delete_saved_run,
+    list_streamlit_runs,
+    rename_saved_run,
+    run_display_name,
+    run_summary_rows,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +30,18 @@ from datetime import datetime
 def _equity_df(results: dict) -> Optional[pd.DataFrame]:
     """Return equity curve as a DatetimeIndex DataFrame, or None."""
     raw = results.get("equity_curve", [])
+    if not raw:
+        return None
+    df = pd.DataFrame(raw)
+    if "timestamp" not in df.columns or "value" not in df.columns:
+        return None
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp").set_index("timestamp")
+    return df
+
+
+def _benchmark_df(results: dict) -> Optional[pd.DataFrame]:
+    raw = results.get("benchmark_curve", [])
     if not raw:
         return None
     df = pd.DataFrame(raw)
@@ -50,14 +70,7 @@ def show():
     )
 
     results = st.session_state.get("backtest_results")
-    if not results:
-        st.warning("⚠️ No backtest results available. Run a backtest first.")
-        return
-
-    eq = _equity_df(results)
-    if eq is None or len(eq) < 2:
-        st.error("❌ Equity curve data is missing or too short for analytics.")
-        return
+    eq = _equity_df(results) if results else None
 
     tab_heatmaps, tab_rolling, tab_compare, tab_sensitivity, tab_export = st.tabs(
         [
@@ -70,19 +83,31 @@ def show():
     )
 
     with tab_heatmaps:
-        _show_heatmaps(eq, results)
+        if eq is None or len(eq) < 2 or not results:
+            st.warning("⚠️ Run a backtest to unlock heatmaps.")
+        else:
+            _show_heatmaps(eq, results)
 
     with tab_rolling:
-        _show_rolling_statistics(eq)
+        if eq is None or len(eq) < 2 or not results:
+            st.warning("⚠️ Run a backtest to unlock rolling statistics.")
+        else:
+            _show_rolling_statistics(eq, results)
 
     with tab_compare:
         _show_compare_runs()
 
     with tab_sensitivity:
-        _show_sensitivity()
+        if not results:
+            st.warning("⚠️ Run a backtest first to seed the sensitivity analysis.")
+        else:
+            _show_sensitivity()
 
     with tab_export:
-        _show_export(eq, results)
+        if eq is None or len(eq) < 2 or not results:
+            st.warning("⚠️ Run a backtest first to export analytics artifacts.")
+        else:
+            _show_export(eq, results)
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +286,7 @@ def _drawdown_heatmap(eq: pd.DataFrame):
 # Rolling Statistics
 # ---------------------------------------------------------------------------
 
-def _show_rolling_statistics(eq: pd.DataFrame):
+def _show_rolling_statistics(eq: pd.DataFrame, results: dict):
     st.subheader("📈 Rolling Statistics")
 
     rets = _daily_returns(eq)
@@ -269,8 +294,16 @@ def _show_rolling_statistics(eq: pd.DataFrame):
         st.info("Need ≥ 30 trading days for rolling statistics.")
         return
 
+    benchmark_eq = _benchmark_df(results)
+    benchmark_name = (results.get("benchmark_metrics") or {}).get("benchmark_symbol") or results.get("benchmark_symbol")
+
     # Configurable window
-    col_cfg1, col_cfg2 = st.columns(2)
+    if benchmark_eq is not None:
+        col_cfg1, col_cfg2 = st.columns(2)
+    else:
+        col_cfg1 = st.container()
+        col_cfg2 = None
+
     with col_cfg1:
         window = st.selectbox(
             "Rolling window (days)",
@@ -278,13 +311,11 @@ def _show_rolling_statistics(eq: pd.DataFrame):
             index=0,
             help="Number of trading days for the rolling window.",
         )
-    with col_cfg2:
-        benchmark_ret_annual = st.number_input(
-            "Benchmark annual return (%) for beta",
-            value=10.0,
-            step=1.0,
-            help="Used to generate a synthetic benchmark for beta calculation.",
-        )
+    if col_cfg2 is not None:
+        with col_cfg2:
+            st.caption(f"Using actual benchmark series: {benchmark_name}")
+    else:
+        st.caption("Load benchmark bars into the run to unlock actual rolling beta and benchmark-relative analytics.")
 
     # --- Rolling Sharpe ---
     rolling_mean = rets.rolling(window).mean()
@@ -295,21 +326,19 @@ def _show_rolling_statistics(eq: pd.DataFrame):
     rolling_vol = rolling_std * np.sqrt(252) * 100
 
     # Percentile bands for volatility
-    vol_median = rolling_vol.median()
     vol_p25 = rolling_vol.quantile(0.25)
     vol_p75 = rolling_vol.quantile(0.75)
 
-    # --- Rolling Beta (vs synthetic benchmark) ---
-    np.random.seed(42)
-    bench_daily = benchmark_ret_annual / 100 / 252
-    bench_vol = rolling_vol.median() / 100 / np.sqrt(252) if vol_median > 0 else 0.01
-    bench_returns = pd.Series(
-        np.random.normal(bench_daily, bench_vol, size=len(rets)),
-        index=rets.index,
-    )
-    rolling_cov = rets.rolling(window).cov(bench_returns)
-    rolling_bench_var = bench_returns.rolling(window).var()
-    rolling_beta = rolling_cov / rolling_bench_var
+    # --- Rolling Beta (vs actual benchmark when available) ---
+    rolling_beta = pd.Series(index=rets.index, dtype=float)
+    if benchmark_eq is not None:
+        bench_rets = _daily_returns(benchmark_eq)
+        aligned = pd.concat([rets.rename("strategy"), bench_rets.rename("benchmark")], axis=1, join="inner").dropna()
+        if not aligned.empty:
+            rolling_cov = aligned["strategy"].rolling(window).cov(aligned["benchmark"])
+            rolling_bench_var = aligned["benchmark"].rolling(window).var()
+            rolling_beta = (rolling_cov / rolling_bench_var).replace([np.inf, -np.inf], np.nan)
+            rolling_beta = rolling_beta.reindex(rets.index)
 
     # --- Rolling Max Drawdown ---
     rolling_max_dd = pd.Series(index=eq.index, dtype=float)
@@ -417,7 +446,7 @@ def _show_rolling_statistics(eq: pd.DataFrame):
             f"{rolling_sharpe.iloc[-1]:.2f}" if not np.isnan(rolling_sharpe.iloc[-1]) else "N/A",
             f"{rolling_vol.mean():.1f}%",
             f"{rolling_vol.iloc[-1]:.1f}%" if not np.isnan(rolling_vol.iloc[-1]) else "N/A",
-            f"{rolling_beta.mean():.2f}",
+            "N/A" if rolling_beta.dropna().empty else f"{rolling_beta.dropna().mean():.2f}",
             f"{rolling_max_dd.min():.1f}%",
         ],
     }
@@ -431,88 +460,94 @@ def _show_rolling_statistics(eq: pd.DataFrame):
 def _show_compare_runs():
     st.subheader("🔀 Compare Backtest Runs")
 
-    saved_runs: Dict[str, dict] = st.session_state.get("saved_runs", {})
-
-    # Save current run
-    current = st.session_state.get("backtest_results")
-    if current:
-        run_name = st.text_input(
-            "Save current run as",
-            value=f"Run {len(saved_runs) + 1}",
+    current = st.session_state.get("backtest_results") or {}
+    if current.get("run_id"):
+        save_label = st.text_input(
+            "Name the current run for later comparison",
+            value=str(current.get("strategy_name") or "Current Run"),
             key="save_run_name",
         )
-        if st.button("💾 Save Current Run"):
-            saved_runs[run_name] = {
-                "results": current,
-                "saved_at": datetime.now().isoformat(),
-            }
-            st.session_state.saved_runs = saved_runs
-            st.success(f"Saved as **{run_name}**")
+        if st.button("💾 Save Current Run Name"):
+            rename_saved_run(current["run_id"], save_label.strip() or None)
+            st.success(f"Saved current run as **{save_label.strip() or current['run_id']}**")
 
-    if len(saved_runs) < 2:
-        st.info(
-            "Save ≥ 2 backtest runs to compare them side-by-side. "
-            "Run different strategies or parameters and save each result."
-        )
-        if saved_runs:
-            st.markdown(f"**Saved runs:** {', '.join(saved_runs.keys())}")
+    persisted_runs = list_streamlit_runs()
+    if not persisted_runs:
+        st.info("No persisted runs yet. Run a backtest to create durable experiment history.")
         return
 
-    # Select runs to compare
+    st.markdown("**Persisted experiment history**")
+    st.dataframe(pd.DataFrame(run_summary_rows(persisted_runs)), use_container_width=True, hide_index=True)
+
+    option_lookup = {
+        f"{run_display_name(record)} [{record['run_id'][:8]}]": record for record in persisted_runs
+    }
+    default_selection = list(option_lookup.keys())[: min(2, len(option_lookup))]
     selected = st.multiselect(
         "Select runs to compare",
-        options=list(saved_runs.keys()),
-        default=list(saved_runs.keys())[:2],
+        options=list(option_lookup.keys()),
+        default=default_selection,
     )
     if len(selected) < 2:
-        st.warning("Select at least 2 runs.")
-        return
-
-    # Metrics comparison table
-    rows = []
-    for name in selected:
-        r = saved_runs[name]["results"]
-        rows.append(
-            {
-                "Run": name,
-                "Total Return (%)": f"{r.get('total_return', 0):.2f}",
-                "Sharpe": f"{r.get('sharpe_ratio', 0):.2f}",
-                "Max DD (%)": f"{r.get('max_drawdown', 0):.2f}",
-                "Trades": r.get("total_trades", 0),
-                "Final Value ($)": f"{r.get('final_value', 0):,.2f}",
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    # Equity overlay chart
-    fig = go.Figure()
-    for name in selected:
-        r = saved_runs[name]["results"]
-        edf = _equity_df(r)
-        if edf is not None:
-            fig.add_trace(
-                go.Scatter(
-                    x=edf.index,
-                    y=edf["value"],
-                    mode="lines",
-                    name=name,
-                )
+        st.info("Select at least 2 persisted runs to compare them across sessions.")
+    else:
+        rows = []
+        fig = go.Figure()
+        for name in selected:
+            record = option_lookup[name]
+            results = record.get("result") or {}
+            rows.append(
+                {
+                    "Run": name,
+                    "Total Return (%)": f"{results.get('total_return', 0):.2f}",
+                    "Sharpe": f"{results.get('sharpe_ratio', 0):.2f}",
+                    "Max DD (%)": f"{results.get('max_drawdown', 0):.2f}",
+                    "Trades": results.get("total_trades", 0),
+                    "Final Value ($)": f"{results.get('final_value', 0):,.2f}",
+                }
             )
-    fig.update_layout(
-        title="Equity Curve Comparison",
-        xaxis_title="Date",
-        yaxis_title="Portfolio Value ($)",
-        height=450,
-    )
-    st.plotly_chart(fig, use_container_width=True)
+            edf = _equity_df(results)
+            if edf is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=edf.index,
+                        y=edf["value"],
+                        mode="lines",
+                        name=name,
+                    )
+                )
 
-    # Delete a saved run
-    with st.expander("🗑️ Manage saved runs"):
-        to_delete = st.selectbox("Delete a run", options=[""] + list(saved_runs.keys()))
-        if to_delete and st.button("Delete"):
-            del saved_runs[to_delete]
-            st.session_state.saved_runs = saved_runs
-            st.rerun()
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        fig.update_layout(
+            title="Equity Curve Comparison",
+            xaxis_title="Date",
+            yaxis_title="Portfolio Value ($)",
+            height=450,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("🗂️ Manage persisted runs"):
+        selected_run_name = st.selectbox(
+            "Choose a persisted run",
+            options=[""] + list(option_lookup.keys()),
+            key="manage_persisted_run",
+        )
+        if selected_run_name:
+            selected_record = option_lookup[selected_run_name]
+            action_col1, action_col2 = st.columns(2)
+            with action_col1:
+                st.download_button(
+                    "⬇️ Export Run JSON",
+                    data=json.dumps(selected_record, indent=2),
+                    file_name=f"{selected_record['run_id']}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            with action_col2:
+                if st.button("🗑️ Delete Run", type="secondary"):
+                    if delete_saved_run(selected_record["run_id"]):
+                        st.success(f"Deleted {selected_run_name}.")
+                        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +689,68 @@ def _show_export(eq: pd.DataFrame, results: dict):
             file_name="glowback_summary.json",
             mime="application/json",
         )
+
+        tearsheet = results.get("tearsheet") or {}
+        if tearsheet:
+            st.download_button(
+                "⬇️ Download Institutional Tearsheet (JSON)",
+                data=json.dumps(tearsheet, indent=2, default=str),
+                file_name="glowback_tearsheet.json",
+                mime="application/json",
+            )
+
+            benchmark_metrics = results.get("benchmark_metrics") or {}
+            cost_summary = results.get("cost_summary") or {}
+            attribution = results.get("attribution") or []
+            beta = benchmark_metrics.get("beta")
+            alpha = benchmark_metrics.get("alpha")
+            tracking_error = benchmark_metrics.get("tracking_error")
+            information_ratio = benchmark_metrics.get("information_ratio")
+            lines = [
+                "# GlowBack Institutional Tearsheet",
+                "",
+                f"Generated: {datetime.utcnow().isoformat()}Z",
+                "",
+                "## Overview",
+                f"- Final value: ${results.get('final_value', 0.0):,.2f}",
+                f"- Total return: {results.get('total_return', 0.0):.2f}%",
+                f"- Annualized return: {results.get('annualized_return', 0.0):.2f}%",
+                f"- Sharpe ratio: {results.get('sharpe_ratio', 0.0):.2f}",
+                f"- Max drawdown: {results.get('max_drawdown', 0.0):.2f}%",
+                "",
+                "## Benchmark",
+                f"- Benchmark: {benchmark_metrics.get('benchmark_symbol') or results.get('benchmark_symbol') or 'N/A'}",
+                f"- Beta: {'N/A' if beta is None else format(beta, '.2f')}",
+                f"- Alpha: {'N/A' if alpha is None else format(alpha, '.2f') + '%'}",
+                f"- Tracking error: {'N/A' if tracking_error is None else format(tracking_error, '.2f') + '%'}",
+                f"- Information ratio: {'N/A' if information_ratio is None else format(information_ratio, '.2f')}",
+                f"- Excess return: {benchmark_metrics.get('excess_return', 0.0):.2f}%",
+                "",
+                "## Cost Drag",
+                f"- Total commissions: ${cost_summary.get('total_commissions', 0.0):,.2f}",
+                f"- Total slippage drag: ${cost_summary.get('total_slippage_cost', 0.0):,.2f}",
+                f"- Cost drag vs initial capital: {cost_summary.get('cost_drag_pct_initial', 0.0):.2f}%",
+                f"- Turnover: {cost_summary.get('turnover_multiple', 0.0):.2f}x initial capital",
+                "",
+                "## Attribution",
+            ]
+            if attribution:
+                lines.extend(
+                    [
+                        f"- {row.get('component')}: {row.get('contribution_pct', 0.0):.2f}% contribution "
+                        f"(${row.get('total_pnl', 0.0):,.2f} total P&L)"
+                        for row in attribution
+                    ]
+                )
+            else:
+                lines.append("- No realized attribution available.")
+
+            st.download_button(
+                "⬇️ Download Institutional Tearsheet (Markdown)",
+                data="\n".join(lines),
+                file_name="glowback_tearsheet.md",
+                mime="text/markdown",
+            )
 
     st.markdown("---")
     st.markdown("**🖨️ PDF Report**")

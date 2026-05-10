@@ -5,14 +5,58 @@ use chrono::{DateTime, Duration, Utc};
 use gb_data::DataManager;
 use gb_types::{
     BacktestConfig, BacktestError, BacktestResult, Bar, EquityCurvePoint, Fill, GbResult,
-    MarketDataBuffer, MarketEvent, Order, Portfolio, Strategy, StrategyContext, StrategyMetrics,
-    Symbol,
+    LatencyModel, MarketDataBuffer, MarketEvent, Order, OrderEvent, OrderStatus, OrderType,
+    Portfolio, ReplayRequestManifest, RunDatasetManifest, RunEngineManifest, RunExecutionManifest,
+    RunManifest, RunMetricSnapshot, RunStrategyManifest, Side, SlippageModel, Strategy,
+    StrategyContext, StrategyMetrics, Symbol, TimeInForce, TradeRecord,
 };
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 const STRATEGY_MARKET_DATA_WINDOW: usize = 100;
+
+fn decimal_to_f64(value: Decimal) -> f64 {
+    value.to_f64().unwrap_or(0.0)
+}
+
+enum ExecutionDecision {
+    Pending,
+    Fill {
+        fill_quantity: Decimal,
+        execution_price: Decimal,
+        keep_open: bool,
+        remainder_event: Option<OrderEvent>,
+    },
+    Terminal(OrderEvent),
+}
+
+fn execution_commission_bps(settings: &gb_types::ExecutionSettings) -> Option<f64> {
+    Some(decimal_to_f64(
+        settings.commission_percentage * Decimal::from(10_000),
+    ))
+}
+
+fn execution_slippage_bps(model: &SlippageModel) -> Option<f64> {
+    match model {
+        SlippageModel::None => Some(0.0),
+        SlippageModel::Fixed { basis_points } | SlippageModel::Linear { basis_points } => {
+            Some(*basis_points as f64)
+        }
+        SlippageModel::VolumeWeighted { min_bps, .. } => Some(*min_bps as f64),
+        SlippageModel::SquareRoot { .. } => None,
+    }
+}
+
+fn execution_latency_ms(model: &LatencyModel) -> Option<u64> {
+    match model {
+        LatencyModel::None => Some(0),
+        LatencyModel::Fixed { milliseconds } => Some(*milliseconds),
+        LatencyModel::Random { min_ms, .. } => Some(*min_ms),
+        LatencyModel::VenueSpecific { .. } => None,
+    }
+}
 
 /// Enhanced backtesting engine with event-driven simulation
 pub struct Engine {
@@ -27,6 +71,8 @@ pub struct Engine {
     strategy_context: StrategyContext,
     strategy_metrics: StrategyMetrics,
     equity_curve: Vec<EquityCurvePoint>,
+    trade_log: Vec<TradeRecord>,
+    order_events: Vec<OrderEvent>,
     equity_peak: Decimal,
 }
 
@@ -118,6 +164,8 @@ impl Engine {
             strategy_context,
             strategy_metrics,
             equity_curve: Vec::new(),
+            trade_log: Vec::new(),
+            order_events: Vec::new(),
         })
     }
 
@@ -233,45 +281,232 @@ impl Engine {
 
     /// Execute pending orders based on current market conditions
     async fn execute_pending_orders(&mut self) -> GbResult<()> {
-        let mut executed_orders = Vec::new();
+        let mut remaining_liquidity: HashMap<(Symbol, usize), Decimal> = HashMap::new();
+        let mut next_pending_orders = Vec::new();
         let mut order_events_to_process = Vec::new();
+        let pending_orders = std::mem::take(&mut self.pending_orders);
 
-        for (index, order) in self.pending_orders.iter().enumerate() {
-            if let Some(fill) = self.try_execute_order(order).await? {
-                // Apply fill to portfolio
-                self.portfolio.apply_fill(&fill);
+        for mut order in pending_orders {
+            match self.try_execute_order(&order, &mut remaining_liquidity)? {
+                ExecutionDecision::Pending => {
+                    next_pending_orders.push(order);
+                }
+                ExecutionDecision::Terminal(event) => {
+                    match &event {
+                        OrderEvent::OrderCanceled { .. } => order.status = OrderStatus::Canceled,
+                        OrderEvent::OrderRejected { .. } => order.status = OrderStatus::Rejected,
+                        OrderEvent::OrderExpired { .. } => order.status = OrderStatus::Expired,
+                        _ => {}
+                    }
+                    order_events_to_process.push(event);
+                }
+                ExecutionDecision::Fill {
+                    fill_quantity,
+                    execution_price,
+                    keep_open,
+                    remainder_event,
+                } => {
+                    let commission = self.calculate_commission(fill_quantity, execution_price);
+                    let mut fill = Fill::new(
+                        order.id,
+                        order.symbol.clone(),
+                        order.side,
+                        fill_quantity,
+                        execution_price,
+                        commission,
+                        order.strategy_id.clone(),
+                    );
+                    fill.executed_at = self.current_time;
 
-                // Update strategy metrics - just count total trades here
-                // Win/loss determination should be based on P&L, not just execution
-                self.strategy_metrics.total_trades += 1;
+                    order.fill(fill_quantity, execution_price);
 
-                // Log execution
-                info!(
-                    "Executed order: {:?} {} {} at {}",
-                    order.side, order.quantity, order.symbol, fill.price
-                );
+                    self.portfolio.apply_fill(&fill);
+                    self.strategy_metrics.total_trades += 1;
+                    self.trade_log
+                        .push(self.trade_record_from_fill(&order, &fill));
 
-                // Prepare order event for strategy callback
-                order_events_to_process.push(gb_types::OrderEvent::OrderFilled {
-                    order_id: order.id,
-                    fill: fill.clone(),
-                });
+                    info!(
+                        "Executed order: {:?} {} {} at {} (commission {})",
+                        order.side, fill_quantity, order.symbol, fill.price, fill.commission
+                    );
 
-                executed_orders.push(index);
+                    order_events_to_process.push(OrderEvent::OrderFilled {
+                        order_id: order.id,
+                        fill,
+                    });
+
+                    if let Some(event) = remainder_event {
+                        match &event {
+                            OrderEvent::OrderCanceled { .. } => {
+                                order.status = OrderStatus::Canceled
+                            }
+                            OrderEvent::OrderExpired { .. } => order.status = OrderStatus::Expired,
+                            _ => {}
+                        }
+                        order_events_to_process.push(event);
+                    }
+
+                    if keep_open {
+                        next_pending_orders.push(order);
+                    }
+                }
             }
         }
 
-        // Remove executed orders (in reverse order to maintain indices)
-        for &index in executed_orders.iter().rev() {
-            self.pending_orders.remove(index);
+        self.pending_orders = next_pending_orders;
+        self.record_order_events(order_events_to_process)
+    }
+
+    fn latency_bar_offset(&self) -> usize {
+        let latency_ms = match &self.config.execution_settings.latency_model {
+            LatencyModel::None => return 0,
+            LatencyModel::Fixed { milliseconds } => *milliseconds,
+            LatencyModel::Random { min_ms: _, max_ms } => *max_ms,
+            LatencyModel::VenueSpecific { venues } => venues.values().copied().max().unwrap_or(0),
+        };
+
+        let Some(seconds_per_bar) = self.config.resolution.to_seconds() else {
+            return 0;
+        };
+
+        let bar_ms = seconds_per_bar.saturating_mul(1000);
+        if bar_ms == 0 || latency_ms == 0 {
+            return 0;
         }
 
-        if !order_events_to_process.is_empty() {
-            self.sync_strategy_context_account_state();
+        latency_ms.div_ceil(bar_ms) as usize
+    }
+
+    fn apply_slippage(&self, base_price: Decimal, side: Side) -> Decimal {
+        let price_multiplier = match &self.config.execution_settings.slippage_model {
+            SlippageModel::None => return base_price,
+            SlippageModel::Fixed { basis_points } | SlippageModel::Linear { basis_points } => {
+                Decimal::ONE + Decimal::from(*basis_points) / Decimal::from(10_000)
+            }
+            SlippageModel::VolumeWeighted { min_bps, max_bps } => {
+                let avg_bps = (*min_bps + *max_bps) / 2;
+                Decimal::ONE + Decimal::from(avg_bps) / Decimal::from(10_000)
+            }
+            SlippageModel::SquareRoot { factor } => Decimal::ONE + *factor,
+        };
+
+        match side {
+            Side::Buy => (base_price * price_multiplier).round_dp(6),
+            Side::Sell => (base_price / price_multiplier).round_dp(6),
+        }
+    }
+
+    fn calculate_commission(&self, quantity: Decimal, execution_price: Decimal) -> Decimal {
+        let settings = &self.config.execution_settings;
+        let quantity = quantity.abs();
+        if quantity == Decimal::ZERO {
+            return Decimal::ZERO;
         }
 
-        // Notify strategy of order events
-        for order_event in order_events_to_process {
+        let per_share = settings.commission_per_share * quantity;
+        let gross_notional = quantity * execution_price.abs();
+        let percentage = gross_notional * settings.commission_percentage;
+        let commission = per_share + percentage;
+
+        if commission > Decimal::ZERO && commission < settings.minimum_commission {
+            settings.minimum_commission
+        } else {
+            commission.round_dp(6)
+        }
+    }
+
+    fn trade_record_from_fill(&self, order: &Order, fill: &Fill) -> TradeRecord {
+        TradeRecord {
+            id: order.id,
+            symbol: fill.symbol.clone(),
+            entry_time: fill.executed_at,
+            exit_time: Some(fill.executed_at),
+            entry_price: fill.price,
+            exit_price: Some(fill.price),
+            quantity: fill.quantity,
+            side: fill.side,
+            pnl: None,
+            commission: fill.commission,
+            duration_hours: Some(0.0),
+            strategy_id: fill.strategy_id.clone(),
+            tags: vec!["fill".to_string()],
+        }
+    }
+
+    fn execution_liquidity_cap(&self, bar: &Bar) -> Decimal {
+        let participation = self
+            .config
+            .execution_settings
+            .max_volume_participation
+            .max(Decimal::ZERO)
+            .min(Decimal::ONE);
+        (bar.volume.abs() * participation).round_dp(6)
+    }
+
+    fn terminal_event_for_unfilled_order(
+        &self,
+        order: &Order,
+        reason: impl Into<String>,
+    ) -> OrderEvent {
+        let reason = reason.into();
+        match order.time_in_force {
+            TimeInForce::Day => OrderEvent::OrderExpired {
+                order_id: order.id,
+                reason,
+            },
+            TimeInForce::IOC | TimeInForce::FOK => OrderEvent::OrderCanceled {
+                order_id: order.id,
+                reason,
+            },
+            TimeInForce::GTC => OrderEvent::OrderCanceled {
+                order_id: order.id,
+                reason,
+            },
+        }
+    }
+
+    fn base_execution_price(&self, order: &Order, bar: &Bar) -> Option<Decimal> {
+        match order.order_type {
+            OrderType::Market => Some(bar.open),
+            OrderType::Limit { price } => match order.side {
+                Side::Buy if bar.low <= price => Some(bar.open.min(price)),
+                Side::Sell if bar.high >= price => Some(bar.open.max(price)),
+                _ => None,
+            },
+            OrderType::Stop { stop_price } => match order.side {
+                Side::Buy if bar.high >= stop_price => Some(bar.open.max(stop_price)),
+                Side::Sell if bar.low <= stop_price => Some(bar.open.min(stop_price)),
+                _ => None,
+            },
+            OrderType::StopLimit {
+                stop_price,
+                limit_price,
+            } => {
+                let stop_triggered = match order.side {
+                    Side::Buy => bar.high >= stop_price,
+                    Side::Sell => bar.low <= stop_price,
+                };
+                if !stop_triggered {
+                    return None;
+                }
+                match order.side {
+                    Side::Buy if bar.low <= limit_price => Some(bar.open.min(limit_price)),
+                    Side::Sell if bar.high >= limit_price => Some(bar.open.max(limit_price)),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    fn record_order_events(&mut self, order_events: Vec<OrderEvent>) -> GbResult<()> {
+        if order_events.is_empty() {
+            return Ok(());
+        }
+
+        self.order_events.extend(order_events.iter().cloned());
+        self.sync_strategy_context_account_state();
+
+        for order_event in order_events {
             let actions = match self
                 .strategy
                 .on_order_event(&order_event, &self.strategy_context)
@@ -291,31 +526,111 @@ impl Engine {
         Ok(())
     }
 
-    /// Try to execute a single order
-    async fn try_execute_order(&self, order: &Order) -> GbResult<Option<Fill>> {
-        // Get current market data for the symbol
-        if let Some(bars) = self.market_data.get(&order.symbol) {
-            for bar in bars {
-                if bar.timestamp.date_naive() == self.current_time.date_naive() {
-                    // Simple execution logic - execute at open price
-                    let execution_price = bar.open;
+    fn try_execute_order(
+        &self,
+        order: &Order,
+        remaining_liquidity: &mut HashMap<(Symbol, usize), Decimal>,
+    ) -> GbResult<ExecutionDecision> {
+        let Some(bars) = self.market_data.get(&order.symbol) else {
+            return Ok(ExecutionDecision::Terminal(OrderEvent::OrderRejected {
+                order_id: order.id,
+                reason: format!("no market data configured for {}", order.symbol),
+            }));
+        };
 
-                    let fill = Fill::new(
-                        order.id,
-                        order.symbol.clone(),
-                        order.side,
-                        order.quantity,
-                        execution_price,
-                        Decimal::ZERO,        // commission
-                        "engine".to_string(), // strategy_id
-                    );
+        let Some(current_index) = bars
+            .iter()
+            .position(|bar| bar.timestamp.date_naive() == self.current_time.date_naive())
+        else {
+            return Ok(ExecutionDecision::Pending);
+        };
 
-                    return Ok(Some(fill));
-                }
-            }
+        let execution_index = current_index.saturating_add(self.latency_bar_offset());
+        let Some(bar) = bars.get(execution_index) else {
+            return if matches!(order.time_in_force, TimeInForce::GTC) {
+                Ok(ExecutionDecision::Pending)
+            } else {
+                Ok(ExecutionDecision::Terminal(
+                    self.terminal_event_for_unfilled_order(
+                        order,
+                        "latency pushed the order past the available market data window",
+                    ),
+                ))
+            };
+        };
+
+        let Some(base_price) = self.base_execution_price(order, bar) else {
+            return if matches!(order.time_in_force, TimeInForce::GTC) {
+                Ok(ExecutionDecision::Pending)
+            } else {
+                Ok(ExecutionDecision::Terminal(
+                    self.terminal_event_for_unfilled_order(
+                        order,
+                        "order conditions were not met on the current bar",
+                    ),
+                ))
+            };
+        };
+
+        let available_liquidity = remaining_liquidity
+            .entry((order.symbol.clone(), execution_index))
+            .or_insert_with(|| self.execution_liquidity_cap(bar));
+        let fill_quantity = order
+            .remaining_quantity
+            .min((*available_liquidity).max(Decimal::ZERO));
+
+        if matches!(order.time_in_force, TimeInForce::FOK)
+            && fill_quantity < order.remaining_quantity
+        {
+            return Ok(ExecutionDecision::Terminal(OrderEvent::OrderCanceled {
+                order_id: order.id,
+                reason:
+                    "fill-or-kill order could not be fully filled within the configured participation limit"
+                        .to_string(),
+            }));
         }
 
-        Ok(None)
+        if fill_quantity <= Decimal::ZERO {
+            return if matches!(order.time_in_force, TimeInForce::GTC) {
+                Ok(ExecutionDecision::Pending)
+            } else {
+                Ok(ExecutionDecision::Terminal(
+                    self.terminal_event_for_unfilled_order(
+                        order,
+                        "no executable liquidity available on the current bar",
+                    ),
+                ))
+            };
+        }
+
+        *available_liquidity = (*available_liquidity - fill_quantity).max(Decimal::ZERO);
+        let execution_price = self.apply_slippage(base_price, order.side);
+        let remainder_quantity = order.remaining_quantity - fill_quantity;
+
+        let remainder_event = if remainder_quantity > Decimal::ZERO {
+            match order.time_in_force {
+                TimeInForce::IOC => Some(OrderEvent::OrderCanceled {
+                    order_id: order.id,
+                    reason: "remaining quantity canceled after immediate-or-cancel partial fill"
+                        .to_string(),
+                }),
+                TimeInForce::Day => Some(OrderEvent::OrderExpired {
+                    order_id: order.id,
+                    reason: "remaining quantity expired at the end of the trading bar".to_string(),
+                }),
+                TimeInForce::GTC => None,
+                TimeInForce::FOK => None,
+            }
+        } else {
+            None
+        };
+
+        Ok(ExecutionDecision::Fill {
+            fill_quantity,
+            execution_price,
+            keep_open: remainder_quantity > Decimal::ZERO && remainder_event.is_none(),
+            remainder_event,
+        })
     }
 
     /// Update portfolio values with current market prices
@@ -369,20 +684,48 @@ impl Engine {
         use gb_types::StrategyAction;
 
         match action {
-            StrategyAction::PlaceOrder(order) => {
+            StrategyAction::PlaceOrder(mut order) => {
                 debug!(
                     "Strategy placed order: {:?} {} {} at {:?}",
                     order.side, order.quantity, order.symbol, order.order_type
                 );
-                self.strategy_context.pending_orders.push(order.clone());
-                self.pending_orders.push(order);
+
+                if order.quantity <= Decimal::ZERO {
+                    return self.record_order_events(vec![OrderEvent::OrderRejected {
+                        order_id: order.id,
+                        reason: "order quantity must be positive".to_string(),
+                    }]);
+                }
+
+                if !self.market_data.contains_key(&order.symbol) {
+                    return self.record_order_events(vec![OrderEvent::OrderRejected {
+                        order_id: order.id,
+                        reason: format!("no market data configured for {}", order.symbol),
+                    }]);
+                }
+
+                order.status = OrderStatus::Submitted;
+                order.submitted_at = self.current_time;
+                self.pending_orders.push(order.clone());
+                self.sync_strategy_context_account_state();
+                self.record_order_events(vec![OrderEvent::OrderSubmitted(order)])?;
             }
             StrategyAction::CancelOrder { order_id } => {
                 debug!("Strategy cancelled order: {}", order_id);
-                self.pending_orders.retain(|o| o.id != order_id);
-                self.strategy_context
-                    .pending_orders
-                    .retain(|o| o.id != order_id);
+                let mut cancel_events = Vec::new();
+                self.pending_orders.retain(|order| {
+                    if order.id == order_id {
+                        cancel_events.push(OrderEvent::OrderCanceled {
+                            order_id,
+                            reason: "canceled by strategy".to_string(),
+                        });
+                        false
+                    } else {
+                        true
+                    }
+                });
+                self.sync_strategy_context_account_state();
+                self.record_order_events(cancel_events)?;
             }
             StrategyAction::Log { level, message } => match level {
                 gb_types::LogLevel::Debug => debug!("[Strategy] {}", message),
@@ -448,6 +791,99 @@ impl Engine {
         self.equity_curve.push(point);
 
         Ok(())
+    }
+
+    fn build_run_manifest(&self, result: &BacktestResult) -> RunManifest {
+        let strategy_config = self.strategy.get_config();
+        let symbols = self
+            .config
+            .symbols
+            .iter()
+            .map(|symbol| symbol.symbol.clone())
+            .collect::<Vec<_>>();
+        let bar_counts = self
+            .market_data
+            .iter()
+            .map(|(symbol, bars)| (symbol.symbol.clone(), bars.len()))
+            .collect::<HashMap<_, _>>();
+        let total_bars = bar_counts.values().sum();
+        let execution_settings = &self.config.execution_settings;
+        let performance_metrics = result.performance_metrics.as_ref();
+        let strategy_metrics = result.strategy_metrics.as_ref();
+
+        RunManifest {
+            manifest_version: "1.0".to_string(),
+            generated_at: Utc::now(),
+            engine: RunEngineManifest {
+                crate_name: "gb-engine".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            strategy: RunStrategyManifest {
+                strategy_id: strategy_config.strategy_id.clone(),
+                name: strategy_config.name.clone(),
+                parameters: strategy_config.parameters.clone(),
+                code_hash: None,
+            },
+            dataset: RunDatasetManifest {
+                data_source: self.config.data_settings.data_source.clone(),
+                resolution: format!("{:?}", self.config.resolution).to_ascii_lowercase(),
+                start_date: self.config.start_date,
+                end_date: self.config.end_date,
+                symbols: symbols.clone(),
+                bar_counts,
+                total_bars,
+            },
+            execution: RunExecutionManifest {
+                initial_capital: decimal_to_f64(self.config.initial_capital),
+                commission_bps: execution_commission_bps(execution_settings),
+                slippage_bps: execution_slippage_bps(&execution_settings.slippage_model),
+                latency_ms: execution_latency_ms(&execution_settings.latency_model),
+                commission_percentage: decimal_to_f64(execution_settings.commission_percentage),
+                minimum_commission: decimal_to_f64(execution_settings.minimum_commission),
+                slippage_model: execution_settings.slippage_model.clone(),
+                latency_model: execution_settings.latency_model.clone(),
+                market_impact_model: execution_settings.market_impact_model.clone(),
+                max_volume_participation: decimal_to_f64(
+                    execution_settings.max_volume_participation,
+                ),
+                data_settings: self.config.data_settings.clone(),
+            },
+            replay_request: ReplayRequestManifest {
+                symbols,
+                start_date: self.config.start_date,
+                end_date: self.config.end_date,
+                resolution: format!("{:?}", self.config.resolution).to_ascii_lowercase(),
+                strategy_name: strategy_config.strategy_id.clone(),
+                strategy_params: strategy_config.parameters.clone(),
+                initial_capital: decimal_to_f64(self.config.initial_capital),
+                data_source: self.config.data_settings.data_source.clone(),
+                commission_bps: execution_commission_bps(execution_settings),
+                slippage_bps: execution_slippage_bps(&execution_settings.slippage_model),
+                latency_ms: execution_latency_ms(&execution_settings.latency_model),
+                run_name: Some(self.config.name.clone()),
+            },
+            metric_snapshot: RunMetricSnapshot {
+                final_value: decimal_to_f64(self.portfolio.total_equity),
+                total_return: performance_metrics
+                    .map(|metrics| decimal_to_f64(metrics.total_return) * 100.0)
+                    .unwrap_or_else(|| decimal_to_f64(self.portfolio.get_total_return()) * 100.0),
+                max_drawdown: performance_metrics
+                    .map(|metrics| decimal_to_f64(metrics.max_drawdown) * 100.0)
+                    .unwrap_or_else(|| decimal_to_f64(self.strategy_metrics.max_drawdown) * 100.0),
+                sharpe_ratio: performance_metrics
+                    .and_then(|metrics| metrics.sharpe_ratio)
+                    .map(decimal_to_f64)
+                    .or_else(|| {
+                        strategy_metrics
+                            .and_then(|metrics| metrics.sharpe_ratio)
+                            .map(decimal_to_f64)
+                    })
+                    .unwrap_or(0.0),
+                total_trades: strategy_metrics
+                    .map(|metrics| metrics.total_trades)
+                    .unwrap_or(self.trade_log.len() as u64),
+            },
+        }
     }
 
     /// Finalize backtest results
@@ -532,6 +968,13 @@ impl Engine {
         // Mark result as completed with final portfolio and metrics
         result.mark_completed(self.portfolio.clone(), self.strategy_metrics.clone());
         result.equity_curve = self.equity_curve.clone();
+        result.trade_log = self.trade_log.clone();
+        result.order_events = self.order_events.clone();
+        result.performance_metrics = Some(gb_types::PerformanceMetrics::calculate_with_trades(
+            &self.portfolio,
+            &self.trade_log,
+        ));
+        result.manifest = Some(self.build_run_manifest(result));
 
         info!("Final portfolio value: {}", self.portfolio.total_equity);
         info!("Total return: {:.2}%", total_return * Decimal::from(100));
@@ -599,7 +1042,10 @@ impl Engine {
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use gb_types::{OrderEvent, Resolution, Side, StrategyAction, StrategyConfig};
+    use gb_types::{
+        LatencyModel, OrderEvent, OrderStatus, Resolution, Side, StrategyAction, StrategyConfig,
+        TimeInForce,
+    };
 
     #[derive(Debug, Clone)]
     struct NoopStrategy {
@@ -660,7 +1106,7 @@ mod tests {
         Utc.with_ymd_and_hms(2024, 1, day, 0, 0, 0).unwrap()
     }
 
-    fn test_bar(symbol: &Symbol, day: u32, price: i64) -> Bar {
+    fn test_bar_with_volume(symbol: &Symbol, day: u32, price: i64, volume: i64) -> Bar {
         let price = Decimal::from(price);
         Bar::new(
             symbol.clone(),
@@ -669,9 +1115,13 @@ mod tests {
             price,
             price,
             price,
-            Decimal::from(1_000),
+            Decimal::from(volume),
             Resolution::Day,
         )
+    }
+
+    fn test_bar(symbol: &Symbol, day: u32, price: i64) -> Bar {
+        test_bar_with_volume(symbol, day, price, 1_000)
     }
 
     fn test_engine(symbol: Symbol, bars: Vec<Bar>) -> Engine {
@@ -706,6 +1156,8 @@ mod tests {
             strategy_context,
             strategy_metrics: StrategyMetrics::new("noop".to_string()),
             equity_curve: Vec::new(),
+            trade_log: Vec::new(),
+            order_events: Vec::new(),
             equity_peak: Decimal::from(100_000),
         }
     }
@@ -757,7 +1209,7 @@ mod tests {
     #[test]
     fn process_strategy_action_keeps_pending_order_snapshots_in_sync() {
         let symbol = Symbol::equity("AAPL");
-        let mut engine = test_engine(symbol.clone(), Vec::new());
+        let mut engine = test_engine(symbol.clone(), vec![test_bar(&symbol, 1, 100)]);
         let order = Order::market_order(symbol, Side::Buy, Decimal::from(5), "noop".to_string());
         let order_id = order.id;
 
@@ -767,11 +1219,151 @@ mod tests {
         assert_eq!(engine.pending_orders.len(), 1);
         assert_eq!(engine.strategy_context.pending_orders.len(), 1);
         assert_eq!(engine.strategy_context.pending_orders[0].id, order_id);
+        assert!(matches!(
+            engine.order_events.last(),
+            Some(OrderEvent::OrderSubmitted(submitted)) if submitted.id == order_id
+        ));
 
         engine
             .process_strategy_action(StrategyAction::CancelOrder { order_id })
             .unwrap();
         assert!(engine.pending_orders.is_empty());
         assert!(engine.strategy_context.pending_orders.is_empty());
+        assert!(matches!(
+            engine.order_events.last(),
+            Some(OrderEvent::OrderCanceled { order_id: canceled_id, .. }) if *canceled_id == order_id
+        ));
+    }
+
+    #[test]
+    fn process_strategy_action_rejects_non_positive_quantity() {
+        let symbol = Symbol::equity("AAPL");
+        let mut engine = test_engine(symbol.clone(), vec![test_bar(&symbol, 1, 100)]);
+        let mut order = Order::market_order(symbol, Side::Buy, Decimal::ZERO, "noop".to_string());
+        order.quantity = Decimal::ZERO;
+        order.remaining_quantity = Decimal::ZERO;
+
+        engine
+            .process_strategy_action(StrategyAction::PlaceOrder(order.clone()))
+            .unwrap();
+
+        assert!(engine.pending_orders.is_empty());
+        assert!(matches!(
+            engine.order_events.last(),
+            Some(OrderEvent::OrderRejected { order_id, reason }) if *order_id == order.id && reason.contains("positive")
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_pending_orders_partially_fills_gtc_orders_with_participation_limits() {
+        let symbol = Symbol::equity("AAPL");
+        let mut engine = test_engine(
+            symbol.clone(),
+            vec![
+                test_bar_with_volume(&symbol, 1, 100, 1_000),
+                test_bar_with_volume(&symbol, 2, 101, 1_000),
+                test_bar_with_volume(&symbol, 3, 102, 1_000),
+            ],
+        );
+        engine.config.execution_settings.latency_model = LatencyModel::None;
+        engine.config.execution_settings.max_volume_participation = Decimal::new(1, 1); // 10%
+
+        let order = Order::market_order(
+            symbol.clone(),
+            Side::Buy,
+            Decimal::from(150),
+            "noop".to_string(),
+        );
+        engine
+            .process_strategy_action(StrategyAction::PlaceOrder(order))
+            .unwrap();
+
+        engine.current_time = ts(2);
+        engine.execute_pending_orders().await.unwrap();
+        assert_eq!(engine.pending_orders.len(), 1);
+        assert_eq!(
+            engine.pending_orders[0].status,
+            OrderStatus::PartiallyFilled
+        );
+        assert_eq!(
+            engine.pending_orders[0].remaining_quantity,
+            Decimal::from(50)
+        );
+        assert_eq!(
+            engine.portfolio.get_position(&symbol).unwrap().quantity,
+            Decimal::from(100)
+        );
+
+        engine.current_time = ts(3);
+        engine.execute_pending_orders().await.unwrap();
+        assert!(engine.pending_orders.is_empty());
+        assert_eq!(
+            engine.portfolio.get_position(&symbol).unwrap().quantity,
+            Decimal::from(150)
+        );
+        assert_eq!(engine.trade_log.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn execute_pending_orders_cancels_fok_orders_when_liquidity_is_insufficient() {
+        let symbol = Symbol::equity("AAPL");
+        let mut engine = test_engine(
+            symbol.clone(),
+            vec![
+                test_bar_with_volume(&symbol, 1, 100, 1_000),
+                test_bar_with_volume(&symbol, 2, 101, 1_000),
+            ],
+        );
+        engine.config.execution_settings.latency_model = LatencyModel::None;
+        engine.config.execution_settings.max_volume_participation = Decimal::new(1, 1); // 10%
+
+        let mut order =
+            Order::market_order(symbol, Side::Buy, Decimal::from(150), "noop".to_string());
+        order.time_in_force = TimeInForce::FOK;
+        let order_id = order.id;
+        engine
+            .process_strategy_action(StrategyAction::PlaceOrder(order))
+            .unwrap();
+
+        engine.current_time = ts(2);
+        engine.execute_pending_orders().await.unwrap();
+        assert!(engine.pending_orders.is_empty());
+        assert!(engine.portfolio.positions.is_empty());
+        assert!(matches!(
+            engine.order_events.last(),
+            Some(OrderEvent::OrderCanceled { order_id: canceled_id, reason }) if *canceled_id == order_id && reason.contains("fill-or-kill")
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_pending_orders_expires_day_orders_when_not_marketable() {
+        let symbol = Symbol::equity("AAPL");
+        let mut engine = test_engine(
+            symbol.clone(),
+            vec![test_bar(&symbol, 1, 100), test_bar(&symbol, 2, 101)],
+        );
+
+        engine.config.execution_settings.latency_model = LatencyModel::None;
+
+        let mut order = Order::limit_order(
+            symbol,
+            Side::Buy,
+            Decimal::from(10),
+            Decimal::from(90),
+            "noop".to_string(),
+        );
+        order.time_in_force = TimeInForce::Day;
+        let order_id = order.id;
+        engine
+            .process_strategy_action(StrategyAction::PlaceOrder(order))
+            .unwrap();
+
+        engine.current_time = ts(2);
+        engine.execute_pending_orders().await.unwrap();
+        assert!(engine.pending_orders.is_empty());
+        assert!(matches!(
+            engine.order_events.last(),
+            Some(OrderEvent::OrderExpired { order_id: expired_id, reason }) if *expired_id == order_id && reason.contains("conditions were not met")
+        ));
     }
 }
