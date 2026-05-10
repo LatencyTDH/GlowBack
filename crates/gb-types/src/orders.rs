@@ -22,7 +22,7 @@ impl Side {
             Side::Sell => Side::Buy,
         }
     }
-    
+
     pub fn sign(&self) -> i32 {
         match self {
             Side::Buy => 1,
@@ -35,9 +35,16 @@ impl Side {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OrderType {
     Market,
-    Limit { price: Decimal },
-    Stop { stop_price: Decimal },
-    StopLimit { stop_price: Decimal, limit_price: Decimal },
+    Limit {
+        price: Decimal,
+    },
+    Stop {
+        stop_price: Decimal,
+    },
+    StopLimit {
+        stop_price: Decimal,
+        limit_price: Decimal,
+    },
 }
 
 /// Time in force specifications
@@ -103,11 +110,16 @@ impl Order {
             metadata: serde_json::Value::Null,
         }
     }
-    
-    pub fn market_order(symbol: Symbol, side: Side, quantity: Decimal, strategy_id: String) -> Self {
+
+    pub fn market_order(
+        symbol: Symbol,
+        side: Side,
+        quantity: Decimal,
+        strategy_id: String,
+    ) -> Self {
         Self::new(symbol, side, quantity, OrderType::Market, strategy_id)
     }
-    
+
     pub fn limit_order(
         symbol: Symbol,
         side: Side,
@@ -115,9 +127,15 @@ impl Order {
         price: Decimal,
         strategy_id: String,
     ) -> Self {
-        Self::new(symbol, side, quantity, OrderType::Limit { price }, strategy_id)
+        Self::new(
+            symbol,
+            side,
+            quantity,
+            OrderType::Limit { price },
+            strategy_id,
+        )
     }
-    
+
     pub fn stop_order(
         symbol: Symbol,
         side: Side,
@@ -125,44 +143,49 @@ impl Order {
         stop_price: Decimal,
         strategy_id: String,
     ) -> Self {
-        Self::new(symbol, side, quantity, OrderType::Stop { stop_price }, strategy_id)
+        Self::new(
+            symbol,
+            side,
+            quantity,
+            OrderType::Stop { stop_price },
+            strategy_id,
+        )
     }
-    
+
     pub fn is_buy(&self) -> bool {
         matches!(self.side, Side::Buy)
     }
-    
+
     pub fn is_sell(&self) -> bool {
         matches!(self.side, Side::Sell)
     }
-    
+
     pub fn is_filled(&self) -> bool {
         self.status == OrderStatus::Filled
     }
-    
+
     pub fn is_active(&self) -> bool {
         matches!(
             self.status,
             OrderStatus::Pending | OrderStatus::Submitted | OrderStatus::PartiallyFilled
         )
     }
-    
+
     pub fn fill(&mut self, quantity: Decimal, price: Decimal) {
         let fill_quantity = quantity.min(self.remaining_quantity);
-        
+
         // Update filled quantity and average price
         let total_filled = self.filled_quantity + fill_quantity;
         if let Some(avg_price) = self.average_fill_price {
-            self.average_fill_price = Some(
-                (avg_price * self.filled_quantity + price * fill_quantity) / total_filled
-            );
+            self.average_fill_price =
+                Some((avg_price * self.filled_quantity + price * fill_quantity) / total_filled);
         } else {
             self.average_fill_price = Some(price);
         }
-        
+
         self.filled_quantity = total_filled;
         self.remaining_quantity = self.quantity - total_filled;
-        
+
         // Update status
         if self.remaining_quantity == Decimal::ZERO {
             self.status = OrderStatus::Filled;
@@ -170,7 +193,7 @@ impl Order {
             self.status = OrderStatus::PartiallyFilled;
         }
     }
-    
+
     pub fn cancel(&mut self) {
         if self.is_active() {
             self.status = OrderStatus::Canceled;
@@ -214,11 +237,11 @@ impl Fill {
             strategy_id,
         }
     }
-    
+
     pub fn gross_amount(&self) -> Decimal {
         self.quantity * self.price
     }
-    
+
     pub fn net_amount(&self) -> Decimal {
         match self.side {
             Side::Buy => -(self.gross_amount() + self.commission),
@@ -234,6 +257,7 @@ pub enum OrderEvent {
     OrderFilled { order_id: OrderId, fill: Fill },
     OrderCanceled { order_id: OrderId, reason: String },
     OrderRejected { order_id: OrderId, reason: String },
+    OrderExpired { order_id: OrderId, reason: String },
 }
 
 impl OrderEvent {
@@ -243,6 +267,7 @@ impl OrderEvent {
             OrderEvent::OrderFilled { order_id, .. } => *order_id,
             OrderEvent::OrderCanceled { order_id, .. } => *order_id,
             OrderEvent::OrderRejected { order_id, .. } => *order_id,
+            OrderEvent::OrderExpired { order_id, .. } => *order_id,
         }
     }
 }
@@ -254,4 +279,4 @@ pub trait OrderManager {
     fn get_order(&self, order_id: OrderId) -> Option<&Order>;
     fn get_active_orders(&self) -> Vec<&Order>;
     fn get_fills(&self) -> Vec<&Fill>;
-} 
+}

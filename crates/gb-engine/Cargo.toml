@@ -13,6 +13,7 @@ gb-types = { path = "../gb-types" }
 gb-data = { path = "../gb-data" }
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

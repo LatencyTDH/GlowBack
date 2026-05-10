@@ -88,6 +88,8 @@ def main():
         st.session_state.portfolio_data = None
     if 'saved_runs' not in st.session_state:
         st.session_state.saved_runs = {}
+    if 'saved_strategies' not in st.session_state:
+        st.session_state.saved_strategies = {}
     
     # Main navigation
     with st.sidebar:
