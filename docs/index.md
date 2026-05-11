@@ -7,7 +7,7 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 - Event‑driven simulation engine with realistic execution models
 - Data ingestion (CSV, Alpha Vantage, sample data)
 - Arrow/Parquet storage with SQLite metadata catalog
-- Strategy library (4 built‑in strategies)
+- Strategy library (5 built‑in strategies; the quickstart smoke path exercises four of them)
 - Python bindings with async support
 - Streamlit UI for strategy development and analysis
 

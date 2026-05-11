@@ -9,7 +9,7 @@ shape for the run.
 ```bash
 curl -s \
   -H "X-API-Key: $API_KEY" \
-  http://localhost:8000/backtests/<run-id>/results > run-result.json
+  http://localhost:8000/v1/backtests/<run-id>/results > run-result.json
 ```
 
 The response contains a top-level `manifest` object.

@@ -19,7 +19,7 @@ The UI provides a full research loop: load data, edit strategies, run backtests,
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+ with `requirements.txt`; Python 3.12 recommended for `uv`, matching `ui/pyproject.toml` and CI
 - Rust toolchain (optional, required for full core integration)
 
 ### Install & Launch
@@ -33,8 +33,8 @@ python setup.py
 Manual alternative:
 
 ```bash
-pip install -r requirements.txt
-streamlit run app.py
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
 ## Usage
@@ -48,7 +48,7 @@ streamlit run app.py
 
 - **Port in use**: `streamlit run app.py --server.port=8502`
 - **Missing dependencies**: `pip install -r requirements.txt --upgrade`
-- **Rust bindings not found**: the UI runs in Python‑only mode, but some features may be limited.
+- **Rust bindings not found**: the UI can still run in Python-only mode, but engine-backed workflows require building `gb-python` with `maturin develop -m ../crates/gb-python/Cargo.toml` from the repository root or using the API gateway.
 
 ## Contributing
 

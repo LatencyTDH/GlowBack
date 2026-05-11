@@ -8,10 +8,10 @@ GlowBack exposes an HTTP + WebSocket gateway for backtests. This service is the 
 cd api
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-maturin develop -m ../crates/gb-python/Cargo.toml
+python -m pip install -r requirements.txt maturin
+PYTHONPATH=.. maturin develop -m ../crates/gb-python/Cargo.toml
 
-uvicorn app.main:app --reload
+PYTHONPATH=.. uvicorn app.main:app --reload
 ```
 
 Interactive docs are available at `/docs`.
@@ -21,7 +21,7 @@ Interactive docs are available at `/docs`.
 `/v1/...` is the canonical contract for external clients.
 The original unversioned routes are still available as compatibility aliases so existing local integrations do not break overnight, but new callers should target `/v1`.
 
-## Authentication (stub)
+## Authentication
 
 If `GLOWBACK_API_KEY` is set in the environment, requests must include either:
 
@@ -245,7 +245,9 @@ Additional top-level result fields include:
 - `tearsheet`
 - `manifest` (deterministic run lineage + replay request)
 
-Notes:
+Current caveats:
+- The API accepts `benchmark_symbol` and echoes it in the response, but benchmark curves and benchmark-relative metrics are populated only when the execution path returns benchmark data.
+- `portfolio_construction` is currently preserved as the requested allocation policy; detailed `portfolio_diagnostics` / `constraint_hits` may be empty until the engine-backed portfolio-construction path supplies them.
 - `returns`, `daily_return`, `max_drawdown`, and `volatility` are expressed as percentages.
 - `total_pnl` is an absolute value in account currency.
 
@@ -285,7 +287,7 @@ Legacy unversioned routes still use FastAPI's original `{"detail": ...}` shape f
 - Backtest runs, event history, and completed results are persisted in a local SQLite experiment registry, so `/v1/backtests` survives service restarts.
 - Backtests execute through the same Rust engine-backed path used by the embedded Python runtime.
 - Request `data_source: "sample"` for the built-in sample provider, or `data_source: "csv"` plus `csv_data_path` for local CSV bundles.
-- Benchmark-relative metrics are computed from the returned strategy and benchmark curves, and portfolio-construction fields remain part of the API contract and result payloads when available.
+- Benchmark-relative metrics and portfolio diagnostics are included when the execution payload supplies the necessary benchmark/allocation data; callers should tolerate empty arrays on current engine-backed runs.
 - `/v1/optimizations` uses the same real `gb-python` execution path for built-in strategies.
 - The `manifest` payload is designed to be replayed locally with `glowback_runtime.replay_manifest(...)`; see the "Reproducing a Run" tutorial.
 

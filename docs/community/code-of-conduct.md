@@ -16,4 +16,4 @@ at the repository root.
 Unacceptable behavior includes harassment, trolling, and publishing private
 information without consent.
 
-Report violations by opening an issue or contacting the maintainers directly.
+Report violations by contacting the maintainers directly. If a report includes private, sensitive, or safety-related information, do not open a public issue.

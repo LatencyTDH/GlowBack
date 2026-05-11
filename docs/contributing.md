@@ -12,12 +12,12 @@ All participants are expected to follow our [Code of Conduct](community/code-of-
 1. Fork the repository and clone your fork.
 2. Install prerequisites:
    - **Rust** (stable toolchain — see `rust-toolchain.toml`)
-   - **Python 3.8+** (for the UI and Python bindings)
-   - **Node.js** (optional, for the dashboard)
+   - **Python 3.10+** for requirements-based API/UI/docs workflows (CI uses 3.12; `ui/pyproject.toml` pins 3.12 for `uv`)
+   - **maturin** when building the local `gb-python` extension (`python -m pip install maturin`)
 3. Build and run the test suite:
 
 ```bash
-cargo test --workspace
+cargo test --workspace --locked
 ```
 
 4. Launch the Streamlit UI locally:
@@ -66,27 +66,37 @@ See [Releasing GlowBack](releasing.md) for the exact workflow and inputs.
 
 ```bash
 # Run all workspace tests
-cargo test --workspace
+cargo test --workspace --locked
 
 # Run tests for a specific crate
-cargo test -p gb-types
-cargo test -p gb-engine
+cargo test -p gb-types --locked
+cargo test -p gb-engine --locked
 ```
 
-### Python / UI
+### Python / API / UI
 
 ```bash
-cd ui
-python -c "import py_compile; py_compile.compile('app.py')"
+python -m pip install -r api/requirements.txt -r ui/requirements.txt httpx
+PYTHONPATH="$PWD" python -m compileall api ui
+PYTHONPATH="$PWD" python -m unittest discover -s api/tests -v
+PYTHONPATH="$PWD" python -m unittest discover -s ui/tests -v
+```
+
+To run the API locally from the `api/` directory, include the repository root on `PYTHONPATH` so `glowback_runtime.py` is importable:
+
+```bash
+cd api
+PYTHONPATH=.. uvicorn app.main:app --reload
 ```
 
 ### CI Checks
 
 Every pull request runs:
 
-- **Rust CI** (`rust.yml`) — `cargo test --workspace` and `cargo clippy`
-- **Docs guard** (`docs-guard.yml`) — ensures documentation builds cleanly
-- **Docs deploy** (`docs.yml`) — deploys to GitHub Pages on merge to `main`
+- **Rust Build Pipeline** (`rust.yml`) — crate-scoped Rust build/tests, Python API/UI tests, and release artifact packaging on eligible `main` builds
+- **Docs Guard** (`docs-guard.yml`) — requires a docs update when a PR changes user-facing code unless maintainers apply `no-docs`
+- **Docs Smoke** (`docs-smoke.yml`) — runs `./scripts/quickstart.sh` and `mkdocs build --strict` for docs/quickstart changes
+- **Docs Deploy** (`docs.yml`) — builds and publishes the MkDocs site from `main`
 
 ## Pull Request Guidelines
 
@@ -108,8 +118,8 @@ We use [MkDocs Material](https://squidfunk.github.io/mkdocs-material/). To
 preview docs locally:
 
 ```bash
-pip install mkdocs-material pymdown-extensions
-mkdocs serve
+python -m pip install mkdocs-material pymdown-extensions
+python -m mkdocs serve
 ```
 
 The site auto-deploys to GitHub Pages when changes merge to `main`.
