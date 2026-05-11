@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Rust (latest stable)
-- Python 3.8+ (for docs, API, and UI workflows)
+- Python 3.10+ for requirements-based API/UI/docs workflows. CI currently uses Python 3.12, and `ui/pyproject.toml` pins 3.12 for `uv`-based UI development.
 
 ## 5-Minute Quickstart
 
@@ -37,11 +37,21 @@ After the script succeeds, you have verified that this checkout can:
 
 ## Launch the UI
 
+The UI can run with the checked-in `setup.py` helper or with explicit dependency installation:
+
 ```bash
 cd ui
 python setup.py
 # Opens http://localhost:8501
 ```
+
+```bash
+cd ui
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
+
+For the API gateway, use the setup notes in [FastAPI Gateway](api/fastapi.md); the local API process needs both the `api/` package and the repository root on `PYTHONPATH`.
 
 ## Docker (Compose)
 

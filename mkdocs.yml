@@ -32,6 +32,7 @@ nav:
       - Core Concepts: concepts/core-concepts.md
       - Data Model: concepts/data-model.md
       - Execution Model: concepts/execution-model.md
+      - Options Module: options.md
       - Results & Metrics: concepts/results-metrics.md
       - Optimization: concepts/optimization.md
       - Security: concepts/security.md

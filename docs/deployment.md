@@ -1,7 +1,6 @@
 # Deployment Guide
 
-This guide covers deploying GlowBack with Docker Compose for development and
-production environments.
+This guide covers the Docker Compose service topology for local deployment and staging-style smoke tests. Treat it as a starting point for production packaging, not a turnkey production runbook.
 
 ## Quick Start
 
@@ -28,16 +27,46 @@ Services become available at:
 ## Architecture
 
 ```
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│    UI    │────▸│   API    │────▸│  Engine  │
-│ :8501    │     │ :8000    │     │ :8081    │
-│Streamlit │     │ FastAPI  │     │  Rust    │
-└──────────┘     └──────────┘     └──────────┘
+┌──────────┐     ┌──────────┐     ┌────────────────────┐
+│    UI    │────▸│   API    │────▸│ gb-python + engine │
+│ :8501    │     │ :8000    │     │ embedded runtime   │
+│Streamlit │     │ FastAPI  │     └────────────────────┘
+└──────────┘     └──────────┘
+
+┌──────────┐
+│ Engine   │  Standalone gb-engine-service exposed on :8081
+│ :8081    │
+└──────────┘
 ```
 
-The UI depends on the API, and the API depends on the Engine. Docker Compose
-enforces this ordering with health-check-based `depends_on` so each service
-waits for its dependency to be fully healthy before starting.
+The UI depends on the API, and Compose currently starts the standalone Engine service before the API with health-check-based `depends_on`. Current API backtest requests run through the `gb-python`/shared-runtime path, so a green container health check proves the web process is reachable, not that every backtest path is production-ready. Run the smoke checks below before relying on a deployment.
+
+## Smoke Checks
+
+After Compose reports healthy services, verify both liveness and an engine-backed request path:
+
+```bash
+docker compose ps
+curl -fsS http://localhost:8000/healthz
+```
+
+If you set `GLOWBACK_API_KEY`, include it when creating a sample run:
+
+```bash
+curl -fsS -X POST http://localhost:8000/v1/backtests \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: ${GLOWBACK_API_KEY:-}" \
+  -d '{
+    "symbols": ["AAPL"],
+    "start_date": "2024-01-01T00:00:00Z",
+    "end_date": "2024-01-31T00:00:00Z",
+    "resolution": "day",
+    "strategy": {"name": "buy_and_hold"},
+    "data_source": "sample"
+  }'
+```
+
+For local engine/API development outside Docker, prefer the checked-in quickstart plus the [FastAPI Gateway](api/fastapi.md) setup instructions; those commands are closer to the CI-validated path.
 
 ## Configuration
 
@@ -119,14 +148,15 @@ Default memory and CPU limits are set in `docker-compose.yml`:
 Adjust these in `docker-compose.yml` under `deploy.resources.limits` for your
 hardware.
 
-## Production Checklist
+## Production Hardening Checklist
 
-1. **Set `GLOWBACK_API_KEY`** — never run without authentication in production.
-2. **Restrict CORS** — change `GLOWBACK_CORS_ORIGINS` from `*` to your domain.
-3. **Use a reverse proxy** — put Nginx, Caddy, or Traefik in front for TLS.
-4. **Monitor logs** — use `docker compose logs -f` or ship to a log aggregator.
-5. **Set resource limits** — tune memory/CPU for your workload.
-6. **Back up volumes** — schedule periodic backups of named volumes.
+1. **Set `GLOWBACK_API_KEY`** — never run without authentication outside trusted local development.
+2. **Restrict CORS** — change `GLOWBACK_CORS_ORIGINS` from `*` to the exact browser origins you control.
+3. **Use a reverse proxy** — put Nginx, Caddy, or Traefik in front for TLS, request logging, and access controls.
+4. **Run an engine-backed smoke test** — do not rely on `/healthz` alone; create a sample `/v1/backtests` run and fetch its result.
+5. **Monitor logs** — use `docker compose logs -f` locally or ship structured API/engine logs to a log aggregator.
+6. **Set resource limits** — tune memory/CPU for your workload and data sizes.
+7. **Back up volumes** — schedule periodic backups of named volumes and test restore procedures.
 
 ## Updating
 

@@ -10,7 +10,7 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 [![Docs Smoke](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs-smoke.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs-smoke.yml)
 [![Docs](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs.yml/badge.svg?branch=main)](https://latencytdh.github.io/GlowBack/)
 [![Rust Version](https://img.shields.io/badge/rust-stable-blue)](#getting-started)
-[![Python Support](https://img.shields.io/badge/python-3.8%2B-blue)](#python-bindings)
+[![Python Support](https://img.shields.io/badge/python-3.10%2B-blue)](#python-bindings)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
 ## Overview
@@ -20,7 +20,7 @@ GlowBack provides a fast, realistic backtesting engine with data management, sto
 - Event‑driven simulation engine with slippage/latency/commission models, order lifecycle events, and participation-capped partial fills
 - Data ingestion (CSV, Alpha Vantage, explicit sample/demo data)
 - Arrow/Parquet columnar storage and SQLite metadata catalog
-- Strategy library (4 built‑in strategies)
+- Strategy library (5 built‑in strategies; the quickstart smoke path exercises four of them)
 - Python bindings (async support)
 - Streamlit UI for strategy development and analysis
 - Durable experiment registry for saved strategies, historical runs, and cross-session comparisons
@@ -54,7 +54,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 - Multi‑symbol backtesting with chronological event ordering and auditable order submission/fill/cancel/expire traces
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
-- Strategy library: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, RSI
+- Built-in strategies: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, and RSI
 - Strategy authoring templates for both the Rust engine lifecycle and the UI's local Python runner lifecycle
 - Storage: Arrow/Parquet with batch loading and round‑trip I/O
 - Catalog: SQLite metadata with indexed queries
@@ -66,7 +66,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 Prerequisites:
 
 - Rust (latest stable)
-- Python 3.8+ (for docs/UI workflows)
+- Python 3.10+ for requirements-based API/UI/docs workflows (CI uses 3.12; the UI project metadata pins 3.12 for `uv`)
 
 ```bash
 git clone https://github.com/LatencyTDH/GlowBack.git
@@ -162,13 +162,14 @@ Scheduled and manual CI benchmark runs upload the same artifact structure from `
 ## Roadmap
 
 **In progress**
-- Performance benchmarking and optimization
-- Additional strategies (Bollinger Bands, pairs trading)
+- Hardening the FastAPI, Streamlit, and Docker deployment paths around the engine-backed workflow
+- Expanding benchmark history and regression thresholds for the maintained hot paths
+- Improving live/paper parity, safety controls, and audit trails before real-money workflows
 
 **Planned**
-- Advanced analytics (drawdown, factor exposure)
-- Parameter sweep and walk‑forward optimization
-- Expanded documentation
+- More end-to-end options backtesting coverage on top of `gb-options`
+- Additional strategy examples and richer overfit diagnostics
+- Hosted API/rustdoc references once the public contract stabilizes
 
 ## Contributing
 

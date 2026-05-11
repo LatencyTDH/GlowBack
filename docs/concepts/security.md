@@ -5,7 +5,7 @@ controls available in the API gateway and how to configure them.
 
 ## Authentication
 
-The API requires an API key for all endpoints except `/healthz`.
+When `GLOWBACK_API_KEY` is set, the API requires a valid key for all endpoints except `/healthz` and `/v1/healthz`.
 
 Set the allowed keys via the `GLOWBACK_API_KEY` environment variable
 (comma-separated for multiple keys):
@@ -20,8 +20,7 @@ Keys can be sent as:
 - `X-API-Key: <key>` header
 - `?api_key=<key>` query parameter (not recommended for production)
 
-If `GLOWBACK_API_KEY` is **unset**, authentication is disabled (development
-mode only).
+If `GLOWBACK_API_KEY` is **unset**, authentication is disabled. Use that only for trusted local development.
 
 ## CORS
 
@@ -36,7 +35,7 @@ blocked by browsers by default).
 
 ## Rate Limiting
 
-Per-IP token-bucket rate limiting is enforced on all authenticated endpoints.
+Per-IP token-bucket rate limiting is enforced by the FastAPI dependency on API routes, regardless of whether API-key authentication is enabled.
 
 | Variable              | Default | Description            |
 | --------------------- | ------- | ---------------------- |
@@ -92,7 +91,7 @@ Failed authentication and rate-limit violations are logged at `WARNING` level.
 
 ## Health Check
 
-`GET /healthz` returns `{"status": "healthy", "version": "..."}` with no
+`GET /healthz` and `GET /v1/healthz` return `{"status": "healthy", "version": "..."}` with no
 authentication required. Use this for load balancer and Kubernetes liveness
 probes.
 

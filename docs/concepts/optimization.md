@@ -1,6 +1,6 @@
 # Optimization
 
-> **Status:** `/optimizations` is now wired to real backtest execution through
+> **Status:** `/v1/optimizations` is now wired to real backtest execution through
 > the `gb-python` bindings for GlowBack's built-in strategies. The first
 > shipping version supports grid, random, and Bayesian search, plus holdout or
 > walk-forward validation.
@@ -9,16 +9,16 @@
 
 | Method | Path                          | Current behavior |
 | ------ | ----------------------------- | ---------------- |
-| `POST` | `/optimizations`              | Creates an optimization run and executes it in the background |
-| `GET`  | `/optimizations`              | Lists in-memory optimization runs |
-| `GET`  | `/optimizations/{id}`         | Returns run status and best-trial summary |
-| `GET`  | `/optimizations/{id}/results` | Returns ranked trials and a replayable best-trial backtest payload |
-| `POST` | `/optimizations/{id}/cancel`  | Cancels a pending/running optimization |
+| `POST` | `/v1/optimizations`              | Creates an optimization run and executes it in the background |
+| `GET`  | `/v1/optimizations`              | Lists in-memory optimization runs |
+| `GET`  | `/v1/optimizations/{id}`         | Returns run status and best-trial summary |
+| `GET`  | `/v1/optimizations/{id}/results` | Returns ranked trials and a replayable best-trial backtest payload |
+| `POST` | `/v1/optimizations/{id}/cancel`  | Cancels a pending/running optimization |
 
 ## Example Request
 
 ```bash
-curl -X POST http://localhost:8000/optimizations \
+curl -X POST http://localhost:8000/v1/optimizations \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
   -d '{
@@ -80,7 +80,7 @@ Example create response:
 
 ## Result Shape
 
-`GET /optimizations/{id}/results` returns:
+`GET /v1/optimizations/{id}/results` returns:
 
 - `best_trial` — best completed trial by the requested objective/direction
 - `all_trials` — every completed/failed trial with metrics and sampled params
