@@ -3,7 +3,8 @@
 > **Status:** `/v1/optimizations` is now wired to real backtest execution through
 > the `gb-python` bindings for GlowBack's built-in strategies. The first
 > shipping version supports grid, random, and Bayesian search, plus holdout or
-> walk-forward validation.
+> walk-forward validation, explicit overfit diagnostics, and an optimization
+> manifest that captures seed/trial lineage for the winning run.
 
 ## Current API Behavior
 
@@ -87,6 +88,11 @@ Example create response:
 - `replay_backtest` — the best-trial backtest payload, ready to reuse as a
   normal backtest request/config
 - `validation_mode` — `holdout` or `walk_forward`
+- `diagnostics` — overfit-focused summary fields such as best-trial
+  train-vs-validation gaps, validation volatility, and parameter-stability
+  summaries across the top trials
+- `manifest` — optimization-run lineage including random seed, request/search
+  config, execution mode, and per-trial objective snapshots
 
 This makes the best run replayable instead of trapping the winning parameters
 inside the optimizer.
@@ -123,7 +129,13 @@ Returned trial metrics include validation-specific keys such as:
 - `validation_<objective_metric>`
 - `train_<objective_metric>`
 - `full_<objective_metric>`
+- `generalization_gap_<objective_metric>`
+- `validation_full_gap_<objective_metric>`
 - `validation_windows`
+
+The result-level `diagnostics` block then lifts the most important signals for
+quick review so callers can spot suspicious train/validation drift without
+manually diffing every trial.
 
 ## Search Strategies
 
@@ -190,9 +202,10 @@ parameters before each real engine run.
 ## Distributed Execution with Ray
 
 `ray_cluster` remains present in the API model for future distributed
-execution, but this first shipping path runs trials locally through the Python
-bindings. Once Ray orchestration is live, the API should preserve the same
-request/response contract while changing only the execution substrate.
+execution, but this shipping path still runs trials locally through the Python
+bindings. The optimization manifest records that execution mode explicitly, so
+results show whether a run used today's local path or a future distributed
+scheduler.
 
 ## Rust Crate: `gb-optimizer`
 

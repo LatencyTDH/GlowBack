@@ -130,3 +130,5 @@ class OptimizationResult(BaseModel):
     search_space: SearchSpaceConfig | None = None
     validation_mode: str | None = None
     replay_backtest: dict[str, Any] | None = None
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    manifest: dict[str, Any] | None = None
