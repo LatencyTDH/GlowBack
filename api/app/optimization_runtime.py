@@ -7,6 +7,7 @@ import math
 import random
 import statistics
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -80,6 +81,8 @@ class OptimizationExecution:
     best_trial: TrialSummary | None = None
     replay_backtest: dict[str, Any] | None = None
     error: str | None = None
+    diagnostics: dict[str, Any] | None = None
+    manifest: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -109,16 +112,11 @@ class OptimizationExecutor:
 
         for trial_number in range(1, request.max_trials + 1):
             if await self._is_cancelled(is_cancelled):
-                best_trial = self._select_best(completed_trials, request.direction.value)
-                return OptimizationExecution(
+                return self._build_execution(
+                    request=request,
                     state=OptimizationState.cancelled,
                     trials=trials,
-                    best_trial=best_trial,
-                    replay_backtest=(
-                        build_replay_backtest(request.base_backtest, best_trial.parameters)
-                        if best_trial
-                        else None
-                    ),
+                    completed_trials=completed_trials,
                 )
 
             parameters = (
@@ -139,23 +137,53 @@ class OptimizationExecutor:
             if parameter_sets is not None and trial_number >= len(parameter_sets):
                 break
 
-        best_trial = self._select_best(completed_trials, request.direction.value)
         if not completed_trials:
-            return OptimizationExecution(
+            return self._build_execution(
+                request=request,
                 state=OptimizationState.failed,
                 trials=trials,
+                completed_trials=completed_trials,
                 error="All optimization trials failed",
             )
 
-        return OptimizationExecution(
+        return self._build_execution(
+            request=request,
             state=OptimizationState.completed,
             trials=trials,
+            completed_trials=completed_trials,
+        )
+
+    def _build_execution(
+        self,
+        request: OptimizationRequest,
+        state: OptimizationState,
+        trials: list[TrialSummary],
+        completed_trials: list[TrialSummary],
+        error: str | None = None,
+    ) -> OptimizationExecution:
+        best_trial = self._select_best(completed_trials, request.direction.value)
+        replay_backtest = (
+            build_replay_backtest(request.base_backtest, best_trial.parameters)
+            if best_trial
+            else None
+        )
+        diagnostics = build_optimization_diagnostics(request, completed_trials, best_trial)
+        manifest = build_optimization_manifest(
+            request=request,
+            state=state,
+            trials=trials,
             best_trial=best_trial,
-            replay_backtest=(
-                build_replay_backtest(request.base_backtest, best_trial.parameters)
-                if best_trial
-                else None
-            ),
+            replay_backtest=replay_backtest,
+            diagnostics=diagnostics,
+        )
+        return OptimizationExecution(
+            state=state,
+            trials=trials,
+            best_trial=best_trial,
+            replay_backtest=replay_backtest,
+            error=error,
+            diagnostics=diagnostics,
+            manifest=manifest,
         )
 
     async def _is_cancelled(self, is_cancelled) -> bool:
@@ -184,6 +212,7 @@ class OptimizationExecutor:
 
             metrics = dict(full_metrics)
             validation_windows = build_validation_windows(replay_backtest, request)
+            train_objective: float | None = None
             if validation_windows:
                 first_window = validation_windows[0]
                 train_end = first_window.start - timedelta(days=1)
@@ -192,7 +221,8 @@ class OptimizationExecutor:
                     train_backtest["end_date"] = _isoformat(train_end)
                     train_result = self._backtest_executor.run(train_backtest)
                     train_metrics = _coerce_metrics(train_result.get("metrics_summary") or {})
-                    metrics[f"train_{metric_name}"] = _metric_value(train_metrics, metric_name)
+                    train_objective = _metric_value(train_metrics, metric_name)
+                    metrics[f"train_{metric_name}"] = train_objective
 
                 validation_scores: list[float] = []
                 for window in validation_windows:
@@ -212,6 +242,17 @@ class OptimizationExecutor:
                     metrics[f"validation_{metric_name}_stddev"] = statistics.pstdev(
                         validation_scores
                     )
+                if train_objective is not None:
+                    metrics[f"generalization_gap_{metric_name}"] = _objective_gap(
+                        train_objective,
+                        objective,
+                        request.direction.value,
+                    )
+                metrics[f"validation_full_gap_{metric_name}"] = _objective_gap(
+                    full_objective,
+                    objective,
+                    request.direction.value,
+                )
             else:
                 objective = full_objective
 
@@ -493,6 +534,220 @@ def build_validation_windows(
     return result
 
 
+def build_optimization_diagnostics(
+    request: OptimizationRequest,
+    completed_trials: list[TrialSummary],
+    best_trial: TrialSummary | None,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "objective_metric": request.objective_metric,
+        "direction": request.direction.value,
+        "completed_trials": len(completed_trials),
+        "top_trials_considered": 0,
+        "parameter_stability": {},
+        "execution_mode": "local_python",
+        "ray_cluster_requested": request.ray_cluster is not None,
+        "cancellation_supported": True,
+        "resume_supported": False,
+    }
+
+    if not completed_trials or best_trial is None:
+        return diagnostics
+
+    top_trials = _top_trials(completed_trials, request.direction.value)
+    diagnostics["top_trials_considered"] = len(top_trials)
+    diagnostics["parameter_stability"] = _parameter_stability_summary(
+        request,
+        top_trials,
+        best_trial,
+    )
+
+    metric_name = request.objective_metric
+    train_metric = best_trial.metrics.get(f"train_{metric_name}")
+    validation_metric = best_trial.metrics.get(f"validation_{metric_name}")
+    full_metric = best_trial.metrics.get(f"full_{metric_name}")
+
+    diagnostics["best_trial_parameters"] = dict(best_trial.parameters)
+    diagnostics["best_trial_objective"] = best_trial.objective
+
+    if train_metric is not None and validation_metric is not None:
+        diagnostics["best_trial_generalization_gap"] = _objective_gap(
+            train_metric,
+            validation_metric,
+            request.direction.value,
+        )
+    if validation_metric is not None and full_metric is not None:
+        diagnostics["best_trial_validation_full_gap"] = _objective_gap(
+            full_metric,
+            validation_metric,
+            request.direction.value,
+        )
+    if f"validation_{metric_name}_stddev" in best_trial.metrics:
+        diagnostics["best_trial_validation_stddev"] = best_trial.metrics[
+            f"validation_{metric_name}_stddev"
+        ]
+    if "validation_windows" in best_trial.metrics:
+        diagnostics["best_trial_validation_windows"] = int(
+            best_trial.metrics["validation_windows"]
+        )
+
+    top_objectives = [trial.objective for trial in top_trials if trial.objective is not None]
+    if len(top_objectives) > 1:
+        diagnostics["top_objective_range"] = max(top_objectives) - min(top_objectives)
+        diagnostics["top_objective_stddev"] = statistics.pstdev(top_objectives)
+
+    return diagnostics
+
+
+def build_optimization_manifest(
+    request: OptimizationRequest,
+    state: OptimizationState,
+    trials: list[TrialSummary],
+    best_trial: TrialSummary | None,
+    replay_backtest: dict[str, Any] | None,
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    metric_name = request.objective_metric
+    objective_metric_keys = [
+        metric_name,
+        f"train_{metric_name}",
+        f"validation_{metric_name}",
+        f"validation_{metric_name}_stddev",
+        f"full_{metric_name}",
+        f"generalization_gap_{metric_name}",
+        f"validation_full_gap_{metric_name}",
+    ]
+
+    return {
+        "manifest_version": "1.0",
+        "kind": "optimization_run",
+        "generated_at": _isoformat(datetime.now(timezone.utc)),
+        "state": state.value,
+        "request": {
+            "name": request.name,
+            "description": request.description,
+            "strategy": request.strategy.value,
+            "objective_metric": request.objective_metric,
+            "direction": request.direction.value,
+            "max_trials": request.max_trials,
+            "concurrency": request.concurrency,
+            "validation_mode": request.validation_mode.value,
+            "validation_fraction": request.validation_fraction,
+            "walk_forward_windows": request.walk_forward_windows,
+            "random_seed": request.random_seed,
+            "grid_steps": request.grid_steps,
+            "exploration_weight": request.exploration_weight,
+            "ray_cluster": (
+                request.ray_cluster.model_dump(mode="json")
+                if request.ray_cluster is not None
+                else None
+            ),
+        },
+        "search_space": request.search_space.model_dump(mode="json"),
+        "base_backtest": normalize_backtest_config(request.base_backtest),
+        "trial_lineage": [
+            {
+                "trial_id": trial.trial_id,
+                "trial_number": trial.trial_number,
+                "status": trial.status.value,
+                "objective": trial.objective,
+                "duration_seconds": trial.duration_seconds,
+                "parameters": dict(trial.parameters),
+                "objective_metrics": {
+                    key: trial.metrics[key]
+                    for key in objective_metric_keys
+                    if key in trial.metrics
+                },
+                "error": trial.error,
+            }
+            for trial in trials
+        ],
+        "best_trial": best_trial.model_dump(mode="json") if best_trial else None,
+        "replay_backtest": replay_backtest,
+        "diagnostics": diagnostics,
+        "execution_plan": {
+            "mode": "local_python",
+            "ray_cluster_requested": request.ray_cluster is not None,
+            "resume_supported": False,
+            "cancellation_supported": True,
+        },
+    }
+
+
+def _top_trials(trials: list[TrialSummary], direction: str) -> list[TrialSummary]:
+    if not trials:
+        return []
+    reverse = direction == "maximize"
+    ordered = sorted(
+        (trial for trial in trials if trial.objective is not None),
+        key=lambda trial: trial.objective,
+        reverse=reverse,
+    )
+    if not ordered:
+        return []
+    top_count = min(len(ordered), max(2, min(5, math.ceil(len(ordered) / 3))))
+    return ordered[:top_count]
+
+
+def _parameter_stability_summary(
+    request: OptimizationRequest,
+    top_trials: list[TrialSummary],
+    best_trial: TrialSummary,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for parameter in request.search_space.parameters:
+        name = parameter.name
+        values = [trial.parameters[name] for trial in top_trials if name in trial.parameters]
+        if not values:
+            continue
+        best_value = best_trial.parameters.get(name)
+
+        if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+            numeric_values = [float(value) for value in values]
+            mean_value = statistics.fmean(numeric_values)
+            min_value = min(numeric_values)
+            max_value = max(numeric_values)
+            span = max_value - min_value
+            scale = max(abs(mean_value), abs(float(best_value)) if best_value is not None else 0.0, 1.0)
+            summary[name] = {
+                "kind": "numeric",
+                "best_value": best_value,
+                "mean": mean_value,
+                "min": min_value,
+                "max": max_value,
+                "span": span,
+                "relative_span": span / scale,
+                "stable": span / scale <= 0.25,
+                "top_trial_values": numeric_values,
+            }
+        else:
+            distinct_values = _dedupe_preserving_order(values)
+            counts = Counter(repr(value) for value in values)
+            most_common_key, most_common_count = counts.most_common(1)[0]
+            summary[name] = {
+                "kind": "categorical",
+                "best_value": best_value,
+                "distinct_values": len(distinct_values),
+                "top_trial_values": distinct_values,
+                "most_common_value": next(
+                    value for value in distinct_values if repr(value) == most_common_key
+                ),
+                "most_common_count": most_common_count,
+                "stable": len(distinct_values) == 1,
+            }
+
+    return summary
+
+
+def _dedupe_preserving_order(values: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    for value in values:
+        if any(existing == value for existing in deduped):
+            continue
+        deduped.append(value)
+    return deduped
+
+
 def _resolve_data_source(base_backtest: dict[str, Any]) -> str:
     direct = base_backtest.get("data_source")
     if isinstance(direct, str) and direct.strip():
@@ -530,6 +785,12 @@ def _coerce_metrics(raw_metrics: dict[str, Any]) -> dict[str, float]:
         except (TypeError, ValueError):
             continue
     return metrics
+
+
+def _objective_gap(reference_value: float, candidate_value: float, direction: str) -> float:
+    if direction == "maximize":
+        return reference_value - candidate_value
+    return candidate_value - reference_value
 
 
 def _metric_value(metrics: dict[str, float], metric_name: str) -> float:

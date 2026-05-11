@@ -73,6 +73,15 @@ class FakeOptimizationExecutor:
                     "params": {"short_period": 8, "long_period": 24},
                 },
             },
+            diagnostics={
+                "objective_metric": "sharpe_ratio",
+                "best_trial_generalization_gap": 0.15,
+            },
+            manifest={
+                "manifest_version": "1.0",
+                "kind": "optimization_run",
+                "diagnostics": {"best_trial_generalization_gap": 0.15},
+            },
         )
 
 
@@ -192,6 +201,8 @@ class VersionedApiContractTests(unittest.TestCase):
         self.assertEqual(result["state"], OptimizationState.completed.value)
         self.assertEqual(result["best_trial"]["status"], TrialStatus.completed.value)
         self.assertEqual(result["replay_backtest"]["strategy"]["params"], {"short_period": 8, "long_period": 24})
+        self.assertEqual(result["diagnostics"]["best_trial_generalization_gap"], 0.15)
+        self.assertEqual(result["manifest"]["manifest_version"], "1.0")
 
 
 if __name__ == "__main__":

@@ -64,6 +64,8 @@ class OptimizationRecord:
     trials: list[TrialRecord] = field(default_factory=list)
     best_trial: TrialRecord | None = None
     replay_backtest: dict[str, Any] | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+    manifest: dict[str, Any] | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -107,6 +109,8 @@ class OptimizationRecord:
             search_space=self.request.search_space,
             validation_mode=self.request.validation_mode.value,
             replay_backtest=self.replay_backtest,
+            diagnostics=dict(self.diagnostics),
+            manifest=self.manifest,
         )
 
 
@@ -212,6 +216,8 @@ class OptimizationStore:
                 else None
             )
             record.replay_backtest = execution.replay_backtest
+            record.diagnostics = dict(execution.diagnostics or {})
+            record.manifest = execution.manifest
             if record.state != OptimizationState.cancelled:
                 record.state = execution.state
                 record.error = execution.error

@@ -22,7 +22,7 @@ GlowBack already covers a meaningful research workflow, but it is still an alpha
 
 ## Optimization workflow
 
-- GlowBack supports real engine-backed optimization flows, but richer overfit diagnostics, cancellation/resume semantics, and scale-out orchestration remain active roadmap work.
+- GlowBack optimization results now surface validation gaps, stability summaries, and an optimization manifest with seed/trial lineage, but resume semantics and true scale-out orchestration remain active roadmap work.
 - Treat optimization results as research aids, not proof of live robustness.
 
 ## Live and paper trading
