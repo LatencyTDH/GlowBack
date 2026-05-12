@@ -122,8 +122,19 @@ See the [Deployment Guide](docs/deployment.md) for production configuration.
 
 ## Python Bindings
 
+Build the local extension from the repo root:
+
+```bash
+python -m pip install maturin
+maturin develop -m crates/gb-python/Cargo.toml
+```
+
+The supported public surface is exported via `glowback.__all__`, and canonical built-in strategy IDs are available in `glowback.BUILTIN_STRATEGIES`.
+
 ```python
 import glowback
+
+print(glowback.BUILTIN_STRATEGIES)
 
 manager = glowback.PyDataManager()
 manager.add_csv_provider("/path/to/data")
@@ -135,10 +146,13 @@ manager.add_sample_provider()
 bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z", "day")
 ```
 
+`cargo test -p gb-python --locked --no-default-features` includes parity checks that compare the Python helpers with the direct Rust engine for both `buy_and_hold` and `ma_crossover`.
+
 ## Testing
 
 ```bash
-cargo test --workspace --locked
+cargo test --workspace --locked --exclude gb-python
+cargo test -p gb-python --locked --no-default-features
 ./scripts/quickstart.sh
 mkdocs build --strict
 ```

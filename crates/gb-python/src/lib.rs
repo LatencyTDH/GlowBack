@@ -11,10 +11,23 @@ use gb_types::{
     Resolution, RsiStrategy, SlippageModel, Strategy, StrategyConfig, Symbol,
 };
 
+const BUILTIN_STRATEGIES: [&str; 5] = [
+    "buy_and_hold",
+    "ma_crossover",
+    "momentum",
+    "mean_reversion",
+    "rsi",
+];
+
+fn supported_builtin_strategies() -> String {
+    BUILTIN_STRATEGIES.join(", ")
+}
+
 /// GlowBack Python module
 #[pymodule]
-fn glowback(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+fn glowback(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add("__version__", "0.1.0")?;
+    m.add("BUILTIN_STRATEGIES", PyList::new(py, BUILTIN_STRATEGIES)?)?;
     m.add_class::<PySymbol>()?;
     m.add_class::<PyDataManager>()?;
     m.add_class::<PyBar>()?;
@@ -31,6 +44,30 @@ fn glowback(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add("PyCatalogStats", m.getattr("CatalogStats")?)?;
     m.add("PyBacktestEngine", m.getattr("BacktestEngine")?)?;
     m.add("PyBacktestResult", m.getattr("BacktestResult")?)?;
+    m.add(
+        "__all__",
+        PyList::new(
+            py,
+            [
+                "__version__",
+                "BUILTIN_STRATEGIES",
+                "Symbol",
+                "DataManager",
+                "Bar",
+                "CatalogStats",
+                "BacktestEngine",
+                "BacktestResult",
+                "run_buy_and_hold",
+                "run_builtin_strategy",
+                "PySymbol",
+                "PyDataManager",
+                "PyBar",
+                "PyCatalogStats",
+                "PyBacktestEngine",
+                "PyBacktestResult",
+            ],
+        )?,
+    )?;
     Ok(())
 }
 
@@ -124,8 +161,9 @@ fn build_strategy(name: &str, params: Option<&Bound<PyDict>>) -> PyResult<Box<dy
             )))
         }
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Unsupported strategy: {}",
-            other
+            "Unsupported strategy: {}. Supported strategies: {}",
+            other,
+            supported_builtin_strategies()
         ))),
     }
 }
@@ -357,8 +395,9 @@ fn build_builtin_strategy(
             )))
         }
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Unsupported built-in strategy: {}",
-            other
+            "Unsupported built-in strategy: {}. Supported strategies: {}",
+            other,
+            supported_builtin_strategies()
         ))),
     }
 }
@@ -1473,5 +1512,222 @@ impl PyBacktestEngine {
             })?;
 
         Ok(PyBacktestResult::from_backtest_result(result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::types::PyModule;
+    use std::sync::Once;
+
+    static PYTHON_INIT: Once = Once::new();
+
+    const TEST_START: &str = "2024-01-01T00:00:00Z";
+    const TEST_END: &str = "2024-06-30T00:00:00Z";
+    const TEST_SYMBOL: &str = "AAPL";
+    const TEST_CAPITAL: f64 = 100_000.0;
+    const TEST_COMMISSION_BPS: f64 = 1.5;
+    const TEST_SLIPPAGE_BPS: f64 = 4.0;
+    const TEST_LATENCY_MS: u64 = 250;
+
+    fn init_python() {
+        PYTHON_INIT.call_once(pyo3::prepare_freethreaded_python);
+    }
+
+    fn approx_eq(left: f64, right: f64, tolerance: f64) {
+        assert!(
+            (left - right).abs() <= tolerance,
+            "expected {left} ~= {right} (tolerance {tolerance})"
+        );
+    }
+
+    fn run_python_builtin_strategy(
+        strategy_name: &str,
+        params: &[(&str, i64)],
+    ) -> PyBacktestResult {
+        init_python();
+        Python::with_gil(|py| {
+            let strategy_params = if params.is_empty() {
+                None
+            } else {
+                let strategy_params = PyDict::new(py);
+                for (key, value) in params {
+                    strategy_params.set_item(key, *value).unwrap();
+                }
+                Some(strategy_params)
+            };
+
+            run_builtin_strategy(
+                vec![TEST_SYMBOL.to_string()],
+                TEST_START,
+                TEST_END,
+                strategy_name,
+                strategy_params.as_ref(),
+                Some("day"),
+                Some(TEST_CAPITAL),
+                Some("Python parity test"),
+                Some("sample"),
+                Some("warn"),
+                Some(TEST_COMMISSION_BPS),
+                Some(TEST_SLIPPAGE_BPS),
+                Some(TEST_LATENCY_MS),
+            )
+            .unwrap()
+        })
+    }
+
+    fn run_rust_builtin_strategy(
+        strategy_name: &str,
+        params: &[(&str, i64)],
+    ) -> RustBacktestResult {
+        let mut strategy_config =
+            StrategyConfig::new(strategy_name.to_string(), strategy_name.to_string());
+        for (key, value) in params {
+            strategy_config.set_parameter(key, *value);
+        }
+
+        let config = build_backtest_config(
+            vec![TEST_SYMBOL.to_string()],
+            TEST_START,
+            TEST_END,
+            Some("day"),
+            Some(TEST_CAPITAL),
+            Some("Rust parity test"),
+            Some("sample"),
+            Some("warn"),
+            Some(TEST_COMMISSION_BPS),
+            Some(TEST_SLIPPAGE_BPS),
+            Some(TEST_LATENCY_MS),
+            strategy_config.clone(),
+        )
+        .unwrap();
+
+        let strategy = build_builtin_strategy(strategy_name, &strategy_config).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut engine = runtime
+            .block_on(async { RustBacktestEngine::new(config).await })
+            .unwrap();
+
+        runtime
+            .block_on(async { engine.run_with_strategy(strategy).await })
+            .unwrap()
+    }
+
+    fn assert_python_result_matches_rust(
+        python_result: &PyBacktestResult,
+        rust_result: &RustBacktestResult,
+    ) {
+        let rust_portfolio = rust_result.final_portfolio.as_ref().unwrap();
+        let rust_metrics = rust_result.performance_metrics.as_ref().unwrap();
+        let rust_manifest = rust_result.manifest.as_ref().unwrap();
+        let python_manifest = python_result.manifest.as_ref().unwrap();
+
+        approx_eq(
+            python_result.metrics_summary["initial_capital"],
+            decimal_to_f64(rust_result.config.initial_capital),
+            1e-6,
+        );
+        approx_eq(
+            python_result.metrics_summary["final_value"],
+            decimal_to_f64(rust_portfolio.total_equity),
+            1e-6,
+        );
+        approx_eq(
+            python_result.metrics_summary["total_return"],
+            decimal_to_f64(rust_metrics.total_return) * 100.0,
+            1e-6,
+        );
+        approx_eq(
+            python_result.metrics_summary["sharpe_ratio"],
+            rust_metrics.sharpe_ratio.map(decimal_to_f64).unwrap_or(0.0),
+            1e-6,
+        );
+        approx_eq(
+            python_result.metrics_summary["total_trades"],
+            rust_result.trade_log.len() as f64,
+            1e-6,
+        );
+
+        assert_eq!(
+            python_result.equity_curve.len(),
+            rust_result.equity_curve.len()
+        );
+        assert_eq!(python_result.trades.len(), rust_result.trade_log.len());
+        assert_eq!(
+            python_result.exposures.len(),
+            rust_result.equity_curve.len()
+        );
+        assert_eq!(
+            python_result.final_positions,
+            rust_portfolio
+                .positions
+                .iter()
+                .map(|(symbol, position)| (
+                    symbol.symbol.clone(),
+                    decimal_to_f64(position.quantity)
+                ))
+                .collect::<std::collections::HashMap<_, _>>()
+        );
+
+        assert_eq!(
+            python_manifest["replay_request"]["strategy_name"],
+            rust_manifest.replay_request.strategy_name
+        );
+        assert_eq!(
+            python_manifest["replay_request"]["symbols"],
+            serde_json::json!([TEST_SYMBOL])
+        );
+        assert_eq!(
+            python_manifest["replay_request"]["strategy_params"],
+            serde_json::to_value(&rust_manifest.replay_request.strategy_params).unwrap()
+        );
+        assert_eq!(
+            python_manifest["execution"]["data_settings"]["data_source"],
+            serde_json::json!("sample")
+        );
+    }
+
+    #[test]
+    fn module_exports_define_the_supported_public_surface() {
+        init_python();
+        Python::with_gil(|py| {
+            let module = PyModule::new(py, "glowback").unwrap();
+            glowback(py, &module).unwrap();
+
+            let exports: Vec<String> = module.getattr("__all__").unwrap().extract().unwrap();
+            let builtin_strategies: Vec<String> = module
+                .getattr("BUILTIN_STRATEGIES")
+                .unwrap()
+                .extract()
+                .unwrap();
+
+            assert!(exports.contains(&"BacktestEngine".to_string()));
+            assert!(exports.contains(&"BacktestResult".to_string()));
+            assert!(exports.contains(&"run_builtin_strategy".to_string()));
+            assert!(exports.contains(&"PyBacktestEngine".to_string()));
+            assert_eq!(
+                builtin_strategies,
+                BUILTIN_STRATEGIES
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn buy_and_hold_python_helper_matches_direct_rust_engine_output() {
+        let python_result = run_python_builtin_strategy("buy_and_hold", &[]);
+        let rust_result = run_rust_builtin_strategy("buy_and_hold", &[]);
+        assert_python_result_matches_rust(&python_result, &rust_result);
+    }
+
+    #[test]
+    fn moving_average_crossover_python_helper_matches_direct_rust_engine_output() {
+        let params = [("short_period", 5), ("long_period", 20)];
+        let python_result = run_python_builtin_strategy("ma_crossover", &params);
+        let rust_result = run_rust_builtin_strategy("ma_crossover", &params);
+        assert_python_result_matches_rust(&python_result, &rust_result);
     }
 }
