@@ -129,6 +129,12 @@ python -m pip install maturin
 maturin develop -m crates/gb-python/Cargo.toml
 ```
 
+Or run the checked-in clean-venv smoke path:
+
+```bash
+./scripts/python_sdk_quickstart.sh
+```
+
 The supported public surface is exported via `glowback.__all__`, and canonical built-in strategy IDs are available in `glowback.BUILTIN_STRATEGIES`.
 
 ```python
@@ -146,7 +152,7 @@ manager.add_sample_provider()
 bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z", "day")
 ```
 
-`cargo test -p gb-python --locked --no-default-features` includes parity checks that compare the Python helpers with the direct Rust engine for both `buy_and_hold` and `ma_crossover`.
+`cargo test -p gb-python --locked --no-default-features` includes parity checks that compare the Python helpers with the direct Rust engine for both `buy_and_hold` and `ma_crossover`. The docs smoke workflow also runs `./scripts/python_sdk_quickstart.sh`, which builds `gb-python` in an isolated virtualenv and executes `examples/python_sdk_quickstart.py` end to end.
 
 ## Testing
 

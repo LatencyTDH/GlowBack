@@ -11,6 +11,12 @@ python -m pip install maturin
 maturin develop -m crates/gb-python/Cargo.toml
 ```
 
+For a clean-checkout smoke path that creates an isolated virtualenv, builds the extension, and runs a checked-in example end to end:
+
+```bash
+./scripts/python_sdk_quickstart.sh
+```
+
 ## Supported public surface
 
 The module publishes its supported contract via `glowback.__all__`, and the canonical built-in strategy IDs are exposed in `glowback.BUILTIN_STRATEGIES`.
@@ -22,9 +28,12 @@ print(glowback.__all__)
 print(glowback.BUILTIN_STRATEGIES)
 ```
 
-CI parity coverage for the binding lives in `cargo test -p gb-python --locked --no-default-features`, including direct Python-vs-Rust checks for `buy_and_hold` and `ma_crossover`.
+CI parity coverage for the binding lives in `cargo test -p gb-python --locked --no-default-features`, including direct Python-vs-Rust checks for `buy_and_hold` and `ma_crossover`. The docs smoke workflow also runs `./scripts/python_sdk_quickstart.sh` so the documented install/build path stays executable.
 
 ## Quick Helper
+
+The checked-in companion example lives at `examples/python_sdk_quickstart.py` and exercises both the helper and `BacktestEngine` paths against sample data.
+
 
 ```python
 import glowback

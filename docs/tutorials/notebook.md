@@ -2,6 +2,14 @@
 
 GlowBack’s Python bindings are designed to work cleanly in notebooks. Use the helpers below to explore results inline.
 
+If you want a reproducible starting point before opening Jupyter, run the checked-in companion smoke path first:
+
+```bash
+./scripts/python_sdk_quickstart.sh
+```
+
+That command creates an isolated virtualenv, builds `gb-python`, and runs `examples/python_sdk_quickstart.py` so the notebook snippets below start from a known-good install.
+
 ## Install Notebook Dependencies
 
 ```bash
@@ -48,6 +56,13 @@ summary = result.summary(plot=True, index="timestamp")
 # Plot the equity curve
 ax = result.plot_equity()
 ```
+
+## Companion example
+
+- Checked-in script: `examples/python_sdk_quickstart.py`
+- Smoke wrapper: `scripts/python_sdk_quickstart.sh`
+
+Use the script when you want a copy-pasteable starting point outside Jupyter, then lift the same calls into a notebook cell.
 
 ## Notes
 
