@@ -30,6 +30,28 @@ The quickstart example exercises:
 - built-in strategy construction
 - basic error handling
 
+## Python SDK quickstart example
+
+- File: `examples/python_sdk_quickstart.py`
+- Command:
+
+```bash
+./scripts/python_sdk_quickstart.sh
+```
+
+What it proves:
+
+- a clean isolated virtualenv can install `maturin`, build `gb-python`, and import `glowback`
+- the supported public surface (`__all__`, `BUILTIN_STRATEGIES`) stays stable and documented
+- both the one-shot helper path and the stateful `BacktestEngine` path run successfully against sample data
+- result manifests, metrics, logs, and final positions are accessible from Python without reaching into Rust internals
+
+Expected success marker:
+
+```text
+✅ Python SDK quickstart completed successfully
+```
+
 ## Rust engine lifecycle template
 
 - File: `crates/gb-engine/examples/strategy_lifecycle_template.rs`
@@ -62,12 +84,13 @@ What it proves:
 
 ## Next examples to add
 
-- Buy & Hold on AAPL with expected metrics snapshot
-- Moving Average Crossover on SPY
 - Momentum strategy with parameter sweep
+- CSV-backed Python SDK notebook with checked-in sample data
+- Replay-manifest example that compares original vs replayed metrics
 
 ## Related docs
 
 - [Strategy Templates & Lifecycle](../tutorials/strategy-templates.md)
 - [Python API Reference](../api/python.md)
+- [Notebook Workflow](../tutorials/notebook.md)
 - [Getting Started](../getting-started.md)
