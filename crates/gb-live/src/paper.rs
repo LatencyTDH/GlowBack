@@ -5,7 +5,7 @@
 //! live.
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use gb_types::market::{MarketEvent, Symbol};
 use gb_types::orders::{Fill, Order, OrderId, OrderStatus, OrderType, Side};
 use rust_decimal::Decimal;
@@ -50,6 +50,30 @@ struct PaperPosition {
     average_cost: Decimal,
 }
 
+/// Broker-level audit event categories recorded for paper-trading activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaperBrokerAuditKind {
+    Connected,
+    Disconnected,
+    OrderSubmitted,
+    OrderFilled,
+    OrderRejected,
+}
+
+/// Append-only paper-broker audit log entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaperBrokerAuditEntry {
+    pub timestamp: DateTime<Utc>,
+    pub kind: PaperBrokerAuditKind,
+    pub order_id: Option<String>,
+    pub symbol: Option<Symbol>,
+    pub side: Option<Side>,
+    pub quantity: Option<Decimal>,
+    pub price: Option<Decimal>,
+    pub cash: Decimal,
+    pub reason: Option<String>,
+}
+
 /// A fully in-process broker that simulates order execution.
 #[derive(Debug)]
 pub struct PaperBroker {
@@ -61,6 +85,7 @@ pub struct PaperBroker {
     fills: Vec<Fill>,
     latest_prices: HashMap<Symbol, Decimal>,
     subscribed_symbols: Vec<Symbol>,
+    audit_log: Vec<PaperBrokerAuditEntry>,
 }
 
 impl PaperBroker {
@@ -75,6 +100,7 @@ impl PaperBroker {
             fills: Vec::new(),
             latest_prices: HashMap::new(),
             subscribed_symbols: Vec::new(),
+            audit_log: Vec::new(),
         }
     }
 
@@ -114,10 +140,55 @@ impl PaperBroker {
             .unwrap_or(Decimal::ZERO)
     }
 
+    fn record_audit_entry(
+        &mut self,
+        kind: PaperBrokerAuditKind,
+        order_id: Option<String>,
+        symbol: Option<Symbol>,
+        side: Option<Side>,
+        quantity: Option<Decimal>,
+        price: Option<Decimal>,
+        reason: Option<String>,
+    ) {
+        self.audit_log.push(PaperBrokerAuditEntry {
+            timestamp: Utc::now(),
+            kind,
+            order_id,
+            symbol,
+            side,
+            quantity,
+            price,
+            cash: self.cash,
+            reason,
+        });
+    }
+
     fn reject_order(&mut self, order_id: OrderId, reason: &str) {
+        let mut audit_order_id = None;
+        let mut audit_symbol = None;
+        let mut audit_side = None;
+        let mut audit_quantity = None;
+
         if let Some(order) = self.orders.get_mut(&order_id) {
             order.status = OrderStatus::Rejected;
+            audit_order_id = Some(order.id.to_string());
+            audit_symbol = Some(order.symbol.clone());
+            audit_side = Some(order.side);
+            audit_quantity = Some(order.remaining_quantity);
         }
+
+        let audit_price = audit_symbol
+            .as_ref()
+            .and_then(|symbol| self.latest_prices.get(symbol).copied());
+        self.record_audit_entry(
+            PaperBrokerAuditKind::OrderRejected,
+            audit_order_id,
+            audit_symbol,
+            audit_side,
+            audit_quantity,
+            audit_price,
+            Some(reason.to_string()),
+        );
 
         warn!(order_id = %order_id, reason, "paper broker: order rejected");
     }
@@ -232,6 +303,15 @@ impl PaperBroker {
             order.strategy_id.clone(),
         );
         self.fills.push(fill);
+        self.record_audit_entry(
+            PaperBrokerAuditKind::OrderFilled,
+            Some(order_id.to_string()),
+            Some(order.symbol.clone()),
+            Some(order.side),
+            Some(quantity),
+            Some(fill_price),
+            None,
+        );
 
         // Update order status
         if let Some(o) = self.orders.get_mut(&order_id) {
@@ -255,6 +335,11 @@ impl PaperBroker {
         &self.fills
     }
 
+    /// Borrow the append-only paper-broker audit log.
+    pub fn audit_log(&self) -> &[PaperBrokerAuditEntry] {
+        &self.audit_log
+    }
+
     /// Current cash balance.
     pub fn cash(&self) -> Decimal {
         self.cash
@@ -265,12 +350,30 @@ impl PaperBroker {
 impl Broker for PaperBroker {
     async fn connect(&mut self) -> BrokerResult<()> {
         self.connected = true;
+        self.record_audit_entry(
+            PaperBrokerAuditKind::Connected,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         info!("paper broker connected (sandbox mode)");
         Ok(())
     }
 
     async fn disconnect(&mut self) -> BrokerResult<()> {
         self.connected = false;
+        self.record_audit_entry(
+            PaperBrokerAuditKind::Disconnected,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         info!("paper broker disconnected");
         Ok(())
     }
@@ -289,6 +392,9 @@ impl Broker for PaperBroker {
         }
 
         let order_id = order.id;
+        let order_symbol = order.symbol.clone();
+        let order_side = order.side;
+        let order_quantity = order.remaining_quantity;
         order.status = OrderStatus::Submitted;
 
         if order.side == Side::Sell {
@@ -296,6 +402,18 @@ impl Broker for PaperBroker {
             if order.remaining_quantity > available_quantity {
                 order.status = OrderStatus::Rejected;
                 self.orders.insert(order_id, order);
+                self.record_audit_entry(
+                    PaperBrokerAuditKind::OrderRejected,
+                    Some(order_id.to_string()),
+                    Some(order_symbol.clone()),
+                    Some(order_side),
+                    Some(order_quantity),
+                    self.latest_prices.get(&order_symbol).copied(),
+                    Some(
+                        "paper broker does not support short sales; sell quantity exceeds current inventory"
+                            .to_string(),
+                    ),
+                );
                 warn!(
                     order_id = %order_id,
                     symbol = %self.orders[&order_id].symbol,
@@ -313,12 +431,30 @@ impl Broker for PaperBroker {
         {
             if let Some(&price) = self.latest_prices.get(&order.symbol) {
                 self.orders.insert(order_id, order);
+                self.record_audit_entry(
+                    PaperBrokerAuditKind::OrderSubmitted,
+                    Some(order_id.to_string()),
+                    Some(order_symbol),
+                    Some(order_side),
+                    Some(order_quantity),
+                    Some(price),
+                    None,
+                );
                 self.try_fill_order(order_id, price);
                 return Ok(order_id);
             }
         }
 
         self.orders.insert(order_id, order);
+        self.record_audit_entry(
+            PaperBrokerAuditKind::OrderSubmitted,
+            Some(order_id.to_string()),
+            Some(order_symbol.clone()),
+            Some(order_side),
+            Some(order_quantity),
+            self.latest_prices.get(&order_symbol).copied(),
+            None,
+        );
         Ok(order_id)
     }
 
@@ -456,7 +592,13 @@ impl Broker for PaperBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
+    use gb_engine::BacktestEngine;
     use gb_types::market::{AssetClass, Bar, Resolution};
+    use gb_types::{
+        BacktestConfig, BuyAndHoldStrategy, ExecutionSettings, LatencyModel, MarketImpactModel,
+        OrderEvent, SlippageModel, StrategyConfig,
+    };
     use rust_decimal_macros::dec;
 
     fn test_symbol() -> Symbol {
@@ -474,6 +616,30 @@ mod tests {
             volume: dec!(1000),
             resolution: Resolution::Day,
         })
+    }
+
+    fn sample_backtest_config() -> BacktestConfig {
+        let mut strategy_config =
+            StrategyConfig::new("paper_replay".into(), "Paper broker parity replay".into());
+        strategy_config.add_symbol(test_symbol());
+
+        let mut config = BacktestConfig::new("Paper broker parity replay".into(), strategy_config);
+        config.start_date = Utc::now() - Duration::days(30);
+        config.end_date = Utc::now();
+        config.initial_capital = dec!(100_000);
+        config.resolution = Resolution::Day;
+        config.symbols = vec![test_symbol()];
+        config.data_settings.data_source = "sample".to_string();
+        config.execution_settings = ExecutionSettings {
+            commission_per_share: Decimal::ZERO,
+            commission_percentage: Decimal::ZERO,
+            minimum_commission: Decimal::ZERO,
+            slippage_model: SlippageModel::None,
+            latency_model: LatencyModel::None,
+            market_impact_model: MarketImpactModel::None,
+            max_volume_participation: Decimal::ONE,
+        };
+        config
     }
 
     #[tokio::test]
@@ -631,6 +797,23 @@ mod tests {
         let balance = broker.get_account_balance().await.unwrap();
         assert!(balance.cash < dec!(100_000));
         assert!(balance.equity > Decimal::ZERO);
+
+        let rejection = broker
+            .audit_log()
+            .iter()
+            .rev()
+            .find(|entry| entry.kind == PaperBrokerAuditKind::OrderRejected)
+            .expect("inventory rejection should be audited");
+        let expected_order_id = sell_id.to_string();
+        assert_eq!(
+            rejection.order_id.as_deref(),
+            Some(expected_order_id.as_str())
+        );
+        assert!(rejection
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("current inventory"));
     }
 
     #[tokio::test]
@@ -646,6 +829,91 @@ mod tests {
         let fill = &broker.get_fills()[0];
         assert_eq!(fill.quantity, dec!(5));
         assert_eq!(fill.side, Side::Buy);
+    }
+
+    #[tokio::test]
+    async fn test_backtest_order_stream_replays_on_paper_broker() {
+        let config = sample_backtest_config();
+        let expected_initial_cash = config.initial_capital;
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        let result = engine
+            .run_with_strategy(Box::new(BuyAndHoldStrategy::new()))
+            .await
+            .unwrap();
+        let final_portfolio = result
+            .final_portfolio
+            .clone()
+            .expect("completed backtest should produce a portfolio");
+        let expected_fill_count = result
+            .order_events
+            .iter()
+            .filter(|event| matches!(event, OrderEvent::OrderFilled { .. }))
+            .count();
+
+        let mut broker = PaperBroker::new(PaperBrokerConfig {
+            initial_cash: expected_initial_cash,
+            commission_per_share: Decimal::ZERO,
+            slippage_bps: Decimal::ZERO,
+            fill_market_orders_immediately: false,
+        });
+        broker.connect().await.unwrap();
+
+        for event in &result.order_events {
+            match event {
+                OrderEvent::OrderSubmitted(order) => {
+                    broker.submit_order(order.clone()).await.unwrap();
+                }
+                OrderEvent::OrderFilled { fill, .. } => {
+                    broker.process_market_event(&make_bar(fill.symbol.clone(), fill.price));
+                    let replayed_fill = broker
+                        .get_fills()
+                        .last()
+                        .expect("paper replay should emit a fill for each backtest fill");
+                    assert_eq!(replayed_fill.symbol, fill.symbol);
+                    assert_eq!(replayed_fill.side, fill.side);
+                    assert_eq!(replayed_fill.quantity, fill.quantity);
+                    assert_eq!(replayed_fill.price, fill.price);
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            expected_fill_count > 0,
+            "expected backtest to generate fills"
+        );
+        assert_eq!(broker.get_fills().len(), expected_fill_count);
+        assert!(broker.get_open_orders().await.unwrap().is_empty());
+
+        for (symbol, position) in &final_portfolio.positions {
+            if position.quantity != Decimal::ZERO {
+                let final_mark = position.market_value / position.quantity;
+                broker.process_market_event(&make_bar(symbol.clone(), final_mark));
+            }
+        }
+
+        let broker_positions = broker.get_positions().await.unwrap();
+        assert_eq!(broker_positions.len(), final_portfolio.positions.len());
+        for (symbol, position) in &final_portfolio.positions {
+            let replayed_position = broker_positions
+                .iter()
+                .find(|candidate| candidate.symbol == *symbol)
+                .expect("replayed paper broker should retain every backtest position");
+            assert_eq!(replayed_position.quantity, position.quantity);
+            assert_eq!(replayed_position.market_value, position.market_value);
+        }
+
+        let balance = broker.get_account_balance().await.unwrap();
+        assert_eq!(balance.cash, final_portfolio.cash);
+        assert_eq!(balance.equity, final_portfolio.total_equity);
+        assert!(broker
+            .audit_log()
+            .iter()
+            .any(|entry| entry.kind == PaperBrokerAuditKind::OrderSubmitted));
+        assert!(broker
+            .audit_log()
+            .iter()
+            .any(|entry| entry.kind == PaperBrokerAuditKind::OrderFilled));
     }
 
     #[tokio::test]

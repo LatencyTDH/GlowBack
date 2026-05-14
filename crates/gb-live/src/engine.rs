@@ -345,7 +345,7 @@ impl<B: Broker, S: Strategy> LiveEngine<B, S> {
                     error!(order_id = %order.id, error = %e, "broker rejected order");
                 }
             },
-            RiskCheckResult::Rejected { reason } => {
+            RiskCheckResult::Rejected { reason, .. } => {
                 self.emit(LiveEngineEvent::OrderRejectedByRisk {
                     order_id: order.id,
                     reason: reason.clone(),

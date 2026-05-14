@@ -9,12 +9,46 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::warn;
 
+/// Specific rule that approved or rejected an order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RiskRule {
+    CircuitBreaker,
+    OrderRateLimit,
+    MaxOrderNotional,
+    PositionConcentration,
+    TotalExposure,
+}
+
+/// Audit outcome recorded for each risk decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RiskAuditDecision {
+    Approved,
+    Rejected,
+    WouldReject,
+}
+
+/// Append-only audit log entry for a risk decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RiskAuditEntry {
+    pub timestamp: DateTime<Utc>,
+    pub order_id: String,
+    pub symbol: Symbol,
+    pub side: Side,
+    pub quantity: Decimal,
+    pub current_price: Decimal,
+    pub current_equity: Decimal,
+    pub notional: Decimal,
+    pub rule: Option<RiskRule>,
+    pub decision: RiskAuditDecision,
+    pub reason: Option<String>,
+}
+
 /// Result of a risk check — either the order passes or it is rejected with a
 /// human-readable reason.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RiskCheckResult {
     Approved,
-    Rejected { reason: String },
+    Rejected { rule: RiskRule, reason: String },
 }
 
 impl RiskCheckResult {
@@ -84,6 +118,7 @@ struct SessionState {
 pub struct RiskManager {
     config: RiskConfig,
     state: SessionState,
+    audit_log: Vec<RiskAuditEntry>,
 }
 
 impl RiskManager {
@@ -100,6 +135,7 @@ impl RiskManager {
                 circuit_breaker_tripped: false,
                 circuit_breaker_tripped_at: None,
             },
+            audit_log: Vec::new(),
         }
     }
 
@@ -116,8 +152,15 @@ impl RiskManager {
     ) -> RiskCheckResult {
         let result = self.run_checks(order, current_price, current_equity);
 
-        if let RiskCheckResult::Rejected { ref reason } = result {
+        if let RiskCheckResult::Rejected { reason, .. } = &result {
             if self.config.dry_run {
+                self.record_audit_entry(
+                    order,
+                    current_price,
+                    current_equity,
+                    &result,
+                    RiskAuditDecision::WouldReject,
+                );
                 warn!(
                     order_id = %order.id,
                     symbol = %order.symbol,
@@ -128,7 +171,47 @@ impl RiskManager {
             }
         }
 
+        self.record_audit_entry(
+            order,
+            current_price,
+            current_equity,
+            &result,
+            if result.is_approved() {
+                RiskAuditDecision::Approved
+            } else {
+                RiskAuditDecision::Rejected
+            },
+        );
+
         result
+    }
+
+    fn record_audit_entry(
+        &mut self,
+        order: &Order,
+        current_price: Decimal,
+        current_equity: Decimal,
+        result: &RiskCheckResult,
+        decision: RiskAuditDecision,
+    ) {
+        let (rule, reason) = match result {
+            RiskCheckResult::Approved => (None, None),
+            RiskCheckResult::Rejected { rule, reason } => (Some(*rule), Some(reason.clone())),
+        };
+
+        self.audit_log.push(RiskAuditEntry {
+            timestamp: Utc::now(),
+            order_id: order.id.to_string(),
+            symbol: order.symbol.clone(),
+            side: order.side,
+            quantity: order.quantity,
+            current_price,
+            current_equity,
+            notional: order.quantity * current_price,
+            rule,
+            decision,
+            reason,
+        });
     }
 
     /// Run all individual checks in sequence, short-circuiting on the first
@@ -155,6 +238,7 @@ impl RiskManager {
         let notional = order.quantity * current_price;
         if notional > self.config.max_order_notional {
             return RiskCheckResult::Rejected {
+                rule: RiskRule::MaxOrderNotional,
                 reason: format!(
                     "order notional {notional} exceeds limit {}",
                     self.config.max_order_notional
@@ -187,6 +271,7 @@ impl RiskManager {
     fn check_circuit_breaker(&mut self, current_equity: Decimal) -> RiskCheckResult {
         if self.state.circuit_breaker_tripped {
             return RiskCheckResult::Rejected {
+                rule: RiskRule::CircuitBreaker,
                 reason: "circuit breaker tripped — trading halted for the day".into(),
             };
         }
@@ -203,6 +288,7 @@ impl RiskManager {
                     "daily loss circuit breaker tripped"
                 );
                 return RiskCheckResult::Rejected {
+                    rule: RiskRule::CircuitBreaker,
                     reason: format!(
                         "daily loss {loss_pct} exceeds circuit breaker threshold {}",
                         self.config.daily_loss_circuit_breaker
@@ -223,6 +309,7 @@ impl RiskManager {
 
         if self.state.recent_orders.len() >= self.config.max_orders_per_window as usize {
             return RiskCheckResult::Rejected {
+                rule: RiskRule::OrderRateLimit,
                 reason: format!(
                     "order rate limit: {} orders in {} s window",
                     self.config.max_orders_per_window, self.config.order_window_seconds
@@ -261,6 +348,7 @@ impl RiskManager {
 
         if concentration > self.config.limits.position_concentration_limit {
             return RiskCheckResult::Rejected {
+                rule: RiskRule::PositionConcentration,
                 reason: format!(
                     "position concentration {concentration:.2} exceeds limit {}",
                     self.config.limits.position_concentration_limit
@@ -298,6 +386,7 @@ impl RiskManager {
                 mark
             } else {
                 return RiskCheckResult::Rejected {
+                    rule: RiskRule::TotalExposure,
                     reason: format!(
                         "missing mark for existing position {symbol} while computing total exposure"
                     ),
@@ -309,6 +398,7 @@ impl RiskManager {
 
         if new_exposure > self.config.max_total_exposure {
             return RiskCheckResult::Rejected {
+                rule: RiskRule::TotalExposure,
                 reason: format!(
                     "total exposure {new_exposure} would exceed limit {}",
                     self.config.max_total_exposure
@@ -371,6 +461,11 @@ impl RiskManager {
     /// Returns the time at which the circuit breaker was tripped, if at all.
     pub fn circuit_breaker_tripped_at(&self) -> Option<DateTime<Utc>> {
         self.state.circuit_breaker_tripped_at
+    }
+
+    /// Borrow the append-only risk audit log.
+    pub fn audit_log(&self) -> &[RiskAuditEntry] {
+        &self.audit_log
     }
 
     /// Returns a reference to the current risk configuration.
@@ -605,6 +700,105 @@ mod tests {
         let order = Order::market_order(incoming, Side::Buy, dec!(60), "test".into());
         let result = rm.check_order(&order, dec!(100), dec!(100_000));
         assert!(!result.is_approved(), "expected rejection, got {result:?}");
+    }
+
+    #[test]
+    fn test_audit_log_records_max_order_notional_rejection() {
+        let mut rm = default_risk_manager();
+        let order = Order::market_order(test_symbol(), Side::Buy, dec!(1000), "test".into());
+
+        let result = rm.check_order(&order, dec!(150), dec!(100_000));
+        assert!(!result.is_approved());
+
+        let audit = rm.audit_log();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].decision, RiskAuditDecision::Rejected);
+        assert_eq!(audit[0].rule, Some(RiskRule::MaxOrderNotional));
+        assert!(audit[0]
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("order notional"));
+    }
+
+    #[test]
+    fn test_audit_log_records_position_concentration_rejection() {
+        let config = RiskConfig {
+            limits: RiskLimits {
+                position_concentration_limit: dec!(0.25),
+                ..Default::default()
+            },
+            max_order_notional: Decimal::from(1_000_000),
+            max_total_exposure: Decimal::from(1_000_000),
+            ..Default::default()
+        };
+        let mut rm = RiskManager::new(config, dec!(100_000));
+        let order = Order::market_order(test_symbol(), Side::Buy, dec!(200), "test".into());
+
+        let result = rm.check_order(&order, dec!(150), dec!(100_000));
+        assert!(!result.is_approved());
+
+        let audit = rm.audit_log();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].decision, RiskAuditDecision::Rejected);
+        assert_eq!(audit[0].rule, Some(RiskRule::PositionConcentration));
+        assert!(audit[0]
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("position concentration"));
+    }
+
+    #[test]
+    fn test_audit_log_records_total_exposure_rejection() {
+        let config = RiskConfig {
+            max_total_exposure: dec!(25_000),
+            max_order_notional: Decimal::from(1_000_000),
+            limits: RiskLimits {
+                position_concentration_limit: dec!(1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut rm = RiskManager::new(config, dec!(100_000));
+        let held = test_symbol();
+        let incoming = equity_symbol("MSFT");
+
+        rm.update_position(&held, Side::Buy, dec!(100), dec!(100));
+        rm.update_market_price(&held, dec!(200));
+
+        let order = Order::market_order(incoming, Side::Buy, dec!(60), "test".into());
+        let result = rm.check_order(&order, dec!(100), dec!(100_000));
+        assert!(!result.is_approved());
+
+        let audit = rm.audit_log();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].decision, RiskAuditDecision::Rejected);
+        assert_eq!(audit[0].rule, Some(RiskRule::TotalExposure));
+        assert!(audit[0]
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("total exposure"));
+    }
+
+    #[test]
+    fn test_dry_run_audit_entry_marks_would_reject() {
+        let config = RiskConfig {
+            max_order_notional: dec!(1_000),
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut rm = RiskManager::new(config, dec!(100_000));
+        let order = Order::market_order(test_symbol(), Side::Buy, dec!(100), "test".into());
+
+        let result = rm.check_order(&order, dec!(150), dec!(100_000));
+        assert!(result.is_approved());
+
+        let audit = rm.audit_log();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].decision, RiskAuditDecision::WouldReject);
+        assert_eq!(audit[0].rule, Some(RiskRule::MaxOrderNotional));
     }
 
     #[test]

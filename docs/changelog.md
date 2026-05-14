@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Paper broker parity + audit trail:** `gb-live::PaperBroker` now keeps an append-only audit log for broker events, inventories rejection reasons for sell-over-inventory attempts, and ships a replay test that feeds a backtest order stream back through the paper broker to prove cash/position parity on the sample buy-and-hold path.
 - **Data quality summaries + strict mode:** `gb-data` now validates fetched datasets, persists per-symbol validation summaries in the catalog, records dataset provenance/price-adjustment metadata, and exposes those summaries through run manifests/result metadata. `DataSettings.data_quality_mode` defaults to `warn` and can be set to `fail` to reject datasets with critical issues before a backtest starts.
 - **Execution realism:** `gb-engine` now records order lifecycle events, respects time-in-force semantics for day/IOC/FOK orders, and caps fills by a configurable `max_volume_participation` setting so oversized orders can partially fill instead of always executing in one shot.
 - **Python SDK quickstart:** GlowBack now ships a checked-in Python SDK smoke path (`./scripts/python_sdk_quickstart.sh`) plus a companion example (`examples/python_sdk_quickstart.py`) that builds `gb-python` in an isolated virtualenv, validates the documented public surface, and runs both helper-style and engine-style backtests against sample data.
