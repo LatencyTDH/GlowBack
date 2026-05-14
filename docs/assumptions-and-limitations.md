@@ -28,7 +28,8 @@ GlowBack already covers a meaningful research workflow, but it is still an alpha
 ## Live and paper trading
 
 - The `gb-live` crate exists, but real broker adapters are intentionally not positioned as production-ready.
-- Safety controls, parity checks, and auditability remain prerequisites before any real-money workflow should be trusted.
+- `PaperBroker` now records an append-only audit trail for broker events and inventory/risk rejections, and CI includes a backtest-order-stream replay check against the paper broker on sample data.
+- Broader safety controls, parity checks, and auditability still remain prerequisites before any real-money workflow should be trusted.
 
 ## Options workflow
 
