@@ -154,12 +154,23 @@ bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z",
 
 `cargo test -p gb-python --locked --no-default-features` includes parity checks that compare the Python helpers with the direct Rust engine for both `buy_and_hold` and `ma_crossover`. The docs smoke workflow also runs `./scripts/python_sdk_quickstart.sh`, which builds `gb-python` in an isolated virtualenv and executes `examples/python_sdk_quickstart.py` end to end.
 
+For a reproducibility-focused companion path, run:
+
+```bash
+./scripts/replay_manifest_tutorial.sh
+```
+
+That tutorial generates a real sample-data result, validates the emitted manifest,
+replays it locally with `glowback_runtime`, and checks that the replayed metrics
+match the captured snapshot within tolerance.
+
 ## Testing
 
 ```bash
 cargo test --workspace --locked --exclude gb-python
 cargo test -p gb-python --locked --no-default-features
 ./scripts/quickstart.sh
+./scripts/replay_manifest_tutorial.sh
 mkdocs build --strict
 ```
 

@@ -82,15 +82,37 @@ What it proves:
 - the example strategy can place trades and emit lifecycle logs
 - the saved example stays executable instead of drifting into pseudo-code
 
+## Replay-manifest tutorial example
+
+- File: `examples/replay_manifest_tutorial.py`
+- Command:
+
+```bash
+./scripts/replay_manifest_tutorial.sh
+```
+
+What it proves:
+
+- a real sample-data backtest emits a valid replayable manifest
+- the documented `glowback_runtime.replay_manifest(...)` helper can rerun that manifest locally
+- the replayed headline metrics stay within tolerance of the captured snapshot
+- the checked-in reproducibility tutorial stays executable instead of becoming aspirational docs
+
+Expected success marker:
+
+```text
+✅ Replay manifest tutorial completed successfully
+```
+
 ## Next examples to add
 
 - Momentum strategy with parameter sweep
 - CSV-backed Python SDK notebook with checked-in sample data
-- Replay-manifest example that compares original vs replayed metrics
 
 ## Related docs
 
 - [Strategy Templates & Lifecycle](../tutorials/strategy-templates.md)
 - [Python API Reference](../api/python.md)
 - [Notebook Workflow](../tutorials/notebook.md)
+- [Reproducing a Run](../tutorials/reproducing-a-run.md)
 - [Getting Started](../getting-started.md)
