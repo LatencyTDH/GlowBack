@@ -121,6 +121,8 @@ class BacktestResult(BaseModel):
     trades: list[dict[str, Any]] = Field(default_factory=list)
     exposures: list[dict[str, Any]] = Field(default_factory=list)
     order_events: list[dict[str, Any]] = Field(default_factory=list)
+    option_trades: list[dict[str, Any]] = Field(default_factory=list)
+    option_events: list[dict[str, Any]] = Field(default_factory=list)
     portfolio_construction: dict[str, Any] = Field(default_factory=dict)
     portfolio_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     constraint_hits: list[dict[str, Any]] = Field(default_factory=list)

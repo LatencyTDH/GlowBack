@@ -16,6 +16,9 @@ SUPPORTED_STRATEGIES: dict[str, str] = {
     "mean-reversion": "mean_reversion",
     "mean reversion": "mean_reversion",
     "rsi": "rsi",
+    "covered_call": "covered_call",
+    "covered-call": "covered_call",
+    "covered call": "covered_call",
 }
 
 _MANIFEST_REQUIRED_FIELDS = (
@@ -54,7 +57,7 @@ def normalize_strategy_name(name: str | None) -> str:
     if raw in SUPPORTED_STRATEGIES:
         return SUPPORTED_STRATEGIES[raw]
     raise ValueError(
-        "Unsupported strategy. Use one of: buy_and_hold, ma_crossover, momentum, mean_reversion, rsi."
+        "Unsupported strategy. Use one of: buy_and_hold, ma_crossover, momentum, mean_reversion, rsi, covered_call."
     )
 
 
@@ -196,6 +199,9 @@ def run_backtest(
     equity_curve = list(result.equity_curve)
     trades = list(result.trades)
     exposures = list(result.exposures)
+    order_events = list(result.order_events)
+    option_trades = list(result.option_trades)
+    option_events = list(result.option_events)
     logs = list(result.logs)
     final_positions = dict(result.final_positions)
     final_cash = float(result.final_cash)
@@ -206,6 +212,9 @@ def run_backtest(
         "equity_curve": equity_curve,
         "trades": trades,
         "exposures": exposures,
+        "order_events": order_events,
+        "option_trades": option_trades,
+        "option_events": option_events,
         "logs": logs,
         "final_cash": final_cash,
         "final_positions": final_positions,

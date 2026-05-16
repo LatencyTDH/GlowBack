@@ -44,6 +44,8 @@ class RealEngineAdapterTests(unittest.IsolatedAsyncioTestCase):
                 "benchmark_curve": [{"timestamp": "2024-01-01T00:00:00Z", "symbol": "SPY", "value": 100500.0}],
                 "trades": [{"timestamp": "2024-01-01T00:00:00Z", "symbol": "AAPL", "action": "BUY", "shares": 10.0, "price": 100.0}],
                 "exposures": [{"timestamp": "2024-01-01T00:00:00Z", "cash_pct": 5.0, "positions_pct": 95.0}],
+                "option_trades": [{"contract_symbol": "AAPL-20240108-105C", "status": "expired", "greeks": {"delta": 0.3}}],
+                "option_events": [{"event": "covered_call_opened", "contract_symbol": "AAPL-20240108-105C"}],
                 "portfolio_construction": {"method": "target_weights", "rebalance_frequency": "weekly"},
                 "portfolio_diagnostics": [{"timestamp": "2024-01-01T00:00:00Z", "rebalanced": True}],
                 "constraint_hits": [{"type": "max_weight_cap", "symbol": "AAPL"}],
@@ -139,6 +141,8 @@ class RealEngineAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.final_cash, 5000.0)
         self.assertEqual(result.final_positions, {"AAPL": 10.0})
         self.assertEqual(result.trades[0]["action"], "BUY")
+        self.assertEqual(result.option_trades[0]["status"], "expired")
+        self.assertEqual(result.option_events[0]["event"], "covered_call_opened")
         self.assertIsNotNone(result.manifest)
         self.assertEqual(result.manifest["replay_request"]["strategy_name"], "buy_and_hold")
 

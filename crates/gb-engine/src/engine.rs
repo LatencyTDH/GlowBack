@@ -3,16 +3,18 @@
 
 use chrono::{DateTime, Duration, Utc};
 use gb_data::DataManager;
+use gb_options::{black_scholes_price, simulate_open, OptionContract, OptionKind, PricingInput};
 use gb_types::{
-    BacktestConfig, BacktestError, BacktestResult, Bar, DataQualityMode, DataValidationSummary,
-    EquityCurvePoint, Fill, GbResult, LatencyModel, MarketDataBuffer, MarketEvent, Order,
-    OrderEvent, OrderStatus, OrderType, Portfolio, ReplayRequestManifest, RunDatasetManifest,
-    RunEngineManifest, RunExecutionManifest, RunManifest, RunMetricSnapshot, RunStrategyManifest,
-    Side, SlippageModel, Strategy, StrategyContext, StrategyMetrics, Symbol, TimeInForce,
-    TradeRecord,
+    BacktestConfig, BacktestError, BacktestResult, Bar, CoveredCallOrder, DataQualityMode,
+    DataValidationSummary, EquityCurvePoint, Fill, GbResult, LatencyModel, MarketDataBuffer,
+    MarketEvent, Order, OrderEvent, OrderStatus, OrderType, Portfolio, ReplayRequestManifest,
+    RunDatasetManifest, RunEngineManifest, RunExecutionManifest, RunManifest, RunMetricSnapshot,
+    RunStrategyManifest, Side, SlippageModel, Strategy, StrategyContext, StrategyMetrics, Symbol,
+    TimeInForce, TradeRecord,
 };
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use serde::Serialize;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -31,6 +33,85 @@ enum ExecutionDecision {
         remainder_event: Option<OrderEvent>,
     },
     Terminal(OrderEvent),
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OptionGreeksSnapshot {
+    delta: f64,
+    gamma: f64,
+    theta: f64,
+    vega: f64,
+    rho: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OptionPricingSnapshot {
+    spot: f64,
+    implied_volatility: f64,
+    risk_free_rate: f64,
+    dividend_yield: f64,
+    time_to_expiry_years: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OptionSettlementSnapshot {
+    timestamp: String,
+    status: String,
+    spot: f64,
+    shares_delivered: f64,
+    cash_flow: f64,
+    intrinsic_value: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CoveredCallTradeRecord {
+    contract_symbol: String,
+    underlying: String,
+    side: String,
+    contracts: f64,
+    multiplier: f64,
+    strike: f64,
+    premium: f64,
+    commission: f64,
+    net_premium: f64,
+    expiration: String,
+    opened_at: String,
+    status: String,
+    greeks: OptionGreeksSnapshot,
+    pricing: OptionPricingSnapshot,
+    settlement: Option<OptionSettlementSnapshot>,
+    strategy_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OptionLifecycleEvent {
+    timestamp: String,
+    event: String,
+    contract_symbol: String,
+    underlying: String,
+    contracts: f64,
+    strike: f64,
+    spot: f64,
+    shares_delivered: f64,
+    cash_flow: f64,
+    note: String,
+}
+
+#[derive(Debug, Clone)]
+struct OpenCoveredCallPosition {
+    contract: OptionContract,
+    contracts: Decimal,
+    trade_index: usize,
+    strategy_id: String,
+}
+
+fn contract_symbol(contract: &OptionContract) -> String {
+    format!(
+        "{}-{}-{}C",
+        contract.underlying.symbol,
+        contract.expiration.format("%Y%m%d"),
+        contract.strike.round_dp(2)
+    )
 }
 
 fn execution_commission_bps(settings: &gb_types::ExecutionSettings) -> Option<f64> {
@@ -74,6 +155,9 @@ pub struct Engine {
     equity_curve: Vec<EquityCurvePoint>,
     trade_log: Vec<TradeRecord>,
     order_events: Vec<OrderEvent>,
+    option_trades: Vec<CoveredCallTradeRecord>,
+    option_events: Vec<OptionLifecycleEvent>,
+    open_covered_calls: Vec<OpenCoveredCallPosition>,
     equity_peak: Decimal,
     data_validation_summaries: HashMap<String, DataValidationSummary>,
 }
@@ -211,6 +295,9 @@ impl Engine {
             equity_curve: Vec::new(),
             trade_log: Vec::new(),
             order_events: Vec::new(),
+            option_trades: Vec::new(),
+            option_events: Vec::new(),
+            open_covered_calls: Vec::new(),
             data_validation_summaries,
         })
     }
@@ -257,13 +344,16 @@ impl Engine {
             // 3. Update portfolio with current market prices
             self.update_portfolio_values().await?;
 
-            // 4. Generate strategy signals
+            // 4. Process option lifecycle events that settle on the current bar
+            self.process_option_lifecycle().await?;
+
+            // 5. Generate strategy signals
             self.generate_strategy_signals().await?;
 
-            // 5. Call strategy's on_day_end for end-of-day processing
+            // 6. Call strategy's on_day_end for end-of-day processing
             self.call_strategy_day_end().await?;
 
-            // 6. Update daily returns
+            // 7. Update daily returns
             self.update_daily_returns().await?;
 
             // Advance time
@@ -679,6 +769,248 @@ impl Engine {
         })
     }
 
+    fn current_price_for_symbol(&self, symbol: &Symbol) -> Option<Decimal> {
+        self.current_market_bars
+            .iter()
+            .rev()
+            .find(|(candidate, _)| candidate == symbol)
+            .map(|(_, bar)| bar.close)
+            .or_else(|| self.strategy_context.get_current_price(symbol))
+    }
+
+    fn open_covered_call(&mut self, order: CoveredCallOrder) -> GbResult<()> {
+        let Some(spot) = self.current_price_for_symbol(&order.underlying) else {
+            warn!(
+                "Skipping covered call write for {} because no current spot price is available",
+                order.underlying
+            );
+            return Ok(());
+        };
+
+        let required_shares = order.contracts * Decimal::from(100);
+        let held_shares = self
+            .portfolio
+            .get_position(&order.underlying)
+            .map(|position| position.quantity)
+            .unwrap_or(Decimal::ZERO);
+        if held_shares < required_shares {
+            warn!(
+                "Skipping covered call write for {} because only {} shares are held (need {})",
+                order.underlying, held_shares, required_shares
+            );
+            return Ok(());
+        }
+
+        let contract = OptionContract::equity(
+            order.underlying.clone(),
+            OptionKind::Call,
+            order.strike,
+            order.expiration,
+        );
+        let pricing_input = PricingInput {
+            spot: decimal_to_f64(spot),
+            risk_free_rate: decimal_to_f64(order.risk_free_rate),
+            volatility: decimal_to_f64(order.implied_volatility),
+            dividend_yield: decimal_to_f64(order.dividend_yield),
+            time_to_expiry: contract.time_to_expiry(self.current_time),
+        };
+        let pricing = black_scholes_price(&contract, &pricing_input);
+        let strategy_id = self.strategy.get_config().strategy_id.clone();
+        let mut trade = simulate_open(
+            &contract,
+            Side::Sell,
+            order.contracts,
+            &pricing_input,
+            order.commission_per_contract,
+            &strategy_id,
+        )
+        .map_err(|error| BacktestError::ExecutionFailed {
+            message: format!("failed to open covered call: {}", error),
+        })?;
+        trade.executed_at = self.current_time;
+
+        let net_premium = trade.cash_flow();
+        self.portfolio.apply_cash_adjustment(
+            net_premium,
+            net_premium,
+            trade.commission,
+            self.current_time,
+        );
+        self.sync_strategy_context_account_state();
+
+        let trade_index = self.option_trades.len();
+        let contract_label = contract_symbol(&contract);
+        self.option_trades.push(CoveredCallTradeRecord {
+            contract_symbol: contract_label.clone(),
+            underlying: contract.underlying.symbol.clone(),
+            side: "SELL".to_string(),
+            contracts: decimal_to_f64(order.contracts),
+            multiplier: decimal_to_f64(contract.multiplier),
+            strike: decimal_to_f64(contract.strike),
+            premium: decimal_to_f64(pricing.price),
+            commission: decimal_to_f64(trade.commission),
+            net_premium: decimal_to_f64(net_premium),
+            expiration: contract.expiration.to_rfc3339(),
+            opened_at: self.current_time.to_rfc3339(),
+            status: "open".to_string(),
+            greeks: OptionGreeksSnapshot {
+                delta: decimal_to_f64(pricing.greeks.delta),
+                gamma: decimal_to_f64(pricing.greeks.gamma),
+                theta: decimal_to_f64(pricing.greeks.theta),
+                vega: decimal_to_f64(pricing.greeks.vega),
+                rho: decimal_to_f64(pricing.greeks.rho),
+            },
+            pricing: OptionPricingSnapshot {
+                spot: pricing_input.spot,
+                implied_volatility: pricing_input.volatility,
+                risk_free_rate: pricing_input.risk_free_rate,
+                dividend_yield: pricing_input.dividend_yield,
+                time_to_expiry_years: pricing_input.time_to_expiry,
+            },
+            settlement: None,
+            strategy_id: strategy_id.clone(),
+        });
+        self.option_events.push(OptionLifecycleEvent {
+            timestamp: self.current_time.to_rfc3339(),
+            event: "covered_call_opened".to_string(),
+            contract_symbol: contract_label,
+            underlying: contract.underlying.symbol.clone(),
+            contracts: decimal_to_f64(order.contracts),
+            strike: decimal_to_f64(contract.strike),
+            spot: decimal_to_f64(spot),
+            shares_delivered: 0.0,
+            cash_flow: decimal_to_f64(net_premium),
+            note: "opened short call against an existing long equity position".to_string(),
+        });
+        self.open_covered_calls.push(OpenCoveredCallPosition {
+            contract,
+            contracts: order.contracts,
+            trade_index,
+            strategy_id,
+        });
+
+        Ok(())
+    }
+
+    async fn process_option_lifecycle(&mut self) -> GbResult<()> {
+        if self.open_covered_calls.is_empty() {
+            return Ok(());
+        }
+
+        let mut remaining_positions = Vec::new();
+        let mut assignment_events = Vec::new();
+
+        for position in std::mem::take(&mut self.open_covered_calls) {
+            if self.current_time < position.contract.expiration {
+                remaining_positions.push(position);
+                continue;
+            }
+
+            let Some(spot) = self.current_price_for_symbol(&position.contract.underlying) else {
+                remaining_positions.push(position);
+                continue;
+            };
+
+            let contract_label = contract_symbol(&position.contract);
+            let intrinsic_value = position.contract.intrinsic_value(spot);
+            let shares_delivered = position.contract.multiplier * position.contracts;
+            let settlement = if intrinsic_value > Decimal::ZERO {
+                let assignment_order = Order::market_order(
+                    position.contract.underlying.clone(),
+                    Side::Sell,
+                    shares_delivered,
+                    position.strategy_id.clone(),
+                );
+                let mut assignment_fill = Fill::new(
+                    assignment_order.id,
+                    position.contract.underlying.clone(),
+                    Side::Sell,
+                    shares_delivered,
+                    position.contract.strike,
+                    Decimal::ZERO,
+                    position.strategy_id.clone(),
+                );
+                assignment_fill.executed_at = self.current_time;
+                self.portfolio.apply_fill(&assignment_fill);
+                self.strategy_metrics.total_trades += 1;
+
+                let mut trade_record_fill =
+                    self.trade_record_from_fill(&assignment_order, &assignment_fill);
+                trade_record_fill.tags.push("option_assignment".to_string());
+                trade_record_fill.tags.push(contract_label.clone());
+                self.trade_log.push(trade_record_fill);
+                assignment_events.push(OrderEvent::OrderFilled {
+                    order_id: assignment_order.id,
+                    fill: assignment_fill,
+                });
+
+                self.option_events.push(OptionLifecycleEvent {
+                    timestamp: self.current_time.to_rfc3339(),
+                    event: "covered_call_assigned".to_string(),
+                    contract_symbol: contract_label.clone(),
+                    underlying: position.contract.underlying.symbol.clone(),
+                    contracts: decimal_to_f64(position.contracts),
+                    strike: decimal_to_f64(position.contract.strike),
+                    spot: decimal_to_f64(spot),
+                    shares_delivered: decimal_to_f64(shares_delivered),
+                    cash_flow: decimal_to_f64(position.contract.strike * shares_delivered),
+                    note: "short call finished in the money and shares were called away"
+                        .to_string(),
+                });
+
+                (
+                    "assigned".to_string(),
+                    OptionSettlementSnapshot {
+                        timestamp: self.current_time.to_rfc3339(),
+                        status: "assigned".to_string(),
+                        spot: decimal_to_f64(spot),
+                        shares_delivered: decimal_to_f64(shares_delivered),
+                        cash_flow: decimal_to_f64(position.contract.strike * shares_delivered),
+                        intrinsic_value: decimal_to_f64(intrinsic_value),
+                    },
+                )
+            } else {
+                self.option_events.push(OptionLifecycleEvent {
+                    timestamp: self.current_time.to_rfc3339(),
+                    event: "covered_call_expired".to_string(),
+                    contract_symbol: contract_label.clone(),
+                    underlying: position.contract.underlying.symbol.clone(),
+                    contracts: decimal_to_f64(position.contracts),
+                    strike: decimal_to_f64(position.contract.strike),
+                    spot: decimal_to_f64(spot),
+                    shares_delivered: 0.0,
+                    cash_flow: 0.0,
+                    note: "short call expired out of the money".to_string(),
+                });
+
+                (
+                    "expired".to_string(),
+                    OptionSettlementSnapshot {
+                        timestamp: self.current_time.to_rfc3339(),
+                        status: "expired".to_string(),
+                        spot: decimal_to_f64(spot),
+                        shares_delivered: 0.0,
+                        cash_flow: 0.0,
+                        intrinsic_value: 0.0,
+                    },
+                )
+            };
+
+            if let Some(trade_record) = self.option_trades.get_mut(position.trade_index) {
+                trade_record.status = settlement.0;
+                trade_record.settlement = Some(settlement.1);
+            }
+        }
+
+        self.open_covered_calls = remaining_positions;
+        if !assignment_events.is_empty() {
+            self.record_order_events(assignment_events)?;
+        } else {
+            self.sync_strategy_context_account_state();
+        }
+        Ok(())
+    }
+
     /// Update portfolio values with current market prices
     async fn update_portfolio_values(&mut self) -> GbResult<()> {
         let current_prices = self
@@ -772,6 +1104,13 @@ impl Engine {
                 });
                 self.sync_strategy_context_account_state();
                 self.record_order_events(cancel_events)?;
+            }
+            StrategyAction::WriteCoveredCall(order) => {
+                debug!(
+                    "Strategy wrote covered call: {} {} strike {} exp {}",
+                    order.contracts, order.underlying, order.strike, order.expiration
+                );
+                self.open_covered_call(order)?;
             }
             StrategyAction::Log { level, message } => match level {
                 gb_types::LogLevel::Debug => debug!("[Strategy] {}", message),
@@ -1036,6 +1375,22 @@ impl Engine {
                 .values()
                 .any(|summary| summary.sample_data)),
         );
+        result.metadata.insert(
+            "option_trades".to_string(),
+            serde_json::to_value(&self.option_trades)?,
+        );
+        result.metadata.insert(
+            "option_events".to_string(),
+            serde_json::to_value(&self.option_events)?,
+        );
+        result.metadata.insert(
+            "option_support_level".to_string(),
+            serde_json::json!(if self.option_trades.is_empty() {
+                "none"
+            } else {
+                "experimental"
+            }),
+        );
         result.manifest = Some(self.build_run_manifest(result));
 
         info!("Final portfolio value: {}", self.portfolio.total_equity);
@@ -1105,9 +1460,8 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use gb_types::{
-        DataQualityMode, DataValidationSummary, DatasetKind, LatencyModel, OrderEvent,
-        OrderStatus, PriceAdjustmentMode, Resolution, Side, StrategyAction, StrategyConfig,
-        TimeInForce,
+        DataQualityMode, DataValidationSummary, DatasetKind, LatencyModel, OrderEvent, OrderStatus,
+        PriceAdjustmentMode, Resolution, Side, StrategyAction, StrategyConfig, TimeInForce,
     };
 
     #[derive(Debug, Clone)]
@@ -1221,6 +1575,9 @@ mod tests {
             equity_curve: Vec::new(),
             trade_log: Vec::new(),
             order_events: Vec::new(),
+            option_trades: Vec::new(),
+            option_events: Vec::new(),
+            open_covered_calls: Vec::new(),
             equity_peak: Decimal::from(100_000),
             data_validation_summaries: HashMap::new(),
         }

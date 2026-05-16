@@ -6,17 +6,19 @@ use rust_decimal::Decimal;
 
 use gb_engine::BacktestEngine as RustBacktestEngine;
 use gb_types::{
-    BacktestConfig, BacktestResult as RustBacktestResult, BuyAndHoldStrategy, DataQualityMode,
-    LatencyModel, MeanReversionStrategy, MomentumStrategy, MovingAverageCrossoverStrategy,
-    Resolution, RsiStrategy, SlippageModel, Strategy, StrategyConfig, Symbol,
+    BacktestConfig, BacktestResult as RustBacktestResult, BuyAndHoldStrategy, CoveredCallStrategy,
+    DataQualityMode, LatencyModel, MeanReversionStrategy, MomentumStrategy,
+    MovingAverageCrossoverStrategy, Resolution, RsiStrategy, SlippageModel, Strategy,
+    StrategyConfig, Symbol,
 };
 
-const BUILTIN_STRATEGIES: [&str; 5] = [
+const BUILTIN_STRATEGIES: [&str; 6] = [
     "buy_and_hold",
     "ma_crossover",
     "momentum",
     "mean_reversion",
     "rsi",
+    "covered_call",
 ];
 
 fn supported_builtin_strategies() -> String {
@@ -160,6 +162,7 @@ fn build_strategy(name: &str, params: Option<&Bound<PyDict>>) -> PyResult<Box<dy
                 overbought_threshold,
             )))
         }
+        "covered_call" => Ok(Box::new(CoveredCallStrategy::new())),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "Unsupported strategy: {}. Supported strategies: {}",
             other,
@@ -394,6 +397,7 @@ fn build_builtin_strategy(
                 overbought_threshold,
             )))
         }
+        "covered_call" => Ok(Box::new(CoveredCallStrategy::new())),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "Unsupported built-in strategy: {}. Supported strategies: {}",
             other,
@@ -818,6 +822,8 @@ struct PyBacktestResult {
     trades: Vec<TradePoint>,
     exposures: Vec<ExposurePoint>,
     order_events: Vec<serde_json::Value>,
+    option_trades: Vec<serde_json::Value>,
+    option_events: Vec<serde_json::Value>,
     logs: Vec<String>,
     final_cash: f64,
     final_positions: std::collections::HashMap<String, f64>,
@@ -1023,6 +1029,19 @@ impl PyBacktestResult {
             .filter_map(|event| serde_json::to_value(event).ok())
             .collect::<Vec<_>>();
 
+        let option_trades = result
+            .metadata
+            .get("option_trades")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        let option_events = result
+            .metadata
+            .get("option_events")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        metrics_summary.insert("option_trade_count".to_string(), option_trades.len() as f64);
+        metrics_summary.insert("option_event_count".to_string(), option_events.len() as f64);
+
         let manifest = result
             .manifest
             .as_ref()
@@ -1111,6 +1130,8 @@ impl PyBacktestResult {
             trades,
             exposures,
             order_events,
+            option_trades,
+            option_events,
             logs,
             final_cash,
             final_positions,
@@ -1197,6 +1218,30 @@ impl PyBacktestResult {
         let payload = serde_json::to_string(&self.order_events).map_err(|error| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "Failed to serialize order events: {}",
+                error
+            ))
+        })?;
+        Ok(json.call_method1("loads", (payload,))?.into())
+    }
+
+    #[getter]
+    fn option_trades(&self, py: Python) -> PyResult<PyObject> {
+        let json = py.import("json")?;
+        let payload = serde_json::to_string(&self.option_trades).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to serialize option trades: {}",
+                error
+            ))
+        })?;
+        Ok(json.call_method1("loads", (payload,))?.into())
+    }
+
+    #[getter]
+    fn option_events(&self, py: Python) -> PyResult<PyObject> {
+        let json = py.import("json")?;
+        let payload = serde_json::to_string(&self.option_events).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to serialize option events: {}",
                 error
             ))
         })?;
@@ -1729,5 +1774,32 @@ mod tests {
         let python_result = run_python_builtin_strategy("ma_crossover", &params);
         let rust_result = run_rust_builtin_strategy("ma_crossover", &params);
         assert_python_result_matches_rust(&python_result, &rust_result);
+    }
+
+    #[test]
+    fn covered_call_python_helper_surfaces_option_payloads() {
+        let python_result = run_python_builtin_strategy("covered_call", &[]);
+        let rust_result = run_rust_builtin_strategy("covered_call", &[]);
+        assert_python_result_matches_rust(&python_result, &rust_result);
+
+        let rust_option_trades = rust_result
+            .metadata
+            .get("option_trades")
+            .and_then(|value| value.as_array())
+            .expect("rust covered call result should include option trades metadata");
+        let rust_option_events = rust_result
+            .metadata
+            .get("option_events")
+            .and_then(|value| value.as_array())
+            .expect("rust covered call result should include option events metadata");
+
+        assert!(!python_result.option_trades.is_empty());
+        assert!(!python_result.option_events.is_empty());
+        assert_eq!(python_result.option_trades.len(), rust_option_trades.len());
+        assert_eq!(python_result.option_events.len(), rust_option_events.len());
+        assert_eq!(
+            python_result.metrics_summary["option_trade_count"],
+            rust_option_trades.len() as f64
+        );
     }
 }

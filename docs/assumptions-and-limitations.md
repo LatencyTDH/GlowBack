@@ -33,8 +33,9 @@ GlowBack already covers a meaningful research workflow, but it is still an alpha
 
 ## Options workflow
 
-- The `gb-options` crate provides pricing and contract primitives, but end-to-end options backtesting is still incomplete.
-- Use options support as an experimental surface until the documented engine/accounting path is complete.
+- The `gb-options` crate now has one documented end-to-end engine path: an experimental covered-call workflow that buys 100 shares, prices a short call with Black-Scholes greeks, and records option lifecycle events in Rust/Python/API result payloads.
+- Broader multi-leg options accounting, mark-to-market liability treatment, and richer exercise/assignment flows are still incomplete.
+- Use options support as an experimental surface until the documented engine/accounting path is broader than the current covered-call slice.
 
 ## How to use this page
 

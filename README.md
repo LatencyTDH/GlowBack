@@ -20,7 +20,7 @@ GlowBack provides a fast, realistic backtesting engine with data management, sto
 - Event‑driven simulation engine with slippage/latency/commission models, order lifecycle events, and participation-capped partial fills
 - Data ingestion (CSV, Alpha Vantage, explicit sample/demo data)
 - Arrow/Parquet columnar storage and SQLite metadata catalog
-- Strategy library (5 built‑in strategies; the quickstart smoke path exercises four of them)
+- Strategy library (6 built‑in strategies, including an experimental covered-call workflow; the quickstart smoke path exercises four of them)
 - Python bindings (async support)
 - Streamlit UI for strategy development and analysis
 - Durable experiment registry for saved strategies, historical runs, and cross-session comparisons
@@ -54,7 +54,7 @@ Phase 0+ (Production Infrastructure) is complete. Phase 1 (Alpha) is in progress
 - Multi‑symbol backtesting with chronological event ordering and auditable order submission/fill/cancel/expire traces
 - Performance analytics (Sharpe, Sortino, Calmar, CAGR, Max Drawdown, etc.)
 - Risk analytics (VaR, CVaR, skewness, kurtosis)
-- Built-in strategies: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, and RSI
+- Built-in strategies: Buy & Hold, Moving Average Crossover, Momentum, Mean Reversion, RSI, and an experimental Covered Call path
 - Strategy authoring templates for both the Rust engine lifecycle and the UI's local Python runner lifecycle
 - Storage: Arrow/Parquet with batch loading and round‑trip I/O
 - Catalog: SQLite metadata with indexed queries
@@ -136,6 +136,7 @@ Or run the checked-in clean-venv smoke path:
 ```
 
 The supported public surface is exported via `glowback.__all__`, and canonical built-in strategy IDs are available in `glowback.BUILTIN_STRATEGIES`.
+The Python runtime now also returns `order_events`, `option_trades`, and `option_events` when a strategy emits those lifecycle records.
 
 ```python
 import glowback
@@ -152,7 +153,7 @@ manager.add_sample_provider()
 bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z", "day")
 ```
 
-`cargo test -p gb-python --locked --no-default-features` includes parity checks that compare the Python helpers with the direct Rust engine for both `buy_and_hold` and `ma_crossover`. The docs smoke workflow also runs `./scripts/python_sdk_quickstart.sh`, which builds `gb-python` in an isolated virtualenv and executes `examples/python_sdk_quickstart.py` end to end.
+`cargo test -p gb-python --locked --no-default-features` includes parity checks that compare the Python helpers with the direct Rust engine for `buy_and_hold`, `ma_crossover`, and the experimental `covered_call` path. The docs smoke workflow also runs `./scripts/python_sdk_quickstart.sh`, which builds `gb-python` in an isolated virtualenv and executes `examples/python_sdk_quickstart.py` end to end.
 
 ## Testing
 
