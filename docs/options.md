@@ -61,10 +61,52 @@ let iv = implied_volatility(&contract, 8.50, 155.0, 0.05, 0.0, 0.25);
 println!("IV: {:?}", iv);
 ```
 
+## Engine-backed covered-call workflow (experimental)
+
+GlowBack now exposes a narrow end-to-end options path for a covered call:
+
+- `covered_call` is available as a built-in strategy in Rust manifests, the Python bindings, and the engine-backed API/runtime.
+- The strategy buys 100 shares of the underlying, writes one short call, and records the contract premium plus Black-Scholes greeks at entry.
+- Completed runs include `option_trades` and `option_events` payloads alongside the normal equity `trades`/`order_events` so downstream API and Python consumers can inspect option lifecycle details.
+
+Python example:
+
+```python
+from datetime import datetime, timezone
+from glowback_runtime import run_backtest
+
+result = run_backtest(
+    symbols=["AAPL"],
+    start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    end_date=datetime(2026, 1, 15, tzinfo=timezone.utc),
+    strategy_name="covered_call",
+    strategy_params={
+        "contracts": 1,
+        "call_otm_pct": 5.0,
+        "days_to_expiry": 7,
+        "implied_volatility": 0.25,
+        "risk_free_rate": 0.01,
+        "commission_per_contract": 0.65,
+    },
+    data_source="sample",
+)
+
+print(result["option_trades"])
+print(result["option_events"])
+```
+
+Current limitations:
+
+- This is a single-leg covered-call path, not general multi-leg options backtesting.
+- The engine records option lifecycle metadata, but broader option liability mark-to-market accounting is still roadmap work.
+- Assignment/expiration logic is intentionally conservative and should be treated as a research aid, not broker-grade execution semantics.
+
 ## Tests
 
 ```bash
 cargo test -p gb-options
+cargo test -p gb-engine covered_call
+cargo test -p gb-python --locked --no-default-features covered_call
 ```
 
 34 unit tests covering:

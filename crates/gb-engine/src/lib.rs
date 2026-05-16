@@ -357,6 +357,7 @@ mod tests {
                     overbought_threshold,
                 ))
             }
+            "covered_call" => Box::new(gb_types::CoveredCallStrategy::new()),
             other => panic!("unsupported manifest replay strategy: {other}"),
         }
     }
@@ -647,6 +648,85 @@ mod tests {
         // Verify we got valid results
         assert!(backtest_result.final_portfolio.is_some());
         assert!(backtest_result.strategy_metrics.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_backtest_with_covered_call_strategy_records_option_lifecycle() {
+        use gb_types::CoveredCallStrategy;
+
+        let mut config = create_test_config();
+        config.symbols = vec![Symbol::equity("AAPL")];
+        config.initial_capital = Decimal::from(50_000);
+        config.start_date = Utc::now() - Duration::days(6);
+        config.end_date = Utc::now();
+        config
+            .strategy_config
+            .set_parameter("call_otm_pct", -20.0f64);
+        config.strategy_config.set_parameter("days_to_expiry", 1i64);
+        config
+            .strategy_config
+            .set_parameter("implied_volatility", 0.20f64);
+        config
+            .strategy_config
+            .set_parameter("commission_per_contract", 0.65f64);
+
+        let mut engine = BacktestEngine::new(config).await.unwrap();
+        let result = engine
+            .run_with_strategy(Box::new(CoveredCallStrategy::new()))
+            .await
+            .unwrap();
+
+        let option_trades = result
+            .metadata
+            .get("option_trades")
+            .and_then(|value| value.as_array())
+            .expect("option trades metadata should be present");
+        assert_eq!(option_trades.len(), 1);
+        assert!(option_trades[0].get("greeks").is_some());
+        assert_eq!(option_trades[0]["status"], serde_json::json!("assigned"));
+
+        let option_events = result
+            .metadata
+            .get("option_events")
+            .and_then(|value| value.as_array())
+            .expect("option events metadata should be present");
+        assert!(option_events.iter().any(|event| {
+            event.get("event") == Some(&serde_json::json!("covered_call_opened"))
+        }));
+        assert!(option_events.iter().any(|event| {
+            event.get("event") == Some(&serde_json::json!("covered_call_assigned"))
+        }));
+        assert!(
+            result
+                .trade_log
+                .iter()
+                .any(|trade| trade.tags.iter().any(|tag| tag == "option_assignment")),
+            "assignment should show up in the underlying trade log"
+        );
+
+        let manifest = result
+            .manifest
+            .clone()
+            .expect("covered call runs should include a manifest");
+        assert_eq!(manifest.replay_request.strategy_name, "covered_call");
+
+        let replay_config = replay_config_from_manifest(&manifest);
+        let replay_strategy = strategy_from_manifest(&manifest);
+        let mut replay_engine = BacktestEngine::new(replay_config).await.unwrap();
+        let replay_result = replay_engine
+            .run_with_strategy(replay_strategy)
+            .await
+            .unwrap();
+        let replay_option_trades = replay_result
+            .metadata
+            .get("option_trades")
+            .and_then(|value| value.as_array())
+            .expect("replay option trades metadata should be present");
+        assert_eq!(replay_option_trades.len(), 1);
+        assert_eq!(
+            replay_option_trades[0]["status"],
+            serde_json::json!("assigned")
+        );
     }
 
     #[tokio::test]

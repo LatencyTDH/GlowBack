@@ -4,9 +4,9 @@
 
 Run `./scripts/quickstart.sh` from the repository root. It is the same smoke path used by CI and verifies the core Rust example before you spend time on API/UI setup.
 
-## Why does the quickstart say four strategies if the docs list five?
+## Why does the quickstart say four strategies if the docs list six?
 
-The Rust/Python strategy library currently includes five built-ins: `buy_and_hold`, `ma_crossover`, `momentum`, `mean_reversion`, and `rsi`. The quickstart smoke example exercises four non-RSI strategies and keeps its historical success marker so CI can detect drift.
+The Rust/Python strategy library currently includes six built-ins: `buy_and_hold`, `ma_crossover`, `momentum`, `mean_reversion`, `rsi`, and the experimental `covered_call`. The quickstart smoke example still exercises four strategies and keeps its historical success marker so CI can detect drift.
 
 ## Do I need Rust installed to use the UI?
 

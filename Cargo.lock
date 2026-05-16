@@ -919,6 +919,7 @@ dependencies = [
  "chrono",
  "criterion",
  "gb-data",
+ "gb-options",
  "gb-types",
  "rust_decimal",
  "serde",

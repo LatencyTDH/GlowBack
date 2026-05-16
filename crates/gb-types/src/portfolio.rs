@@ -182,6 +182,20 @@ impl Portfolio {
         self.update_totals();
     }
 
+    pub fn apply_cash_adjustment(
+        &mut self,
+        cash_delta: Decimal,
+        realized_pnl_delta: Decimal,
+        commission_delta: Decimal,
+        as_of: DateTime<Utc>,
+    ) {
+        self.cash += cash_delta;
+        self.total_realized_pnl += realized_pnl_delta;
+        self.total_commissions += commission_delta;
+        self.last_updated = as_of;
+        self.update_totals();
+    }
+
     fn update_totals(&mut self) {
         self.total_unrealized_pnl = self.positions.values().map(|p| p.unrealized_pnl).sum();
 
