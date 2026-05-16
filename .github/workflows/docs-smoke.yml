@@ -9,6 +9,7 @@ on:
       - "mkdocs.yml"
       - "scripts/quickstart.sh"
       - "scripts/python_sdk_quickstart.sh"
+      - "scripts/replay_manifest_tutorial.sh"
       - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -22,6 +23,7 @@ on:
       - "mkdocs.yml"
       - "scripts/quickstart.sh"
       - "scripts/python_sdk_quickstart.sh"
+      - "scripts/replay_manifest_tutorial.sh"
       - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -44,6 +46,8 @@ jobs:
         run: ./scripts/quickstart.sh
       - name: Run Python SDK quickstart smoke test
         run: ./scripts/python_sdk_quickstart.sh
+      - name: Run replay-manifest tutorial smoke test
+        run: ./scripts/replay_manifest_tutorial.sh
       - name: Build docs strictly
         run: |
           python -m pip install --upgrade pip
