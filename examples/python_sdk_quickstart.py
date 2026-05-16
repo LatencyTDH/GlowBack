@@ -59,6 +59,7 @@ if __name__ == "__main__":
             "momentum",
             "mean_reversion",
             "rsi",
+            "covered_call",
         ],
         "BUILTIN_STRATEGIES drifted",
     )
