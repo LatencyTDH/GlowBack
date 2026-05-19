@@ -165,12 +165,24 @@ That tutorial generates a real sample-data result, validates the emitted manifes
 replays it locally with `glowback_runtime`, and checks that the replayed metrics
 match the captured snapshot within tolerance.
 
+For a checked-in CSV ingestion path, run:
+
+```bash
+./scripts/csv_data_tutorial.sh
+```
+
+That tutorial loads the provider-compatible fixture in `examples/data/AAPL_1d.csv`,
+proves the documented `DataManager.add_csv_provider(...)` flow works end to end,
+and runs a CSV-backed `BacktestEngine` example against the same dataset.
+
 ## Testing
 
 ```bash
 cargo test --workspace --locked --exclude gb-python
 cargo test -p gb-python --locked --no-default-features
 ./scripts/quickstart.sh
+./scripts/python_sdk_quickstart.sh
+./scripts/csv_data_tutorial.sh
 ./scripts/replay_manifest_tutorial.sh
 mkdocs build --strict
 ```
