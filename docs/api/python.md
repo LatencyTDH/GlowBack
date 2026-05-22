@@ -11,11 +11,14 @@ python -m pip install maturin
 maturin develop -m crates/gb-python/Cargo.toml
 ```
 
-For a clean-checkout smoke path that creates an isolated virtualenv, builds the extension, and runs a checked-in example end to end:
+For clean-checkout smoke paths that validate both source installs and wheel installs end to end:
 
 ```bash
 ./scripts/python_sdk_quickstart.sh
+./scripts/python_sdk_wheel_smoke.sh
 ```
+
+`python_sdk_quickstart.sh` covers the editable `maturin develop` path. `python_sdk_wheel_smoke.sh` builds a wheel, installs it into a fresh virtualenv, and reruns the checked-in example so packaging drift is caught locally before CI.
 
 ## Supported public surface
 
@@ -28,11 +31,11 @@ print(glowback.__all__)
 print(glowback.BUILTIN_STRATEGIES)
 ```
 
-CI parity coverage for the binding lives in `cargo test -p gb-python --locked --no-default-features`, including direct Python-vs-Rust checks for `buy_and_hold` and `ma_crossover`. The docs smoke workflow also runs `./scripts/python_sdk_quickstart.sh` so the documented install/build path stays executable.
+CI parity coverage for the binding lives in `cargo test -p gb-python --locked --no-default-features`, including direct Python-vs-Rust checks for `buy_and_hold` and `ma_crossover`. The docs smoke workflow runs `./scripts/python_sdk_quickstart.sh`, and `.github/workflows/python-wheels.yml` builds CPython 3.10+ abi3 wheel artifacts for Linux x86_64 plus macOS x86_64/arm64, smoke-installs them, and uploads the matching source distribution.
 
 ## Quick Helper
 
-The checked-in companion example lives at `examples/python_sdk_quickstart.py` and exercises both the helper and `BacktestEngine` paths against sample data.
+The checked-in companion example lives at `examples/python_sdk_quickstart.py` and exercises both the helper and `BacktestEngine` paths against sample data. The wheel smoke script reuses this same example so the documented behavior stays aligned across editable installs and packaged artifacts.
 
 
 ```python
@@ -73,6 +76,7 @@ Supported built-ins:
 - `momentum`
 - `mean_reversion`
 - `rsi`
+- `covered_call`
 
 ## Classes
 

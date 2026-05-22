@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Python wheel packaging:** `gb-python` now builds as a CPython 3.10+ abi3 extension, ships a checked-in `./scripts/python_sdk_wheel_smoke.sh` installer validation path, and has a dedicated `python-wheels.yml` workflow that builds Linux/macOS wheel artifacts plus an sdist and smoke-installs each wheel before upload.
 - **Paper broker parity + audit trail:** `gb-live::PaperBroker` now keeps an append-only audit log for broker events, inventories rejection reasons for sell-over-inventory attempts, and ships a replay test that feeds a backtest order stream back through the paper broker to prove cash/position parity on the sample buy-and-hold path.
 - **Data quality summaries + strict mode:** `gb-data` now validates fetched datasets, persists per-symbol validation summaries in the catalog, records dataset provenance/price-adjustment metadata, and exposes those summaries through run manifests/result metadata. `DataSettings.data_quality_mode` defaults to `warn` and can be set to `fail` to reject datasets with critical issues before a backtest starts.
 - **Execution realism:** `gb-engine` now records order lifecycle events, respects time-in-force semantics for day/IOC/FOK orders, and caps fills by a configurable `max_volume_participation` setting so oversized orders can partially fill instead of always executing in one shot.
