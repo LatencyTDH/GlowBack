@@ -1,0 +1,103 @@
+name: Python Wheels
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/gb-python/**"
+      - "examples/python_sdk_quickstart.py"
+      - "scripts/python_sdk_wheel_smoke.sh"
+      - ".github/workflows/python-wheels.yml"
+      - "README.md"
+      - "docs/api/python.md"
+      - "docs/examples/index.md"
+      - "docs/changelog.md"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/gb-python/**"
+      - "examples/python_sdk_quickstart.py"
+      - "scripts/python_sdk_wheel_smoke.sh"
+      - ".github/workflows/python-wheels.yml"
+      - "README.md"
+      - "docs/api/python.md"
+      - "docs/examples/index.md"
+      - "docs/changelog.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheels:
+    name: Build ${{ matrix.label }} wheel
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: 2014
+            artifact_name: glowback-wheel-linux-x86_64
+          - label: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            manylinux: off
+            artifact_name: glowback-wheel-macos-x86_64
+          - label: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            manylinux: off
+            artifact_name: glowback-wheel-macos-arm64
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --manifest-path crates/gb-python/Cargo.toml --out dist
+      - name: Smoke test built wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip virtualenv
+          python -m virtualenv .wheel-venv
+          source .wheel-venv/bin/activate
+          python -m pip install dist/glowback-*.whl
+          python examples/python_sdk_quickstart.py | tee wheel-smoke.log
+          grep -q "✅ Python SDK quickstart completed successfully" wheel-smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  build-sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build source distribution
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m maturin sdist --manifest-path crates/gb-python/Cargo.toml --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glowback-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error

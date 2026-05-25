@@ -52,6 +52,28 @@ Expected success marker:
 ✅ Python SDK quickstart completed successfully
 ```
 
+## Python SDK wheel smoke example
+
+- File: `scripts/python_sdk_wheel_smoke.sh`
+- Command:
+
+```bash
+./scripts/python_sdk_wheel_smoke.sh
+```
+
+What it proves:
+
+- `gb-python` can be packaged as a wheel from a clean checkout instead of only via editable source installs
+- the built wheel installs into a fresh virtualenv and still imports `glowback` without repo-local hacks
+- the same checked-in Python quickstart example succeeds after wheel installation, so packaging and runtime behavior stay in sync
+- the wheel path stays honest locally and in `.github/workflows/python-wheels.yml`
+
+Expected success marker:
+
+```text
+✅ Python SDK quickstart completed successfully
+```
+
 ## CSV data tutorial example
 
 - File: `examples/csv_data_tutorial.py`
