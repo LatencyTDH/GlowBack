@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 gb-types = { path = "../gb-types" }
 gb-data = { path = "../gb-data" }
 gb-engine = { path = "../gb-engine" }
-pyo3 = { version = "0.25", features = ["auto-initialize", "abi3-py310"] }
+pyo3 = { version = "0.29", features = ["auto-initialize", "abi3-py310"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
