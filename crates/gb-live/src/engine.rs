@@ -292,6 +292,12 @@ impl<B: Broker, S: Strategy> LiveEngine<B, S> {
                     warn!(order_id = %order_id, error = %e, "cancel failed");
                 }
             }
+            StrategyAction::WriteCoveredCall(order) => {
+                return Err(format!(
+                    "live engine does not support WriteCoveredCall for {} yet",
+                    order.underlying
+                ));
+            }
             StrategyAction::Log { level, message } => match level {
                 gb_types::strategy::LogLevel::Debug => {
                     tracing::debug!(strategy = %self.config.strategy_config.strategy_id, "{message}")
@@ -345,7 +351,7 @@ impl<B: Broker, S: Strategy> LiveEngine<B, S> {
                     error!(order_id = %order.id, error = %e, "broker rejected order");
                 }
             },
-            RiskCheckResult::Rejected { reason } => {
+            RiskCheckResult::Rejected { reason, .. } => {
                 self.emit(LiveEngineEvent::OrderRejectedByRisk {
                     order_id: order.id,
                     reason: reason.clone(),

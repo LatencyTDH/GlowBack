@@ -1039,11 +1039,13 @@ def _detect_strategy_name(strategy_code: str, config: dict[str, Any]) -> str:
         return "momentum"
     if "rsistrategy" in normalized_code or "rsi" in normalized_code:
         return "rsi"
+    if "coveredcall" in normalized_code or "covered call" in normalized_code:
+        return "covered_call"
     if "buyandhold" in normalized_code or "buy and hold" in normalized_code:
         return "buy_and_hold"
 
     raise ValueError(
-        "The real engine-backed runner supports built-in strategies only: buy_and_hold, ma_crossover, momentum, mean_reversion, rsi."
+        "The real engine-backed runner supports built-in strategies only: buy_and_hold, ma_crossover, momentum, mean_reversion, rsi, covered_call."
     )
 
 
@@ -1064,6 +1066,14 @@ def _strategy_params_for_engine(strategy_name: str, config: dict[str, Any]) -> d
         params.setdefault("lookback_period", int(config.get("lookback_period", 14)))
         params.setdefault("oversold_threshold", float(config.get("oversold_threshold", 30.0)))
         params.setdefault("overbought_threshold", float(config.get("overbought_threshold", 70.0)))
+    elif strategy_name == "covered_call":
+        params.setdefault("contracts", float(config.get("contracts", 1.0)))
+        params.setdefault("call_otm_pct", float(config.get("call_otm_pct", 5.0)))
+        params.setdefault("days_to_expiry", int(config.get("days_to_expiry", 7)))
+        params.setdefault("implied_volatility", float(config.get("implied_volatility", 0.25)))
+        params.setdefault("risk_free_rate", float(config.get("risk_free_rate", 0.01)))
+        params.setdefault("dividend_yield", float(config.get("dividend_yield", 0.0)))
+        params.setdefault("commission_per_contract", float(config.get("commission_per_contract", 0.65)))
 
     return params
 

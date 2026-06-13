@@ -28,12 +28,14 @@ GlowBack already covers a meaningful research workflow, but it is still an alpha
 ## Live and paper trading
 
 - The `gb-live` crate exists, but real broker adapters are intentionally not positioned as production-ready.
-- Safety controls, parity checks, and auditability remain prerequisites before any real-money workflow should be trusted.
+- `PaperBroker` now records an append-only audit trail for broker events and inventory/risk rejections, and CI includes a backtest-order-stream replay check against the paper broker on sample data.
+- Broader safety controls, parity checks, and auditability still remain prerequisites before any real-money workflow should be trusted.
 
 ## Options workflow
 
-- The `gb-options` crate provides pricing and contract primitives, but end-to-end options backtesting is still incomplete.
-- Use options support as an experimental surface until the documented engine/accounting path is complete.
+- The `gb-options` crate now has one documented end-to-end engine path: an experimental covered-call workflow that buys 100 shares, prices a short call with Black-Scholes greeks, and records option lifecycle events in Rust/Python/API result payloads.
+- Broader multi-leg options accounting, mark-to-market liability treatment, and richer exercise/assignment flows are still incomplete.
+- Use options support as an experimental surface until the documented engine/accounting path is broader than the current covered-call slice.
 
 ## How to use this page
 

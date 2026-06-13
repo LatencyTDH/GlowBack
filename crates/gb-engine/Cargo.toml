@@ -11,6 +11,7 @@ path = "src/bin/engine_service.rs"
 [dependencies]
 gb-types = { path = "../gb-types" }
 gb-data = { path = "../gb-data" }
+gb-options = { path = "../gb-options" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

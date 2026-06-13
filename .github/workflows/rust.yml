@@ -132,7 +132,12 @@ jobs:
       - name: Build (crate)
         run: cargo build -p ${{ matrix.crate }} --locked --verbose
       - name: Run tests (crate)
-        run: cargo test -p ${{ matrix.crate }} --locked --verbose
+        run: |
+          if [[ "${{ matrix.crate }}" == "gb-python" ]]; then
+            cargo test -p gb-python --locked --no-default-features --verbose
+          else
+            cargo test -p ${{ matrix.crate }} --locked --verbose
+          fi
       - name: Run strategy lifecycle template example
         if: matrix.crate == 'gb-engine'
         run: cargo run -p gb-engine --example strategy_lifecycle_template --locked --quiet
@@ -148,7 +153,9 @@ jobs:
       - name: Build (workspace)
         run: cargo build --workspace --locked --verbose
       - name: Run tests (workspace)
-        run: cargo test --workspace --locked --verbose
+        run: |
+          cargo test --workspace --locked --verbose --exclude gb-python
+          cargo test -p gb-python --locked --no-default-features --verbose
 
   python-check:
     runs-on: ubuntu-latest

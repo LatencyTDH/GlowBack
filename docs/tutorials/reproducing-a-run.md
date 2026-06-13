@@ -4,7 +4,18 @@ GlowBack backtest results now include a `manifest` payload that captures the
 engine version, dataset fingerprint, execution knobs, and a replayable request
 shape for the run.
 
-## Fetch a completed run
+If you want a runnable local proof before wiring this into your own API workflow,
+start with the checked-in companion script:
+
+```bash
+./scripts/replay_manifest_tutorial.sh
+```
+
+That smoke path builds `gb-python` in an isolated virtualenv, writes a temporary
+`run-result.json`, replays the manifest locally with `glowback_runtime`, and
+verifies that the headline metrics still match within tolerance.
+
+## Fetch a completed run from the API
 
 ```bash
 curl -s \
