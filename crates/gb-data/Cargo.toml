@@ -23,7 +23,7 @@ rayon = { workspace = true }
 async-trait = "0.1"
 
 # SQLite for lightweight catalog metadata (replaces DuckDB bundled — saves ~1.5GB build + 20min compile)
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # CSV and data format support
 csv = "1.3"
