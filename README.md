@@ -8,6 +8,7 @@ High‑performance quantitative backtesting platform built in Rust with Python b
 
 [![CI](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/rust.yml)
 [![Docs Smoke](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs-smoke.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs-smoke.yml)
+[![Python Wheels](https://github.com/LatencyTDH/GlowBack/actions/workflows/python-wheels.yml/badge.svg?branch=main)](https://github.com/LatencyTDH/GlowBack/actions/workflows/python-wheels.yml)
 [![Docs](https://github.com/LatencyTDH/GlowBack/actions/workflows/docs.yml/badge.svg?branch=main)](https://latencytdh.github.io/GlowBack/)
 [![Rust Version](https://img.shields.io/badge/rust-stable-blue)](#getting-started)
 [![Python Support](https://img.shields.io/badge/python-3.10%2B-blue)](#python-bindings)
@@ -129,11 +130,14 @@ python -m pip install maturin
 maturin develop -m crates/gb-python/Cargo.toml
 ```
 
-Or run the checked-in clean-venv smoke path:
+Or run the checked-in clean-venv smoke paths:
 
 ```bash
 ./scripts/python_sdk_quickstart.sh
+./scripts/python_sdk_wheel_smoke.sh
 ```
+
+`./scripts/python_sdk_quickstart.sh` validates the editable-source install flow, while `./scripts/python_sdk_wheel_smoke.sh` builds a wheel, installs it into a fresh virtualenv, and reruns the same end-to-end example. CI publishes Linux x86_64 plus macOS x86_64/arm64 wheel artifacts from `.github/workflows/python-wheels.yml`, using PyO3's CPython 3.10+ abi3 compatibility so one wheel works across supported interpreter minors on each platform.
 
 The supported public surface is exported via `glowback.__all__`, and canonical built-in strategy IDs are available in `glowback.BUILTIN_STRATEGIES`.
 The Python runtime now also returns `order_events`, `option_trades`, and `option_events` when a strategy emits those lifecycle records.
@@ -153,7 +157,7 @@ manager.add_sample_provider()
 bars = manager.load_data(symbol, "2023-01-01T00:00:00Z", "2023-12-31T23:59:59Z", "day")
 ```
 
-`cargo test -p gb-python --locked --no-default-features` includes parity checks that compare the Python helpers with the direct Rust engine for `buy_and_hold`, `ma_crossover`, and the experimental `covered_call` path. The docs smoke workflow also runs `./scripts/python_sdk_quickstart.sh`, which builds `gb-python` in an isolated virtualenv and executes `examples/python_sdk_quickstart.py` end to end.
+`cargo test -p gb-python --locked --no-default-features` includes parity checks that compare the Python helpers with the direct Rust engine for `buy_and_hold`, `ma_crossover`, and the experimental `covered_call` path. The docs smoke workflow runs `./scripts/python_sdk_quickstart.sh`, and the dedicated Python wheel workflow builds Linux/macOS wheel artifacts plus a source distribution and smoke-installs those wheels before uploading them.
 
 For a reproducibility-focused companion path, run:
 
@@ -165,12 +169,25 @@ That tutorial generates a real sample-data result, validates the emitted manifes
 replays it locally with `glowback_runtime`, and checks that the replayed metrics
 match the captured snapshot within tolerance.
 
+For a checked-in CSV ingestion path, run:
+
+```bash
+./scripts/csv_data_tutorial.sh
+```
+
+That tutorial loads the provider-compatible fixture in `examples/data/AAPL_1d.csv`,
+proves the documented `DataManager.add_csv_provider(...)` flow works end to end,
+and runs a CSV-backed `BacktestEngine` example against the same dataset.
+
 ## Testing
 
 ```bash
 cargo test --workspace --locked --exclude gb-python
 cargo test -p gb-python --locked --no-default-features
 ./scripts/quickstart.sh
+./scripts/python_sdk_quickstart.sh
+./scripts/python_sdk_wheel_smoke.sh
+./scripts/csv_data_tutorial.sh
 ./scripts/replay_manifest_tutorial.sh
 mkdocs build --strict
 ```

@@ -95,7 +95,7 @@ Every pull request runs:
 
 - **Rust Build Pipeline** (`rust.yml`) — crate-scoped Rust build/tests, Python API/UI tests, and release artifact packaging on eligible `main` builds
 - **Docs Guard** (`docs-guard.yml`) — requires a docs update when a PR changes user-facing code unless maintainers apply `no-docs`
-- **Docs Smoke** (`docs-smoke.yml`) — runs `./scripts/quickstart.sh` and `mkdocs build --strict` for docs/quickstart changes
+- **Docs Smoke** (`docs-smoke.yml`) — runs `./scripts/quickstart.sh`, `./scripts/python_sdk_quickstart.sh`, `./scripts/csv_data_tutorial.sh`, `./scripts/replay_manifest_tutorial.sh`, and `mkdocs build --strict` for docs/example changes
 - **Docs Deploy** (`docs.yml`) — builds and publishes the MkDocs site from `main`
 
 ## Pull Request Guidelines

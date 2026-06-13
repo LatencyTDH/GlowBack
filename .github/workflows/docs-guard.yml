@@ -19,11 +19,18 @@ jobs:
             docs:
               - docs/**
               - README.md
-      - name: Check for no-docs label
+      - name: Check for no-docs label or Dependabot PR
         id: labels
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
+          if [[ "$GH_ACTOR" == "dependabot[bot]" || "$PR_AUTHOR" == "dependabot[bot]" ]]; then
+            echo "no_docs=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           HAS_NO_DOCS=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels \
             --jq '[.[].name] | if index("no-docs") then "true" else "false" end')
           echo "no_docs=$HAS_NO_DOCS" >> "$GITHUB_OUTPUT"
@@ -34,6 +41,6 @@ jobs:
             echo "Docs update required when code changes. Either update docs/README or add a no-docs label to the PR."
             exit 1
           fi
-      - name: Allow no-docs label
+      - name: Allow no-docs bypass
         if: steps.labels.outputs.no_docs == 'true'
-        run: echo "no-docs label present; bypassing docs requirement."
+        run: echo "no-docs label present or Dependabot PR; bypassing docs requirement."

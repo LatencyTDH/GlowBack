@@ -6,6 +6,33 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::path::Path;
 
+fn parse_csv_timestamp(raw: &str) -> GbResult<DateTime<Utc>> {
+    if let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Ok(timestamp.with_timezone(&Utc));
+    }
+
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        let timestamp = date
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| DataError::ParseError {
+                message: format!(
+                    "Date parsing error: could not build midnight timestamp for {}",
+                    raw
+                ),
+            })?;
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(timestamp, Utc));
+    }
+
+    if let Ok(timestamp) = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S") {
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(timestamp, Utc));
+    }
+
+    Err(DataError::ParseError {
+        message: format!("Date parsing error: unsupported timestamp format '{}'", raw),
+    }
+    .into())
+}
+
 /// Trait for data providers (CSV, APIs, databases, etc.)
 #[async_trait]
 pub trait DataProvider: Send + Sync + std::fmt::Debug {
@@ -117,19 +144,7 @@ impl DataProvider for CsvDataProvider {
                 message: format!("CSV parsing error: {}", e),
             })?;
 
-            let timestamp = chrono::DateTime::parse_from_rfc3339(&record.timestamp)
-                .or_else(|_| {
-                    chrono::NaiveDateTime::parse_from_str(&record.timestamp, "%Y-%m-%d")
-                        .map(|dt| dt.and_utc().into())
-                })
-                .or_else(|_| {
-                    chrono::NaiveDateTime::parse_from_str(&record.timestamp, "%Y-%m-%d %H:%M:%S")
-                        .map(|dt| dt.and_utc().into())
-                })
-                .map_err(|e| DataError::ParseError {
-                    message: format!("Date parsing error: {}", e),
-                })?
-                .with_timezone(&Utc);
+            let timestamp = parse_csv_timestamp(&record.timestamp)?;
 
             if timestamp >= start_date && timestamp <= end_date {
                 let bar = Bar::new(
@@ -576,5 +591,24 @@ impl DataProvider for AlphaVantageProvider {
 
     fn price_adjustment_mode(&self) -> PriceAdjustmentMode {
         PriceAdjustmentMode::Raw
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_csv_timestamp;
+
+    #[test]
+    fn parse_csv_timestamp_accepts_date_only_rows() {
+        let timestamp =
+            parse_csv_timestamp("2025-01-02").expect("date-only timestamp should parse");
+        assert_eq!(timestamp.to_rfc3339(), "2025-01-02T00:00:00+00:00");
+    }
+
+    #[test]
+    fn parse_csv_timestamp_accepts_rfc3339_rows() {
+        let timestamp =
+            parse_csv_timestamp("2025-01-02T15:30:00Z").expect("rfc3339 timestamp should parse");
+        assert_eq!(timestamp.to_rfc3339(), "2025-01-02T15:30:00+00:00");
     }
 }

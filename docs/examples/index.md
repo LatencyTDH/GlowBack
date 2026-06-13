@@ -52,6 +52,50 @@ Expected success marker:
 ✅ Python SDK quickstart completed successfully
 ```
 
+## Python SDK wheel smoke example
+
+- File: `scripts/python_sdk_wheel_smoke.sh`
+- Command:
+
+```bash
+./scripts/python_sdk_wheel_smoke.sh
+```
+
+What it proves:
+
+- `gb-python` can be packaged as a wheel from a clean checkout instead of only via editable source installs
+- the built wheel installs into a fresh virtualenv and still imports `glowback` without repo-local hacks
+- the same checked-in Python quickstart example succeeds after wheel installation, so packaging and runtime behavior stay in sync
+- the wheel path stays honest locally and in `.github/workflows/python-wheels.yml`
+
+Expected success marker:
+
+```text
+✅ Python SDK quickstart completed successfully
+```
+
+## CSV data tutorial example
+
+- File: `examples/csv_data_tutorial.py`
+- Fixture: `examples/data/AAPL_1d.csv`
+- Command:
+
+```bash
+./scripts/csv_data_tutorial.sh
+```
+
+What it proves:
+
+- the checked-in CSV fixture matches the `CsvDataProvider` naming contract instead of relying on an ad hoc local file layout
+- the documented `DataManager.add_csv_provider(...)` and `load_data(...)` flow can ingest a real fixture without pseudo-code gaps
+- a CSV-backed `BacktestEngine` run produces a manifest that records the `csv` data source and a usable result payload
+
+Expected success marker:
+
+```text
+✅ CSV data tutorial completed successfully
+```
+
 ## Rust engine lifecycle template
 
 - File: `crates/gb-engine/examples/strategy_lifecycle_template.rs`
@@ -107,7 +151,7 @@ Expected success marker:
 ## Next examples to add
 
 - Momentum strategy with parameter sweep
-- CSV-backed Python SDK notebook with checked-in sample data
+- API workflow smoke path with checked-in request/response fixtures
 
 ## Related docs
 
