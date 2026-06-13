@@ -8,6 +8,19 @@ updates:
       day: "monday"
       time: "09:00"
     groups:
+      # arrow + parquet are version-locked in practice (parquet N requires arrow N).
+      # Group them together across ALL update types (including major) so a major
+      # bump like parquet 55 -> 59 always moves arrow in lockstep instead of
+      # splitting into separate PRs that can't compile. Listed first so it wins
+      # over the general cargo group below.
+      arrow-ecosystem:
+        patterns:
+          - "arrow*"
+          - "parquet*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
       cargo:
         update-types:
           - "minor"
