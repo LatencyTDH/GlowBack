@@ -1,6 +1,7 @@
 use num_traits::cast::ToPrimitive;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use pyo3::IntoPyObjectExt;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 
@@ -1143,12 +1144,12 @@ impl PyBacktestResult {
 #[pymethods]
 impl PyBacktestResult {
     #[getter]
-    fn metrics_summary(&self, py: Python) -> PyResult<PyObject> {
-        Ok(self.metrics_summary.clone().into_pyobject(py)?.into())
+    fn metrics_summary(&self, py: Python) -> PyResult<Py<PyAny>> {
+        self.metrics_summary.clone().into_py_any(py)
     }
 
     #[getter]
-    fn equity_curve(&self, py: Python) -> PyResult<PyObject> {
+    fn equity_curve(&self, py: Python) -> PyResult<Py<PyAny>> {
         let list = PyList::empty(py);
         for point in &self.equity_curve {
             let dict = PyDict::new(py);
@@ -1169,11 +1170,11 @@ impl PyBacktestResult {
             let _ = dict.set_item("drawdown", point.drawdown);
             let _ = list.append(dict);
         }
-        Ok(list.unbind().into())
+        Ok(list.unbind().into_any())
     }
 
     #[getter]
-    fn trades(&self, py: Python) -> PyResult<PyObject> {
+    fn trades(&self, py: Python) -> PyResult<Py<PyAny>> {
         let list = PyList::empty(py);
         for trade in &self.trades {
             let dict = PyDict::new(py);
@@ -1194,11 +1195,11 @@ impl PyBacktestResult {
             let _ = dict.set_item("strategy_id", &trade.strategy_id);
             let _ = list.append(dict);
         }
-        Ok(list.unbind().into())
+        Ok(list.unbind().into_any())
     }
 
     #[getter]
-    fn exposures(&self, py: Python) -> PyResult<PyObject> {
+    fn exposures(&self, py: Python) -> PyResult<Py<PyAny>> {
         let list = PyList::empty(py);
         for exposure in &self.exposures {
             let dict = PyDict::new(py);
@@ -1209,11 +1210,11 @@ impl PyBacktestResult {
             let _ = dict.set_item("net_exposure_pct", exposure.net_exposure_pct);
             let _ = list.append(dict);
         }
-        Ok(list.unbind().into())
+        Ok(list.unbind().into_any())
     }
 
     #[getter]
-    fn order_events(&self, py: Python) -> PyResult<PyObject> {
+    fn order_events(&self, py: Python) -> PyResult<Py<PyAny>> {
         let json = py.import("json")?;
         let payload = serde_json::to_string(&self.order_events).map_err(|error| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -1221,11 +1222,11 @@ impl PyBacktestResult {
                 error
             ))
         })?;
-        Ok(json.call_method1("loads", (payload,))?.into())
+        Ok(json.call_method1("loads", (payload,))?.unbind())
     }
 
     #[getter]
-    fn option_trades(&self, py: Python) -> PyResult<PyObject> {
+    fn option_trades(&self, py: Python) -> PyResult<Py<PyAny>> {
         let json = py.import("json")?;
         let payload = serde_json::to_string(&self.option_trades).map_err(|error| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -1233,11 +1234,11 @@ impl PyBacktestResult {
                 error
             ))
         })?;
-        Ok(json.call_method1("loads", (payload,))?.into())
+        Ok(json.call_method1("loads", (payload,))?.unbind())
     }
 
     #[getter]
-    fn option_events(&self, py: Python) -> PyResult<PyObject> {
+    fn option_events(&self, py: Python) -> PyResult<Py<PyAny>> {
         let json = py.import("json")?;
         let payload = serde_json::to_string(&self.option_events).map_err(|error| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -1245,7 +1246,7 @@ impl PyBacktestResult {
                 error
             ))
         })?;
-        Ok(json.call_method1("loads", (payload,))?.into())
+        Ok(json.call_method1("loads", (payload,))?.unbind())
     }
 
     #[getter]
@@ -1259,12 +1260,12 @@ impl PyBacktestResult {
     }
 
     #[getter]
-    fn final_positions(&self, py: Python) -> PyResult<PyObject> {
-        Ok(self.final_positions.clone().into_pyobject(py)?.into())
+    fn final_positions(&self, py: Python) -> PyResult<Py<PyAny>> {
+        self.final_positions.clone().into_py_any(py)
     }
 
     #[getter]
-    fn manifest(&self, py: Python) -> PyResult<PyObject> {
+    fn manifest(&self, py: Python) -> PyResult<Py<PyAny>> {
         match &self.manifest {
             Some(manifest) => {
                 let json = py.import("json")?;
@@ -1274,7 +1275,7 @@ impl PyBacktestResult {
                         error
                     ))
                 })?;
-                Ok(json.call_method1("loads", (payload,))?.into())
+                Ok(json.call_method1("loads", (payload,))?.unbind())
             }
             None => Ok(py.None()),
         }
@@ -1282,7 +1283,7 @@ impl PyBacktestResult {
 
     /// Convert the equity curve to a pandas DataFrame (Jupyter-friendly)
     #[pyo3(signature = (index=None))]
-    fn to_dataframe(&self, py: Python, index: Option<&str>) -> PyResult<PyObject> {
+    fn to_dataframe(&self, py: Python, index: Option<&str>) -> PyResult<Py<PyAny>> {
         let pandas = py.import("pandas").map_err(|_| {
             pyo3::exceptions::PyImportError::new_err(
                 "pandas is required for to_dataframe(). Install with `pip install pandas`.",
@@ -1313,11 +1314,11 @@ impl PyBacktestResult {
             }
         }
 
-        Ok(df.into())
+        Ok(df.unbind())
     }
 
     /// Convert metrics summary to a pandas DataFrame (Jupyter-friendly)
-    fn metrics_dataframe(&self, py: Python) -> PyResult<PyObject> {
+    fn metrics_dataframe(&self, py: Python) -> PyResult<Py<PyAny>> {
         let pandas = py.import("pandas").map_err(|_| {
             pyo3::exceptions::PyImportError::new_err(
                 "pandas is required for metrics_dataframe(). Install with `pip install pandas`.",
@@ -1328,12 +1329,12 @@ impl PyBacktestResult {
         let series = pandas.getattr("Series")?.call1((metrics,))?;
         let df = series.call_method1("to_frame", ("value",))?;
         let df = df.call_method0("sort_index")?;
-        Ok(df.into())
+        Ok(df.unbind())
     }
 
     /// Plot the equity curve using matplotlib (returns Axes)
-    fn plot_equity(&self, py: Python, show: Option<bool>) -> PyResult<PyObject> {
-        let df = self.to_dataframe(py, None)?;
+    fn plot_equity(&self, py: Python, show: Option<bool>) -> PyResult<Py<PyAny>> {
+        let df = self.to_dataframe(py, None)?.into_bound(py);
         let plt = py.import("matplotlib.pyplot").map_err(|_| {
             pyo3::exceptions::PyImportError::new_err(
                 "matplotlib is required for plot_equity(). Install with `pip install matplotlib`.",
@@ -1344,19 +1345,19 @@ impl PyBacktestResult {
         kwargs.set_item("x", "timestamp")?;
         kwargs.set_item("y", "value")?;
         kwargs.set_item("title", "GlowBack Equity Curve")?;
-        let plot = df.getattr(py, "plot")?;
-        let ax = plot.call(py, (), Some(&kwargs))?;
+        let plot = df.getattr("plot")?;
+        let ax = plot.call((), Some(&kwargs))?;
 
         if show.unwrap_or(false) {
             let _ = plt.call_method0("show")?;
         }
 
-        Ok(ax.into())
+        Ok(ax.unbind())
     }
 
     /// Notebook-friendly summary with optional plot
     #[pyo3(signature = (plot=false, index=None))]
-    fn summary(&self, py: Python, plot: Option<bool>, index: Option<&str>) -> PyResult<PyObject> {
+    fn summary(&self, py: Python, plot: Option<bool>, index: Option<&str>) -> PyResult<Py<PyAny>> {
         let metrics = self.metrics_dataframe(py)?;
         let curve = self.to_dataframe(py, index)?;
 
@@ -1367,7 +1368,7 @@ impl PyBacktestResult {
         let summary = PyDict::new(py);
         summary.set_item("metrics", metrics)?;
         summary.set_item("equity_curve", curve)?;
-        Ok(summary.into())
+        Ok(summary.unbind().into_any())
     }
 
     fn __repr__(&self) -> String {
@@ -1577,7 +1578,7 @@ mod tests {
     const TEST_LATENCY_MS: u64 = 250;
 
     fn init_python() {
-        PYTHON_INIT.call_once(pyo3::prepare_freethreaded_python);
+        PYTHON_INIT.call_once(Python::initialize);
     }
 
     fn approx_eq(left: f64, right: f64, tolerance: f64) {
@@ -1592,7 +1593,7 @@ mod tests {
         params: &[(&str, i64)],
     ) -> PyBacktestResult {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let strategy_params = if params.is_empty() {
                 None
             } else {
@@ -1736,7 +1737,7 @@ mod tests {
     #[test]
     fn module_exports_define_the_supported_public_surface() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let module = PyModule::new(py, "glowback").unwrap();
             glowback(py, &module).unwrap();
 
