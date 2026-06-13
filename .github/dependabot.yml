@@ -7,12 +7,18 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "09:00"
+    groups:
+      cargo:
+        update-types:
+          - "minor"
+          - "patch"
     commit-message:
       prefix: "chore"
       include: "scope"
     labels:
       - "dependencies"
       - "rust"
+      - "no-docs"
 
   # Python dependencies in the UI directory (pyproject.toml)
   - package-ecosystem: "pip"
@@ -22,6 +28,11 @@ updates:
       day: "monday"
       time: "09:00"
     open-pull-requests-limit: 10
+    groups:
+      ui-python:
+        update-types:
+          - "minor"
+          - "patch"
     reviewers:
       - "sd"
     assignees:
@@ -32,6 +43,7 @@ updates:
     labels:
       - "dependencies"
       - "python"
+      - "no-docs"
 
   # Python dependencies in the UI directory (requirements.txt)
   - package-ecosystem: "pip"
@@ -40,12 +52,18 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "09:00"
+    groups:
+      ui-python:
+        update-types:
+          - "minor"
+          - "patch"
     commit-message:
       prefix: "chore"
       include: "scope"
     labels:
       - "dependencies"
       - "python"
+      - "no-docs"
 
   # GitHub Actions (if you add any in the future)
   - package-ecosystem: "github-actions"
@@ -59,4 +77,5 @@ updates:
       include: "scope"
     labels:
       - "dependencies"
-      - "github-actions" 
+      - "github-actions"
+      - "no-docs"

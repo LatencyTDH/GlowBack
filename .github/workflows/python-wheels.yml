@@ -45,11 +45,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             manylinux: 2014
             artifact_name: glowback-wheel-linux-x86_64
-          - label: macos-x86_64
-            os: macos-13
-            target: x86_64-apple-darwin
-            manylinux: off
-            artifact_name: glowback-wheel-macos-x86_64
           - label: macos-arm64
             os: macos-14
             target: aarch64-apple-darwin
