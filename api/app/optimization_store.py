@@ -168,21 +168,27 @@ class OptimizationStore:
             record.finished_at = datetime.now(timezone.utc)
             return True
 
-    async def run_optimization(self, opt_id: str) -> None:
+    async def run_optimization(
+        self,
+        opt_id: str,
+        prior_trials: list[TrialSummary] | None = None,
+    ) -> None:
         async with self._lock:
             record = self._optimizations.get(opt_id)
-            if not record or record.state == OptimizationState.cancelled:
+            if not record:
+                return
+            if prior_trials is None and record.state == OptimizationState.cancelled:
                 return
             record.state = OptimizationState.running
-            record.started_at = datetime.now(timezone.utc)
+            record.started_at = record.started_at or datetime.now(timezone.utc)
             record.error = None
             request = record.request
 
         try:
-            execution = await self._executor.execute(
-                request,
-                is_cancelled=lambda: self._is_cancelled(opt_id),
-            )
+            execute_kwargs = {"is_cancelled": lambda: self._is_cancelled(opt_id)}
+            if prior_trials is not None:
+                execute_kwargs["prior_trials"] = prior_trials
+            execution = await self._executor.execute(request, **execute_kwargs)
         except Exception as exc:
             async with self._lock:
                 record = self._optimizations.get(opt_id)
@@ -194,6 +200,25 @@ class OptimizationStore:
             return
 
         await self._apply_execution(opt_id, execution)
+
+    async def prepare_resume(
+        self,
+        opt_id: str,
+    ) -> tuple[OptimizationStatus, list[TrialSummary]] | None:
+        async with self._lock:
+            record = self._optimizations.get(opt_id)
+            if not record or record.state not in {
+                OptimizationState.cancelled,
+                OptimizationState.failed,
+            }:
+                return None
+
+            prior_trials = [trial.to_summary() for trial in record.trials]
+            record.state = OptimizationState.running
+            record.started_at = record.started_at or datetime.now(timezone.utc)
+            record.finished_at = None
+            record.error = None
+            return record.to_status(), prior_trials
 
     async def _is_cancelled(self, opt_id: str) -> bool:
         async with self._lock:

@@ -15,6 +15,7 @@
 | `GET`  | `/v1/optimizations/{id}`         | Returns run status and best-trial summary |
 | `GET`  | `/v1/optimizations/{id}/results` | Returns ranked trials and a replayable best-trial backtest payload |
 | `POST` | `/v1/optimizations/{id}/cancel`  | Cancels a pending/running optimization |
+| `POST` | `/v1/optimizations/{id}/resume`  | Resumes a canceled or failed optimization from saved trial lineage |
 
 ## Example Request
 
