@@ -33,8 +33,19 @@ VIRTUALENV_BIN="$USER_BASE/bin/virtualenv"
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 
-maturin develop -m crates/gb-python/Cargo.toml
-python examples/python_sdk_quickstart.py | tee "$LOG_FILE"
+maturin develop --generate-stubs -m crates/gb-python/Cargo.toml
+python - <<'PY' | tee "$LOG_FILE"
+from pathlib import Path
+import glowback
+
+module_root = Path(glowback.__file__).resolve().parent
+required = [module_root / "__init__.pyi", module_root / "py.typed"]
+missing = [str(path) for path in required if not path.exists()]
+if missing:
+    raise SystemExit(f"missing generated type stubs: {', '.join(missing)}")
+print(f"Generated type stubs present: {required[0].name}, {required[1].name}")
+PY
+python examples/python_sdk_quickstart.py | tee -a "$LOG_FILE"
 
 if ! grep -q "✅ Python SDK quickstart completed successfully" "$LOG_FILE"; then
   echo "error: Python SDK quickstart did not reach the expected success marker" >&2
