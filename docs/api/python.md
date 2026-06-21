@@ -20,6 +20,8 @@ For clean-checkout smoke paths that validate both source installs and wheel inst
 
 `python_sdk_quickstart.sh` covers the editable `maturin develop` path. `python_sdk_wheel_smoke.sh` builds a wheel, installs it into a fresh virtualenv, and reruns the checked-in example so packaging drift is caught locally before CI.
 
+Both paths also verify the generated `__init__.pyi` and `py.typed` files so type checkers see the supported Python surface.
+
 ## Supported public surface
 
 The module publishes its supported contract via `glowback.__all__`, and the canonical built-in strategy IDs are exposed in `glowback.BUILTIN_STRATEGIES`.
