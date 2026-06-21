@@ -470,3 +470,19 @@ async def cancel_optimization(opt_id: str) -> dict:
             detail="Cannot cancel — optimization not found or already finished",
         )
     return {"optimization_id": opt_id, "state": "cancelled"}
+
+
+@app.post("/v1/optimizations/{opt_id}/resume", responses=VERSIONED_ERROR_RESPONSES)
+@app.post("/optimizations/{opt_id}/resume")
+async def resume_optimization(opt_id: str) -> OptimizationStatus:
+    """Resume a canceled or failed optimization run."""
+    prepared = await opt_store.prepare_resume(opt_id)
+    if not prepared:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot resume — optimization not found or not resumable",
+        )
+
+    status_obj, prior_trials = prepared
+    asyncio.create_task(opt_store.run_optimization(opt_id, prior_trials=prior_trials))
+    return status_obj

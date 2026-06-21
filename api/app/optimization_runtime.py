@@ -99,9 +99,12 @@ class OptimizationExecutor:
         self,
         request: OptimizationRequest,
         is_cancelled=None,
+        prior_trials: list[TrialSummary] | None = None,
     ) -> OptimizationExecution:
-        trials: list[TrialSummary] = []
-        completed_trials: list[TrialSummary] = []
+        trials: list[TrialSummary] = list(prior_trials or [])
+        completed_trials: list[TrialSummary] = [
+            trial for trial in trials if trial.status == TrialStatus.completed
+        ]
 
         if request.strategy == SearchStrategyName.bayesian:
             parameter_sets: list[dict[str, Any]] | None = None
@@ -110,7 +113,8 @@ class OptimizationExecutor:
             if not parameter_sets:
                 raise RuntimeError("Search space produced no trial candidates")
 
-        for trial_number in range(1, request.max_trials + 1):
+        start_trial_number = len(trials) + 1
+        for trial_number in range(start_trial_number, request.max_trials + 1):
             if await self._is_cancelled(is_cancelled):
                 return self._build_execution(
                     request=request,
@@ -119,11 +123,14 @@ class OptimizationExecutor:
                     completed_trials=completed_trials,
                 )
 
-            parameters = (
-                parameter_sets[trial_number - 1]
-                if parameter_sets is not None
-                else self._next_bayesian_parameters(request, completed_trials, trial_number)
-            )
+            if parameter_sets is not None:
+                parameter_index = trial_number - 1
+                if parameter_index >= len(parameter_sets):
+                    break
+                parameters = parameter_sets[parameter_index]
+            else:
+                parameters = self._next_bayesian_parameters(request, completed_trials, trial_number)
+
             trial = await asyncio.to_thread(
                 self._evaluate_trial_sync,
                 request,
@@ -548,7 +555,7 @@ def build_optimization_diagnostics(
         "execution_mode": "local_python",
         "ray_cluster_requested": request.ray_cluster is not None,
         "cancellation_supported": True,
-        "resume_supported": False,
+        "resume_supported": True,
     }
 
     if not completed_trials or best_trial is None:
@@ -668,7 +675,7 @@ def build_optimization_manifest(
         "execution_plan": {
             "mode": "local_python",
             "ray_cluster_requested": request.ray_cluster is not None,
-            "resume_supported": False,
+            "resume_supported": True,
             "cancellation_supported": True,
         },
     }

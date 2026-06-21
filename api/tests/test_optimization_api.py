@@ -24,7 +24,7 @@ from api.app.optimization_store import OptimizationStore
 
 
 class FakeOptimizationExecutor:
-    async def execute(self, request, is_cancelled=None) -> OptimizationExecution:
+    async def execute(self, request, is_cancelled=None, prior_trials=None) -> OptimizationExecution:
         if is_cancelled is not None:
             cancelled = is_cancelled()
             if hasattr(cancelled, "__await__"):
@@ -84,7 +84,7 @@ class FakeOptimizationExecutor:
 
 
 class SlowCancellationExecutor:
-    async def execute(self, request, is_cancelled=None) -> OptimizationExecution:
+    async def execute(self, request, is_cancelled=None, prior_trials=None) -> OptimizationExecution:
         for _ in range(10):
             if is_cancelled is not None:
                 cancelled = is_cancelled()
@@ -94,6 +94,85 @@ class SlowCancellationExecutor:
                     return OptimizationExecution(state=OptimizationState.cancelled, trials=[])
             await asyncio.sleep(0.01)
         return OptimizationExecution(state=OptimizationState.completed, trials=[])
+
+
+class ResumeAwareExecutor:
+    async def execute(self, request, is_cancelled=None, prior_trials=None) -> OptimizationExecution:
+        prior_trials = list(prior_trials or [])
+        initial_trial = TrialSummary(
+            trial_id="trial-1",
+            trial_number=1,
+            status=TrialStatus.completed,
+            parameters={"short_period": 5, "long_period": 20},
+            objective=1.25,
+            metrics={
+                "sharpe_ratio": 1.1,
+                "validation_sharpe_ratio": 1.25,
+                "full_sharpe_ratio": 1.1,
+            },
+            duration_seconds=0,
+        )
+        resumed_trial = TrialSummary(
+            trial_id="trial-2",
+            trial_number=2,
+            status=TrialStatus.completed,
+            parameters={"short_period": 8, "long_period": 24},
+            objective=1.55,
+            metrics={
+                "sharpe_ratio": 1.4,
+                "validation_sharpe_ratio": 1.55,
+                "full_sharpe_ratio": 1.4,
+            },
+            duration_seconds=0,
+        )
+
+        if not prior_trials:
+            return OptimizationExecution(
+                state=OptimizationState.cancelled,
+                trials=[initial_trial],
+                best_trial=initial_trial,
+                replay_backtest={
+                    **request.base_backtest,
+                    "strategy": {
+                        "name": request.base_backtest["strategy"]["name"],
+                        "params": {"short_period": 5, "long_period": 20},
+                    },
+                },
+                diagnostics={
+                    "objective_metric": "sharpe_ratio",
+                    "resume_supported": True,
+                },
+                manifest={
+                    "manifest_version": "1.0",
+                    "kind": "optimization_run",
+                    "diagnostics": {"resume_supported": True},
+                },
+            )
+
+        trials = prior_trials + [resumed_trial]
+        return OptimizationExecution(
+            state=OptimizationState.completed,
+            trials=trials,
+            best_trial=resumed_trial,
+            replay_backtest={
+                **request.base_backtest,
+                "strategy": {
+                    "name": request.base_backtest["strategy"]["name"],
+                    "params": {"short_period": 8, "long_period": 24},
+                },
+            },
+            diagnostics={
+                "objective_metric": "sharpe_ratio",
+                "resume_supported": True,
+            },
+            manifest={
+                "manifest_version": "1.0",
+                "kind": "optimization_run",
+                "diagnostics": {"resume_supported": True},
+                "execution_plan": {"resume_supported": True, "cancellation_supported": True},
+                "trial_lineage": [trial.model_dump(mode="json") for trial in trials],
+            },
+        )
 
 
 def _sample_request() -> OptimizationRequest:
@@ -173,6 +252,50 @@ class OptimizationApiTests(unittest.TestCase):
         self.assertEqual(result["diagnostics"]["best_trial_generalization_gap"], 0.15)
         self.assertEqual(result["manifest"]["manifest_version"], "1.0")
         self.assertEqual(len(result["all_trials"]), 2)
+
+    def test_resume_optimization_continues_from_saved_trials(self) -> None:
+        original_store = main_module.opt_store
+        main_module.opt_store = OptimizationStore(executor=ResumeAwareExecutor())
+        client = TestClient(main_module.app)
+        try:
+            created_response = client.post(
+                "/optimizations",
+                json=_sample_request().model_dump(mode="json"),
+            )
+            self.assertEqual(created_response.status_code, 201)
+            optimization_id = created_response.json()["optimization_id"]
+
+            for _ in range(50):
+                status_response = client.get(f"/optimizations/{optimization_id}")
+                self.assertEqual(status_response.status_code, 200)
+                if status_response.json()["state"] == "cancelled":
+                    break
+                time.sleep(0.02)
+
+            resume_response = client.post(f"/optimizations/{optimization_id}/resume")
+            self.assertEqual(resume_response.status_code, 200)
+            self.assertEqual(resume_response.json()["state"], "running")
+
+            result = None
+            for _ in range(50):
+                status_response = client.get(f"/optimizations/{optimization_id}")
+                self.assertEqual(status_response.status_code, 200)
+                if status_response.json()["state"] == "completed":
+                    result_response = client.get(f"/optimizations/{optimization_id}/results")
+                    self.assertEqual(result_response.status_code, 200)
+                    result = result_response.json()
+                    break
+                time.sleep(0.02)
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result["state"], "completed")
+            self.assertEqual([trial["trial_number"] for trial in result["all_trials"]], [1, 2])
+            self.assertEqual(result["best_trial"]["parameters"], {"short_period": 8, "long_period": 24})
+            self.assertTrue(result["diagnostics"]["resume_supported"])
+            self.assertTrue(result["manifest"]["execution_plan"]["resume_supported"])
+        finally:
+            main_module.opt_store = original_store
 
 
 class OptimizationStoreTests(unittest.IsolatedAsyncioTestCase):

@@ -12,6 +12,8 @@ from api.app.optimization_models import (
     SearchStrategyName,
     ValidationMode,
     OptimizationRequest,
+    TrialStatus,
+    TrialSummary,
 )
 from api.app.optimization_runtime import OptimizationExecutor
 
@@ -41,6 +43,22 @@ class ParamAwareBacktestExecutor:
                 "sharpe_ratio": sharpe_ratio,
                 "total_return": total_return,
                 "total_commissions": abs(long_period - short_period) / 10,
+            }
+        }
+
+
+class RecordingBacktestExecutor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, int]] = []
+
+    def run(self, backtest_config: dict) -> dict:
+        params = dict(backtest_config["strategy"]["params"])
+        self.calls.append(params)
+        score = float(int(params["short_period"]) * 10 + int(params["long_period"]))
+        return {
+            "metrics_summary": {
+                "sharpe_ratio": score,
+                "total_return": score * 2,
             }
         }
 
@@ -98,18 +116,79 @@ class OptimizationRuntimeTests(unittest.IsolatedAsyncioTestCase):
             result.diagnostics["parameter_stability"]["short_period"]["best_value"],
             8,
         )
-        self.assertFalse(result.diagnostics["resume_supported"])
+        self.assertTrue(result.diagnostics["resume_supported"])
 
         self.assertIsNotNone(result.manifest)
         assert result.manifest is not None
         self.assertEqual(result.manifest["manifest_version"], "1.0")
         self.assertEqual(result.manifest["request"]["random_seed"], 7)
         self.assertEqual(result.manifest["execution_plan"]["mode"], "local_python")
+        self.assertTrue(result.manifest["execution_plan"]["resume_supported"])
         self.assertEqual(len(result.manifest["trial_lineage"]), 4)
         self.assertEqual(
             result.manifest["best_trial"]["parameters"],
             {"short_period": 8, "long_period": 24},
         )
+
+    async def test_executor_continues_from_prior_trials(self) -> None:
+        executor = OptimizationExecutor(backtest_executor=RecordingBacktestExecutor())
+        prior_trials = [
+            TrialSummary(
+                trial_id="trial-1",
+                trial_number=1,
+                status=TrialStatus.completed,
+                parameters={"short_period": 6, "long_period": 20},
+                objective=80.0,
+                metrics={"sharpe_ratio": 80.0},
+                duration_seconds=0,
+            ),
+            TrialSummary(
+                trial_id="trial-2",
+                trial_number=2,
+                status=TrialStatus.completed,
+                parameters={"short_period": 6, "long_period": 24},
+                objective=84.0,
+                metrics={"sharpe_ratio": 84.0},
+                duration_seconds=0,
+            ),
+        ]
+        resume_request = OptimizationRequest(
+            name="Resume regression",
+            description="Resume from trial lineage",
+            search_space=_request().search_space,
+            strategy=SearchStrategyName.grid,
+            max_trials=4,
+            concurrency=1,
+            objective_metric="sharpe_ratio",
+            direction=ObjectiveDirection.maximize,
+            validation_mode=ValidationMode.holdout,
+            validation_fraction=0.25,
+            walk_forward_windows=1,
+            random_seed=7,
+            grid_steps=2,
+            base_backtest={
+                "symbols": ["AAPL"],
+                "start_date": "2024-01-01T00:00:00Z",
+                "end_date": "2024-01-05T00:00:00Z",
+                "resolution": "day",
+                "strategy": {"name": "ma_crossover", "params": {}},
+                "initial_capital": 100000,
+                "data_source": "sample",
+            },
+        )
+
+        result = await executor.execute(resume_request, prior_trials=prior_trials)
+
+        self.assertEqual(result.state, OptimizationState.completed)
+        self.assertEqual(len(result.trials), 4)
+        self.assertEqual([trial.trial_number for trial in result.trials], [1, 2, 3, 4])
+        self.assertEqual(result.trials[:2], prior_trials)
+        self.assertEqual(executor._backtest_executor.calls, [
+            {"short_period": 8, "long_period": 20},
+            {"short_period": 8, "long_period": 24},
+        ])
+        self.assertTrue(result.diagnostics["resume_supported"])
+        self.assertTrue(result.manifest["execution_plan"]["resume_supported"])
 
 
 if __name__ == "__main__":
