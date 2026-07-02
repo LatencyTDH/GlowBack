@@ -204,8 +204,10 @@ parameters before each real engine run.
 
 `ray_cluster` remains present in the API model for future distributed
 execution, but this shipping path still runs trials locally through the Python
-bindings. The optimization manifest records that execution mode explicitly, so
-results show whether a run used today's local path or a future distributed
+bindings. The optimization manifest records that execution mode explicitly and,
+when a Ray cluster is supplied, includes a `distributed_preview` block with the
+requested cluster settings, planned worker count, and trial numbers. Results
+still show whether a run used today's local path or a future distributed
 scheduler.
 
 ## Rust Crate: `gb-optimizer`
