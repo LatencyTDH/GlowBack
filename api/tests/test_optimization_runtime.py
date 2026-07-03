@@ -6,6 +6,7 @@ import unittest
 from api.app.optimization_models import (
     ObjectiveDirection,
     OptimizationState,
+    RayClusterConfig,
     ParameterDef,
     ParameterKind,
     SearchSpaceConfig,
@@ -189,6 +190,38 @@ class OptimizationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertTrue(result.diagnostics["resume_supported"])
         self.assertTrue(result.manifest["execution_plan"]["resume_supported"])
+
+    async def test_executor_emits_ray_execution_preview(self) -> None:
+        executor = OptimizationExecutor(backtest_executor=ParamAwareBacktestExecutor())
+        request = _request().model_copy(
+            update={
+                "concurrency": 4,
+                "ray_cluster": RayClusterConfig(
+                    address="ray://example:10001",
+                    namespace="glowback-qa",
+                    max_concurrent_tasks=2,
+                    num_cpus=2.5,
+                    num_gpus=0.0,
+                    pip_packages=["ray==2.46.0"],
+                )
+            }
+        )
+
+        result = await executor.execute(request)
+
+        self.assertIsNotNone(result.manifest)
+        assert result.manifest is not None
+        execution_plan = result.manifest["execution_plan"]
+        self.assertTrue(execution_plan["ray_cluster_requested"])
+        self.assertIn("distributed_preview", execution_plan)
+        preview = execution_plan["distributed_preview"]
+        self.assertEqual(preview["scheduler"], "ray")
+        self.assertEqual(preview["status"], "preview")
+        self.assertEqual(preview["task_count"], 4)
+        self.assertEqual(preview["planned_workers"], 2)
+        self.assertEqual(preview["cluster"]["namespace"], "glowback-qa")
+        self.assertEqual(preview["cluster"]["max_concurrent_tasks"], 2)
+        self.assertEqual(preview["trial_numbers"], [1, 2, 3, 4])
 
 
 if __name__ == "__main__":

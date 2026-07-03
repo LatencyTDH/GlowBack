@@ -625,7 +625,7 @@ def build_optimization_manifest(
         f"validation_full_gap_{metric_name}",
     ]
 
-    return {
+    manifest = {
         "manifest_version": "1.0",
         "kind": "optimization_run",
         "generated_at": _isoformat(datetime.now(timezone.utc)),
@@ -678,6 +678,35 @@ def build_optimization_manifest(
             "resume_supported": True,
             "cancellation_supported": True,
         },
+    }
+
+    distributed_preview = _build_distributed_execution_preview(request, trials)
+    if distributed_preview is not None:
+        manifest["execution_plan"]["distributed_preview"] = distributed_preview
+
+    return manifest
+
+
+def _build_distributed_execution_preview(
+    request: OptimizationRequest,
+    trials: list[TrialSummary],
+) -> dict[str, Any] | None:
+    if request.ray_cluster is None:
+        return None
+
+    task_count = len(trials)
+    planned_workers = min(
+        request.ray_cluster.max_concurrent_tasks,
+        request.concurrency,
+        max(task_count, 1),
+    )
+    return {
+        "scheduler": "ray",
+        "status": "preview",
+        "task_count": task_count,
+        "planned_workers": planned_workers,
+        "cluster": request.ray_cluster.model_dump(mode="json"),
+        "trial_numbers": [trial.trial_number for trial in trials],
     }
 
 
