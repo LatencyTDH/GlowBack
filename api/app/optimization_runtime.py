@@ -14,6 +14,8 @@ from typing import Any, Protocol
 
 from .models import BacktestRequest
 from .optimization_models import (
+    ObjectiveConstraint,
+    ObjectiveConstraintKind,
     OptimizationRequest,
     OptimizationState,
     ParameterDef,
@@ -174,7 +176,12 @@ class OptimizationExecutor:
             if best_trial
             else None
         )
-        diagnostics = build_optimization_diagnostics(request, completed_trials, best_trial)
+        diagnostics = build_optimization_diagnostics(
+            request,
+            trials,
+            completed_trials,
+            best_trial,
+        )
         manifest = build_optimization_manifest(
             request=request,
             state=state,
@@ -264,6 +271,22 @@ class OptimizationExecutor:
                 objective = full_objective
 
             metrics[f"full_{metric_name}"] = full_objective
+
+            constraint_violations = _evaluate_objective_constraints(
+                metrics,
+                request.objective_constraints,
+            )
+            if constraint_violations:
+                return TrialSummary(
+                    trial_id=trial_id,
+                    trial_number=trial_number,
+                    status=TrialStatus.failed,
+                    parameters=parameters,
+                    metrics=metrics,
+                    duration_seconds=max(0, int(time.monotonic() - started)),
+                    error=_format_constraint_violation_message(constraint_violations),
+                )
+
             return TrialSummary(
                 trial_id=trial_id,
                 trial_number=trial_number,
@@ -543,6 +566,7 @@ def build_validation_windows(
 
 def build_optimization_diagnostics(
     request: OptimizationRequest,
+    all_trials: list[TrialSummary],
     completed_trials: list[TrialSummary],
     best_trial: TrialSummary | None,
 ) -> dict[str, Any]:
@@ -557,6 +581,12 @@ def build_optimization_diagnostics(
         "cancellation_supported": True,
         "resume_supported": True,
     }
+
+    if request.objective_constraints:
+        diagnostics["objective_constraints"] = _constraint_summary(
+            request.objective_constraints,
+            all_trials,
+        )
 
     if not completed_trials or best_trial is None:
         return diagnostics
@@ -644,6 +674,14 @@ def build_optimization_manifest(
             "random_seed": request.random_seed,
             "grid_steps": request.grid_steps,
             "exploration_weight": request.exploration_weight,
+            "objective_constraints": [
+                {
+                    "metric": constraint.metric,
+                    "kind": constraint.kind.value,
+                    "threshold": constraint.threshold,
+                }
+                for constraint in request.objective_constraints
+            ],
             "ray_cluster": (
                 request.ray_cluster.model_dump(mode="json")
                 if request.ray_cluster is not None
@@ -837,3 +875,104 @@ def _metric_value(metrics: dict[str, float], metric_name: str) -> float:
             f"Available metrics: {available}"
         )
     return metrics[metric_name]
+
+
+def _evaluate_objective_constraints(
+    metrics: dict[str, float],
+    constraints: list[ObjectiveConstraint],
+) -> list[dict[str, Any]]:
+    violations: list[dict[str, Any]] = []
+    for constraint in constraints:
+        actual = metrics.get(constraint.metric)
+        if actual is None:
+            violations.append(
+                {
+                    "metric": constraint.metric,
+                    "kind": constraint.kind.value,
+                    "threshold": constraint.threshold,
+                    "actual": None,
+                    "reason": "missing_metric",
+                }
+            )
+            continue
+
+        actual_value = float(actual)
+        threshold = float(constraint.threshold)
+        if constraint.kind == ObjectiveConstraintKind.max_value:
+            if actual_value > threshold:
+                violations.append(
+                    {
+                        "metric": constraint.metric,
+                        "kind": constraint.kind.value,
+                        "threshold": threshold,
+                        "actual": actual_value,
+                        "reason": "above_max_value",
+                    }
+                )
+        elif constraint.kind == ObjectiveConstraintKind.min_value:
+            if actual_value < threshold:
+                violations.append(
+                    {
+                        "metric": constraint.metric,
+                        "kind": constraint.kind.value,
+                        "threshold": threshold,
+                        "actual": actual_value,
+                        "reason": "below_min_value",
+                    }
+                )
+        else:  # pragma: no cover - enum keeps this exhaustive
+            raise RuntimeError(f"Unsupported objective constraint kind: {constraint.kind}")
+
+    return violations
+
+
+def _format_constraint_violation_message(violations: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for violation in violations:
+        metric = violation["metric"]
+        kind = violation["kind"]
+        threshold = violation["threshold"]
+        actual = violation.get("actual")
+        if actual is None:
+            parts.append(f"{metric} missing for {kind} constraint {threshold}")
+        elif kind == ObjectiveConstraintKind.max_value.value:
+            parts.append(f"{metric}={actual} exceeds {threshold}")
+        else:
+            parts.append(f"{metric}={actual} is below {threshold}")
+    return "Objective constraints violated: " + "; ".join(parts)
+
+
+def _constraint_summary(
+    constraints: list[ObjectiveConstraint],
+    trials: list[TrialSummary],
+) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for constraint in constraints:
+        evaluated_trials = 0
+        violated_trials = 0
+        for trial in trials:
+            value = trial.metrics.get(constraint.metric)
+            if value is None:
+                if trial.status == TrialStatus.failed:
+                    violated_trials += 1
+                continue
+
+            evaluated_trials += 1
+            actual = float(value)
+            if constraint.kind == ObjectiveConstraintKind.max_value:
+                if actual > constraint.threshold:
+                    violated_trials += 1
+            elif actual < constraint.threshold:
+                violated_trials += 1
+
+        summary.append(
+            {
+                "metric": constraint.metric,
+                "kind": constraint.kind.value,
+                "threshold": constraint.threshold,
+                "evaluated_trials": evaluated_trials,
+                "violated_trials": violated_trials,
+                "satisfied_trials": max(0, evaluated_trials - violated_trials),
+            }
+        )
+    return summary
