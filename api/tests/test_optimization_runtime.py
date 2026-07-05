@@ -5,6 +5,8 @@ import unittest
 
 from api.app.optimization_models import (
     ObjectiveDirection,
+    ObjectiveConstraint,
+    ObjectiveConstraintKind,
     OptimizationState,
     RayClusterConfig,
     ParameterDef,
@@ -130,6 +132,32 @@ class OptimizationRuntimeTests(unittest.IsolatedAsyncioTestCase):
             result.manifest["best_trial"]["parameters"],
             {"short_period": 8, "long_period": 24},
         )
+
+    async def test_executor_respects_objective_constraints(self) -> None:
+        executor = OptimizationExecutor(backtest_executor=ParamAwareBacktestExecutor())
+        request = _request().model_copy(
+            update={
+                "objective_constraints": [
+                    ObjectiveConstraint(
+                        metric="total_commissions",
+                        kind=ObjectiveConstraintKind.max_value,
+                        threshold=1.5,
+                    )
+                ]
+            }
+        )
+
+        result = await executor.execute(request)
+
+        self.assertEqual(result.state, OptimizationState.completed)
+        self.assertEqual(len(result.trials), 4)
+        failed_trials = [trial for trial in result.trials if trial.status == TrialStatus.failed]
+        self.assertEqual(len(failed_trials), 2)
+        self.assertTrue(all("Objective constraints violated" in trial.error for trial in failed_trials if trial.error))
+        self.assertEqual(result.best_trial.parameters, {"short_period": 8, "long_period": 20})
+        self.assertIn("objective_constraints", result.diagnostics)
+        self.assertEqual(result.diagnostics["objective_constraints"][0]["violated_trials"], 2)
+        self.assertEqual(result.manifest["request"]["objective_constraints"][0]["metric"], "total_commissions")
 
     async def test_executor_continues_from_prior_trials(self) -> None:
         executor = OptimizationExecutor(backtest_executor=RecordingBacktestExecutor())
