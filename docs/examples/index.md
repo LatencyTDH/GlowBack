@@ -52,6 +52,27 @@ Expected success marker:
 ✅ Python SDK quickstart completed successfully
 ```
 
+## Python SDK parameter sweep example
+
+- File: `examples/python_sdk_parameter_sweep.py`
+- Command:
+
+```bash
+python examples/python_sdk_parameter_sweep.py
+```
+
+What it proves:
+
+- the Python bindings can run a small deterministic parameter sweep against the real engine
+- repeated `run_builtin_strategy(...)` calls keep the manifest replay payload and sampled parameters aligned
+- `momentum` tuning stays on the supported public surface instead of requiring a custom Rust-only harness
+
+Expected success marker:
+
+```text
+✅ Python SDK parameter sweep completed successfully
+```
+
 ## Python SDK wheel smoke example
 
 - File: `scripts/python_sdk_wheel_smoke.sh`
@@ -150,7 +171,6 @@ Expected success marker:
 
 ## Next examples to add
 
-- Momentum strategy with parameter sweep
 - API workflow smoke path with checked-in request/response fixtures
 
 ## Related docs

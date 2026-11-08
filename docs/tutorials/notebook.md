@@ -61,8 +61,21 @@ ax = result.plot_equity()
 
 - Checked-in script: `examples/python_sdk_quickstart.py`
 - Smoke wrapper: `scripts/python_sdk_quickstart.sh`
+- Sweep example: `examples/python_sdk_parameter_sweep.py`
+- Replay example: `examples/replay_manifest_tutorial.py`
 
 Use the script when you want a copy-pasteable starting point outside Jupyter, then lift the same calls into a notebook cell.
+
+## Notebook gallery
+
+Use these small notebook-sized workflows as the durable starting point for the Python SDK:
+
+- First backtest: `glowback.run_buy_and_hold(...)` from the quickstart example
+- Custom parameterized strategy: `glowback.run_builtin_strategy(...)` with `momentum` or `ma_crossover` parameters
+- Parameter sweep: the checked-in `examples/python_sdk_parameter_sweep.py`
+- Reproducible replay: the checked-in `examples/replay_manifest_tutorial.py`
+
+The notebook-friendly API stays the same across these paths: run a backtest, inspect `result.metrics_summary`, `result.equity_curve`, and `result.manifest`, then copy the same calls into a notebook cell for interactive analysis.
 
 ## Notes
 
