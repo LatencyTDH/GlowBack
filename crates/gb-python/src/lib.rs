@@ -1,4 +1,6 @@
 use num_traits::cast::ToPrimitive;
+use pyo3::create_exception;
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3::IntoPyObjectExt;
@@ -22,6 +24,25 @@ const BUILTIN_STRATEGIES: [&str; 6] = [
     "covered_call",
 ];
 
+create_exception!(
+    glowback,
+    GlowBackError,
+    PyException,
+    "Base exception for failures reported by GlowBack's Rust backend."
+);
+create_exception!(
+    glowback,
+    DataError,
+    GlowBackError,
+    "Market-data or catalog operation failed."
+);
+create_exception!(
+    glowback,
+    BacktestError,
+    GlowBackError,
+    "Backtest engine setup or execution failed."
+);
+
 fn supported_builtin_strategies() -> String {
     BUILTIN_STRATEGIES.join(", ")
 }
@@ -31,6 +52,9 @@ fn supported_builtin_strategies() -> String {
 fn glowback(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add("__version__", "0.1.0")?;
     m.add("BUILTIN_STRATEGIES", PyList::new(py, BUILTIN_STRATEGIES)?)?;
+    m.add("GlowBackError", py.get_type::<GlowBackError>())?;
+    m.add("DataError", py.get_type::<DataError>())?;
+    m.add("BacktestError", py.get_type::<BacktestError>())?;
     m.add_class::<PySymbol>()?;
     m.add_class::<PyDataManager>()?;
     m.add_class::<PyBar>()?;
@@ -54,6 +78,9 @@ fn glowback(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
             [
                 "__version__",
                 "BUILTIN_STRATEGIES",
+                "GlowBackError",
+                "DataError",
+                "BacktestError",
                 "Symbol",
                 "DataManager",
                 "Bar",
@@ -76,6 +103,14 @@ fn glowback(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
 
 fn decimal_to_f64(value: Decimal) -> f64 {
     value.to_f64().unwrap_or(0.0)
+}
+
+fn data_error(context: &str, error: impl std::fmt::Display) -> PyErr {
+    DataError::new_err(format!("{context}: {error}"))
+}
+
+fn backtest_error(context: &str, error: impl std::fmt::Display) -> PyErr {
+    BacktestError::new_err(format!("{context}: {error}"))
 }
 
 fn parse_resolution(resolution: &str) -> PyResult<Resolution> {
@@ -445,24 +480,16 @@ fn run_builtin_strategy(
 
     let strategy = build_builtin_strategy(&strategy_name, &strategy_config)?;
 
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create async runtime: {}", e))
-    })?;
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| backtest_error("Failed to create async runtime", e))?;
 
     let mut engine = runtime
         .block_on(async { RustBacktestEngine::new(config).await })
-        .map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "Failed to create backtest engine: {}",
-                e
-            ))
-        })?;
+        .map_err(|e| backtest_error("Failed to create backtest engine", e))?;
 
     let result = runtime
         .block_on(async { engine.run_with_strategy(strategy).await })
-        .map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("Backtest execution failed: {}", e))
-        })?;
+        .map_err(|e| backtest_error("Backtest execution failed", e))?;
 
     Ok(PyBacktestResult::from_backtest_result(result))
 }
@@ -524,22 +551,13 @@ impl PyDataManager {
     #[new]
     fn new() -> PyResult<Self> {
         // Create tokio runtime for async operations
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "Failed to create async runtime: {}",
-                e
-            ))
-        })?;
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| data_error("Failed to create async runtime", e))?;
 
         // Create data manager
         let inner = runtime
             .block_on(async { gb_data::DataManager::new().await })
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "Failed to create data manager: {}",
-                    e
-                ))
-            })?;
+            .map_err(|e| data_error("Failed to create data manager", e))?;
 
         Ok(Self {
             inner: std::sync::Mutex::new(inner),
@@ -589,9 +607,7 @@ impl PyDataManager {
             inner
                 .load_data(&symbol.inner, start_date, end_date, resolution)
                 .await
-                .map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to load data: {}", e))
-                })
+                .map_err(|e| data_error("Failed to load data", e))
         })?;
 
         // Convert to Python bars
@@ -635,12 +651,11 @@ impl PyDataManager {
             let inner = self.inner.lock().map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to acquire lock: {}", e))
             })?;
-            inner.catalog.get_catalog_stats().await.map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "Failed to get catalog stats: {}",
-                    e
-                ))
-            })
+            inner
+                .catalog
+                .get_catalog_stats()
+                .await
+                .map_err(|e| data_error("Failed to get catalog stats", e))
         })?;
 
         Ok(PyCatalogStats {
@@ -1486,21 +1501,12 @@ impl PyBacktestEngine {
             config.data_settings.data_quality_mode = parse_data_quality_mode(mode)?;
         }
 
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "Failed to create async runtime: {}",
-                e
-            ))
-        })?;
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| backtest_error("Failed to create async runtime", e))?;
 
         let mut inner = runtime
             .block_on(async { RustBacktestEngine::new(config).await })
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "Failed to create backtest engine: {}",
-                    e
-                ))
-            })?;
+            .map_err(|e| backtest_error("Failed to create backtest engine", e))?;
 
         if normalized_data_source == "csv" {
             let base_path = csv_data_path.ok_or_else(|| {
@@ -1550,12 +1556,7 @@ impl PyBacktestEngine {
         let result = self
             .runtime
             .block_on(inner.run_with_strategy(strategy))
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "Backtest execution failed: {}",
-                    e
-                ))
-            })?;
+            .map_err(|e| backtest_error("Backtest execution failed", e))?;
 
         Ok(PyBacktestResult::from_backtest_result(result))
     }
@@ -1750,8 +1751,24 @@ mod tests {
 
             assert!(exports.contains(&"BacktestEngine".to_string()));
             assert!(exports.contains(&"BacktestResult".to_string()));
+            assert!(exports.contains(&"GlowBackError".to_string()));
+            assert!(exports.contains(&"DataError".to_string()));
+            assert!(exports.contains(&"BacktestError".to_string()));
             assert!(exports.contains(&"run_builtin_strategy".to_string()));
             assert!(exports.contains(&"PyBacktestEngine".to_string()));
+
+            let builtins = PyModule::import(py, "builtins").unwrap();
+            let is_subclass: bool = builtins
+                .getattr("issubclass")
+                .unwrap()
+                .call1((
+                    module.getattr("BacktestError").unwrap(),
+                    module.getattr("GlowBackError").unwrap(),
+                ))
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert!(is_subclass);
             assert_eq!(
                 builtin_strategies,
                 BUILTIN_STRATEGIES
@@ -1759,6 +1776,20 @@ mod tests {
                     .map(|value| value.to_string())
                     .collect::<Vec<_>>()
             );
+        });
+    }
+
+    #[test]
+    fn domain_errors_preserve_rust_backend_context() {
+        init_python();
+        Python::attach(|py| {
+            let error = backtest_error("Backtest execution failed", "engine rejected order 42");
+
+            assert!(error.is_instance_of::<BacktestError>(py));
+            assert!(error.is_instance_of::<GlowBackError>(py));
+            assert!(error
+                .to_string()
+                .contains("Backtest execution failed: engine rejected order 42"));
         });
     }
 

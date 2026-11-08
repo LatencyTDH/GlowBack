@@ -33,6 +33,26 @@ print(glowback.__all__)
 print(glowback.BUILTIN_STRATEGIES)
 ```
 
+## Error handling
+
+Failures from the Rust backend use a small, typed exception hierarchy while
+keeping the original backend message in the exception text:
+
+- `GlowBackError` is the common base class.
+- `DataError` reports market-data and catalog failures.
+- `BacktestError` reports engine setup and execution failures.
+
+Invalid Python arguments continue to raise built-in exceptions such as
+`ValueError` and `TypeError`, so callers can distinguish input problems from
+backend failures.
+
+```python
+try:
+    result = glowback.run_builtin_strategy(...)
+except glowback.BacktestError as error:
+    print(f"Backtest failed: {error}")
+```
+
 CI parity coverage for the binding lives in `cargo test -p gb-python --locked --no-default-features`, including direct Python-vs-Rust checks for `buy_and_hold` and `ma_crossover`. The docs smoke workflow runs `./scripts/python_sdk_quickstart.sh`, and `.github/workflows/python-wheels.yml` builds CPython 3.10+ abi3 wheel artifacts for Linux x86_64 plus macOS x86_64/arm64, smoke-installs them, and uploads the matching source distribution.
 
 ## Quick Helper
