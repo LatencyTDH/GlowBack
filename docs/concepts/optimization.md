@@ -36,6 +36,10 @@ curl -X POST http://localhost:8000/v1/optimizations \
     "concurrency": 1,
     "objective_metric": "sharpe_ratio",
     "direction": "maximize",
+    "objective_constraints": [
+      {"metric": "max_drawdown", "kind": "max_value", "threshold": 0.2},
+      {"metric": "total_commissions", "kind": "max_value", "threshold": 15.0}
+    ],
     "validation_mode": "walk_forward",
     "validation_fraction": 0.25,
     "walk_forward_windows": 3,
@@ -137,6 +141,30 @@ Returned trial metrics include validation-specific keys such as:
 The result-level `diagnostics` block then lifts the most important signals for
 quick review so callers can spot suspicious train/validation drift without
 manually diffing every trial.
+
+## Objective Constraints
+
+Add `objective_constraints` when you want a normal objective to be filtered by
+hard feasibility rules.
+
+```json
+{
+  "objective_metric": "sharpe_ratio",
+  "direction": "maximize",
+  "objective_constraints": [
+    {"metric": "max_drawdown", "kind": "max_value", "threshold": 0.2},
+    {"metric": "turnover_multiple", "kind": "max_value", "threshold": 1.5}
+  ]
+}
+```
+
+- `max_value` means the metric must stay at or below the threshold
+- `min_value` means the metric must stay at or above the threshold
+- Violating a constraint marks the trial failed and keeps it out of the
+  feasible best-trial set
+- The result diagnostics include per-constraint violation counts so callers can
+  see whether the winning configuration was narrowly feasible or comfortably
+  inside the guardrails
 
 ## Search Strategies
 

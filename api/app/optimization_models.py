@@ -39,6 +39,17 @@ class SearchStrategyName(str, Enum):
     bayesian = "bayesian"
 
 
+class ObjectiveConstraintKind(str, Enum):
+    max_value = "max_value"
+    min_value = "min_value"
+
+
+class ObjectiveConstraint(BaseModel):
+    metric: str = Field(min_length=1, max_length=64)
+    kind: ObjectiveConstraintKind
+    threshold: float
+
+
 class ValidationMode(str, Enum):
     holdout = "holdout"
     walk_forward = "walk_forward"
@@ -65,6 +76,7 @@ class OptimizationRequest(BaseModel):
     base_backtest: dict[str, Any] = Field(
         description="Base backtest config that trials will override with sampled parameters"
     )
+    objective_constraints: list[ObjectiveConstraint] = Field(default_factory=list)
     validation_mode: ValidationMode = ValidationMode.walk_forward
     validation_fraction: float = Field(default=0.25, gt=0.05, lt=0.9)
     walk_forward_windows: int = Field(default=3, ge=1, le=10)
