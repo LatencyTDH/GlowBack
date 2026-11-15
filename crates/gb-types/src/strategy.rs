@@ -1255,6 +1255,29 @@ impl RsiStrategy {
         }
     }
 
+    /// Wilder-smoothed RSI over the whole price history, seeded with the simple
+    /// average of the first `lookback_period` changes (TA-Lib / TradingView).
+    #[cfg(feature = "fin-primitives")]
+    fn calculate_rsi(&self, prices: &[Decimal]) -> Option<Decimal> {
+        use fin_primitives::signals::indicators::Rsi;
+        use fin_primitives::signals::{BarInput, Signal};
+
+        if prices.len() < self.lookback_period + 1 {
+            return None;
+        }
+
+        let mut indicator = Rsi::new("rsi", self.lookback_period).ok()?;
+        let mut rsi = None;
+        for price in prices {
+            rsi = indicator
+                .update(&BarInput::from_close(*price))
+                .ok()?
+                .as_decimal();
+        }
+        rsi
+    }
+
+    #[cfg(not(feature = "fin-primitives"))]
     fn calculate_rsi(&self, prices: &[Decimal]) -> Option<Decimal> {
         if prices.len() < self.lookback_period + 1 {
             return None;
@@ -1336,6 +1359,10 @@ impl Strategy for RsiStrategy {
 
         let symbol = event.symbol();
         if let Some(buffer) = context.get_market_data(symbol) {
+            // Wilder smoothing carries state across bars, so it reads the whole buffer.
+            #[cfg(feature = "fin-primitives")]
+            let bars = buffer.get_bars(buffer.max_size);
+            #[cfg(not(feature = "fin-primitives"))]
             let bars = buffer.get_bars(self.lookback_period + 1);
             let prices: Vec<Decimal> = bars.iter().map(|bar| bar.close).collect();
 
@@ -1633,6 +1660,19 @@ mod strategy_tests {
         assert!(rsi.is_some());
         let value = rsi.unwrap();
         assert!(value > dec!(50)); // Mostly rising prices should produce RSI above 50
+    }
+
+    #[cfg(feature = "fin-primitives")]
+    #[test]
+    fn test_rsi_calculation_uses_wilder_smoothing() {
+        let strategy = RsiStrategy::new(2, 30.0, 70.0);
+        // Changes: +1, -1, +2. Seed avg gain/loss = 0.5/0.5, then Wilder smoothing
+        // gives avg gain 1.25 and avg loss 0.25, so RS = 5 and RSI = 100 - 100 / 6.
+        let prices = vec![dec!(1), dec!(2), dec!(1), dec!(3)];
+
+        let rsi = strategy.calculate_rsi(&prices).unwrap();
+        let expected = dec!(100) - dec!(100) / dec!(6);
+        assert!((rsi - expected).abs() < dec!(0.0000001));
     }
 
     #[test]
