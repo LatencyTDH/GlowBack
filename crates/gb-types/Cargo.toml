@@ -11,6 +11,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+fin-primitives = { version = "3.1", default-features = false, features = ["indicators"], optional = true }
+
+[features]
+# Wilder-smoothed RSI (matches TA-Lib / TradingView) for RsiStrategy.
+fin-primitives = ["dep:fin-primitives"]
 
 [dev-dependencies]
 rust_decimal_macros = "1.37"

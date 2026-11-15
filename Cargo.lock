@@ -753,6 +753,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
+name = "fin-primitives"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea32cf978f4bc443476d0366f3e4f5ae10f669ce7b93b8d292653ff538d2c505"
+dependencies = [
+ "chrono",
+ "libm",
+ "rust_decimal",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -958,6 +970,7 @@ name = "gb-types"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "fin-primitives",
  "gb-data",
  "rand 0.9.4",
  "rust_decimal",
